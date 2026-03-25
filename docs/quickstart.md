@@ -9,11 +9,11 @@
 node --version  # 需要 v18 或更高
 ```
 
-**2. opencli（推文免费采集）**
+**2. opencli（OpenCLI 模式需要，API 模式可跳过）**
 ```bash
 npm install -g @jackwener/opencli
 ```
-安装后，确保 Chrome 浏览器已登录 [x.com](https://x.com)。opencli 会复用浏览器的登录状态，无需任何 API Key。
+安装后，确保 Chrome 浏览器已登录 [x.com](https://x.com)。opencli 会复用浏览器的登录状态，无需任何 Twitter API Key。
 
 验证安装：
 ```bash
@@ -28,10 +28,16 @@ docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
 
 ### API Key 准备
 
-| Key | 用途 | 获取地址 |
-|-----|------|---------|
-| Anthropic API Key | Soul 提炼 + 培养循环 + 对话 | https://console.anthropic.com |
-| OpenAI API Key | Embedding + 音视频转录（Whisper） | https://platform.openai.com |
+Neeko 支持四个 LLM 提供商，**填入任意一个**即可开始使用：
+
+| Provider | 用途 | 获取地址 |
+|----------|------|---------|
+| Anthropic Claude | Soul 提炼 + 对话（推荐） | https://console.anthropic.com |
+| OpenAI | Embedding + 音视频转录（Whisper） | https://platform.openai.com |
+| Kimi（月之暗面） | Soul 提炼 + 对话（可选） | https://platform.moonshot.cn |
+| Gemini（Google） | Soul 提炼 + 对话（可选） | https://aistudio.google.com |
+
+> API Key 在 Web UI 设置页填写并保存，CLI 和 Web UI 共享同一份配置。
 
 ---
 
@@ -50,25 +56,28 @@ npm run build
 
 ## 第三步：配置
 
-### 方式 A：交互式配置（推荐）
+### 方式 A：Web UI 设置页（推荐）
+
+启动 Web UI 后，访问 [http://localhost:3000/settings](http://localhost:3000/settings)：
+
+1. **数据摄取方式**：选择 OpenCLI 模式（免 API）或 API 模式
+2. **模型配置**：填入一个或多个 LLM 的 API Key
+3. **当前使用模型**：点击圆形按钮选择激活的模型
+4. **Qdrant 地址**：默认 `http://localhost:6333`
+5. 点击「保存配置」
+
+### 方式 B：CLI 交互式配置
 
 ```bash
 node dist/index.js config
 ```
 
-### 方式 B：命令行参数
+### 方式 C：命令行参数
 
 ```bash
 node dist/index.js config --api-key sk-ant-xxx
 node dist/index.js config --openai-key sk-xxx
 node dist/index.js config --qdrant-url http://localhost:6333
-```
-
-### 方式 C：环境变量
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-xxx
-export OPENAI_API_KEY=sk-xxx
 ```
 
 ---
@@ -143,6 +152,12 @@ node dist/index.js chat elonmusk
 
 ## 导出 Persona
 
+### Web UI
+
+点击 Persona 卡片右上角的 ⋯ 菜单，选择「导出为 OpenClaw」或「导出为 LobeChat」。
+
+### CLI
+
 ```bash
 node dist/index.js export elonmusk --to openclaw
 ```
@@ -173,6 +188,7 @@ openclaw agents import ./neeko-export-elonmusk/
 1. 确认 Chrome 已登录 X.com（非无痕模式）
 2. 运行 `opencli twitter search "hello" --limit 3` 测试
 3. 如仍失败，检查 Chrome 是否在运行
+4. 或切换到 API 模式（在设置页配置 Twitter API Key）
 
 **Q：Qdrant 连接失败？**
 

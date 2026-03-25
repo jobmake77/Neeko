@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Build output
+dist/
+web/.next/
+web/out/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Runtime data
+*.pid
+
+# Lock files (keep package-lock.json, ignore yarn/pnpm)
+yarn.lock
+pnpm-lock.yaml

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Dumbbell, Circle, TrendingUp, ShieldAlert, ChevronRight, Download } from 'lucide-react';
 
@@ -113,14 +113,7 @@ export default function TrainingPage() {
   });
   const continueSourceRef = useRef<EventSource | null>(null);
 
-  useEffect(() => {
-    fetch('/api/settings', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((cfg) => {
-        if (cfg?.defaultTrainingProfile) setDefaultTrainingProfile(String(cfg.defaultTrainingProfile));
-      })
-      .catch(() => null);
-
+  const loadTrainingItems = useCallback(() => {
     fetch('/api/training', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : []))
       .then((data: TrainingCardItem[]) => {
@@ -134,6 +127,30 @@ export default function TrainingPage() {
       })
       .catch(() => setItems([]));
   }, [searchParams]);
+
+  useEffect(() => {
+    fetch('/api/settings', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        if (cfg?.defaultTrainingProfile) setDefaultTrainingProfile(String(cfg.defaultTrainingProfile));
+      })
+      .catch(() => null);
+
+    loadTrainingItems();
+  }, [loadTrainingItems]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadTrainingItems();
+      if (selectedSlug) {
+        fetch(`/api/training/${selectedSlug}`, { cache: 'no-store' })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data: TrainingDetailResponse | null) => setDetail(data))
+          .catch(() => null);
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [loadTrainingItems, selectedSlug]);
 
   useEffect(() => {
     if (!selectedSlug) return;

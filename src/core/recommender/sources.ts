@@ -1,5 +1,5 @@
 import { generateObject } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
+import { resolveModel } from '../../config/model.js';
 import { z } from 'zod';
 
 const RecommendationSchema = z.object({
@@ -21,11 +21,9 @@ const RecommendationSchema = z.object({
  * and recommends data sources per dimension.
  */
 export class DataSourceRecommender {
-  private model = anthropic('claude-sonnet-4-6');
-
   async recommend(targetSkill: string): Promise<z.infer<typeof RecommendationSchema>> {
     const { object } = await generateObject({
-      model: this.model,
+      model: resolveModel(),
       schema: RecommendationSchema,
       prompt: `You are helping build a composite AI agent with the skill: "${targetSkill}".
 

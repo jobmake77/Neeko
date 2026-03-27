@@ -4,7 +4,7 @@ import { Database, ChevronDown, ChevronUp, Globe, Code2 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 type IngestMode = 'opencli' | 'api';
-type ProviderId = 'claude' | 'openai' | 'kimi' | 'gemini';
+type ProviderId = 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
 
 interface ProviderConfig {
   key: string;
@@ -20,6 +20,7 @@ export default function SettingsPage() {
     openai: { key: '', expanded: false },
     kimi:   { key: '', expanded: false },
     gemini: { key: '', expanded: false },
+    deepseek: { key: '', expanded: false },
   });
 
   const [activeProvider, setActiveProvider] = useState<ProviderId>('claude');
@@ -40,6 +41,7 @@ export default function SettingsPage() {
           openai: { ...prev.openai, key: cfg.openaiApiKey    || '' },
           kimi:   { ...prev.kimi,   key: cfg.kimiApiKey      || '' },
           gemini: { ...prev.gemini, key: cfg.geminiApiKey    || '' },
+          deepseek: { ...prev.deepseek, key: cfg.deepseekApiKey || '' },
         }));
       })
       .catch(() => {/* ignore */});
@@ -58,6 +60,7 @@ export default function SettingsPage() {
         openaiApiKey:    providers.openai.key,
         kimiApiKey:      providers.kimi.key,
         geminiApiKey:    providers.gemini.key,
+        deepseekApiKey:  providers.deepseek.key,
         qdrantUrl,
         activeProvider,
         ingestMode,
@@ -95,6 +98,12 @@ export default function SettingsPage() {
       label: 'Gemini（Google）',
       placeholder: 'AIza...',
       hint: 'Soul 提炼 + 对话',
+    },
+    {
+      id: 'deepseek',
+      label: 'DeepSeek',
+      placeholder: 'sk-...',
+      hint: 'Soul 提炼 + 对话（deepseek-chat）',
     },
   ];
 

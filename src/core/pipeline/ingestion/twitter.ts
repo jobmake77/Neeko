@@ -1,6 +1,9 @@
 import { BaseSourceAdapter, FetchOptions } from './base.js';
 import { RawDocument } from '../../models/memory.js';
 import { execSync } from 'child_process';
+import { existsSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 
 /**
  * OpenCLI adapter — 通过 opencli 复用浏览器登录状态抓取 Twitter/X 推文，
@@ -37,42 +40,53 @@ export class TwitterAdapter extends BaseSourceAdapter {
   }
 
   private async searchByUser(handle: string, limit: number): Promise<RawDocument[]> {
-    try {
-      // opencli twitter search "from:handle" --limit N --format json
-      const cmd = `opencli twitter search "from:${handle}" --limit ${limit} --format json`;
-      const output = execSync(cmd, {
-        timeout: 120_000,
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-      }).toString().trim();
+    const opencli = resolveOpenCliBinary();
+    const candidates = [limit, Math.min(limit, 120), Math.min(limit, 60)]
+      .filter((v, i, arr) => v > 0 && arr.indexOf(v) === i);
 
-      const items = JSON.parse(output) as OpenCliTweet[];
-      return this.mapTweets(items, handle);
-    } catch (err) {
-      const msg = String(err).slice(0, 300);
-      console.warn(`[TwitterAdapter] opencli search 失败，尝试 timeline 模式: ${msg}`);
-      return this.fetchTimeline(handle, limit);
+    for (const n of candidates) {
+      const cmd = `${shellQuote(opencli)} twitter search "from:${handle}" --limit ${n} --format json`;
+      try {
+        const items = await this.runOpenCliJson(cmd);
+        if (items.length > 0) {
+          if (n !== limit) {
+            console.warn(`[TwitterAdapter] search 降载重试成功（limit ${limit} -> ${n}）`);
+          }
+          return this.mapTweets(items, handle);
+        }
+      } catch (err) {
+        const msg = String(err).slice(0, 300);
+        console.warn(`[TwitterAdapter] opencli search 失败（limit=${n}）: ${msg}`);
+      }
     }
+
+    console.warn('[TwitterAdapter] search 模式全部失败，尝试 timeline 模式');
+    return this.fetchTimeline(handle, limit);
   }
 
   // fallback：抓 following timeline（需要已关注目标账号）
   private async fetchTimeline(handle: string, limit: number): Promise<RawDocument[]> {
-    try {
-      const cmd = `opencli twitter timeline --type following --limit ${limit} --format json`;
-      const output = execSync(cmd, {
-        timeout: 120_000,
-        maxBuffer: 10 * 1024 * 1024,
-      }).toString().trim();
-
-      const allTweets = JSON.parse(output) as OpenCliTweet[];
-      // 过滤出目标用户的推文
-      const filtered = allTweets.filter(
-        (t) => t.author?.toLowerCase().replace(/^@/, '') === handle.toLowerCase()
-      );
-      return this.mapTweets(filtered, handle);
-    } catch (err) {
-      console.warn(`[TwitterAdapter] opencli timeline 也失败: ${String(err).slice(0, 200)}`);
-      return [];
+    const opencli = resolveOpenCliBinary();
+    const candidates = [limit, Math.min(limit, 120), Math.min(limit, 60)]
+      .filter((v, i, arr) => v > 0 && arr.indexOf(v) === i);
+    for (const n of candidates) {
+      const cmd = `${shellQuote(opencli)} twitter timeline --type following --limit ${n} --format json`;
+      try {
+        const allTweets = await this.runOpenCliJson(cmd);
+        const filtered = allTweets.filter(
+          (t) => t.author?.toLowerCase().replace(/^@/, '') === handle.toLowerCase()
+        );
+        if (filtered.length > 0) {
+          if (n !== limit) {
+            console.warn(`[TwitterAdapter] timeline 降载重试成功（limit ${limit} -> ${n}）`);
+          }
+          return this.mapTweets(filtered, handle);
+        }
+      } catch (err) {
+        console.warn(`[TwitterAdapter] opencli timeline 失败（limit=${n}）: ${String(err).slice(0, 200)}`);
+      }
     }
+    return [];
   }
 
   private mapTweets(items: OpenCliTweet[], handle: string): RawDocument[] {
@@ -99,6 +113,46 @@ export class TwitterAdapter extends BaseSourceAdapter {
         })
       );
   }
+
+  private async runOpenCliJson(cmd: string): Promise<OpenCliTweet[]> {
+    const maxAttempts = 3;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const output = execSync(cmd, {
+          timeout: 120_000,
+          maxBuffer: 10 * 1024 * 1024,
+          env: openCliEnv(),
+        }).toString().trim();
+
+        const parsed = JSON.parse(output) as unknown;
+        if (Array.isArray(parsed)) return parsed as OpenCliTweet[];
+        if (parsed && typeof parsed === 'object') {
+          const maybe = (parsed as { tweets?: unknown }).tweets;
+          if (Array.isArray(maybe)) return maybe as OpenCliTweet[];
+        }
+        return [];
+      } catch (err) {
+        lastError = err;
+        const msg = String(err);
+        const detached = msg.includes('Detached while handling command');
+        if (detached && attempt < maxAttempts) {
+          const waitMs = attempt * 1200;
+          console.warn(`[TwitterAdapter] opencli detached，${waitMs}ms 后重试（${attempt}/${maxAttempts}）`);
+          await sleep(waitMs);
+          continue;
+        }
+        if (attempt < maxAttempts) {
+          const waitMs = attempt * 800;
+          await sleep(waitMs);
+          continue;
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
 }
 
 /**
@@ -106,9 +160,61 @@ export class TwitterAdapter extends BaseSourceAdapter {
  */
 export function checkOpenCli(): string | null {
   try {
-    const out = execSync('opencli --version', { timeout: 5000 }).toString().trim();
+    const opencli = resolveOpenCliBinary();
+    const out = execSync(`${shellQuote(opencli)} --version`, {
+      timeout: 5000,
+      env: openCliEnv(),
+    })
+      .toString()
+      .trim();
     return out;
   } catch {
     return null;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveOpenCliBinary(): string {
+  if (process.env.OPENCLI_BIN && existsSync(process.env.OPENCLI_BIN)) {
+    return process.env.OPENCLI_BIN;
+  }
+
+  try {
+    const fromWhich = execSync('command -v opencli', {
+      timeout: 2000,
+      env: openCliEnv(),
+    })
+      .toString()
+      .trim();
+    if (fromWhich) return fromWhich;
+  } catch {
+    // fall through
+  }
+
+  const candidate = join(homedir(), '.npm-global', 'bin', 'opencli');
+  if (existsSync(candidate)) return candidate;
+
+  return 'opencli';
+}
+
+function shellQuote(path: string): string {
+  if (/^[a-zA-Z0-9_./-]+$/.test(path)) return path;
+  return `'${path.replace(/'/g, `'\\''`)}'`;
+}
+
+function openCliEnv(): NodeJS.ProcessEnv {
+  const currentPath = process.env.PATH ?? '';
+  const pathParts = [
+    '/usr/local/bin',
+    '/opt/homebrew/bin',
+    join(homedir(), '.npm-global', 'bin'),
+    currentPath,
+  ].filter(Boolean);
+  return {
+    ...process.env,
+    PATH: pathParts.join(':'),
+  };
 }

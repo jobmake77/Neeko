@@ -32,6 +32,8 @@ interface QdrantPayload {
 export class MemoryStore {
   private qdrant: QdrantClient;
   private openai: OpenAI;
+  private embeddingApiKey: string;
+  private loggedLocalFallback = false;
 
   constructor(options: {
     qdrantUrl?: string;
@@ -42,7 +44,14 @@ export class MemoryStore {
       url: options.qdrantUrl ?? 'http://localhost:6333',
       apiKey: options.qdrantApiKey,
     });
-    this.openai = new OpenAI({ apiKey: options.openaiApiKey ?? process.env.OPENAI_API_KEY });
+    this.embeddingApiKey = options.openaiApiKey ?? process.env.OPENAI_API_KEY ?? '';
+
+    // Always use official OpenAI endpoint for embeddings to avoid accidental
+    // proxy/baseURL overrides from shell environment.
+    this.openai = new OpenAI({
+      apiKey: this.embeddingApiKey,
+      baseURL: 'https://api.openai.com/v1',
+    });
   }
 
   async ensureCollection(collectionName: string): Promise<void> {
@@ -158,11 +167,59 @@ export class MemoryStore {
   }
 
   private async embed(text: string): Promise<number[]> {
-    const res = await this.openai.embeddings.create({
-      model: 'text-embedding-3-small',
-      input: text.slice(0, 8000),
-    });
-    return res.data[0].embedding;
+    if (!this.embeddingApiKey) {
+      this.logLocalFallbackOnce('OPENAI_API_KEY 未配置');
+      return this.localEmbed(text);
+    }
+
+    try {
+      const res = await this.openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: text.slice(0, 8000),
+      });
+      return res.data[0].embedding;
+    } catch (error) {
+      const message = String(error);
+      const shouldFallback =
+        message.includes('Incorrect API key provided') ||
+        message.includes('invalid_api_key') ||
+        message.includes('404 page not found') ||
+        message.includes('ENOTFOUND') ||
+        message.includes('ECONNREFUSED');
+
+      if (!shouldFallback) throw error;
+      this.logLocalFallbackOnce('OpenAI embedding 调用失败，切换为本地 embedding 回退');
+      return this.localEmbed(text);
+    }
+  }
+
+  private localEmbed(text: string): number[] {
+    const vector = new Array<number>(VECTOR_SIZE).fill(0);
+    const tokens = text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2000);
+
+    for (const token of tokens) {
+      const h1 = fnv1a32(token);
+      const h2 = fnv1a32(`${token}#salt`);
+      const idx = h1 % VECTOR_SIZE;
+      const sign = (h2 & 1) === 0 ? 1 : -1;
+      vector[idx] += sign * (1 + (h2 % 7) / 10);
+    }
+
+    let norm = 0;
+    for (const v of vector) norm += v * v;
+    norm = Math.sqrt(norm) || 1;
+    return vector.map((v) => v / norm);
+  }
+
+  private logLocalFallbackOnce(reason: string): void {
+    if (this.loggedLocalFallback) return;
+    this.loggedLocalFallback = true;
+    console.warn(`[MemoryStore] ${reason}，使用本地 embedding（质量较低但可继续培养）`);
   }
 
   private uuidToUint(uuid: string): number {
@@ -198,4 +255,13 @@ export class MemoryStore {
       return null;
     }
   }
+}
+
+function fnv1a32(input: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
 }

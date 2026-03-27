@@ -28,7 +28,7 @@ docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
 
 ### API Key 准备
 
-Neeko 支持四个 LLM 提供商，**填入任意一个**即可开始使用：
+Neeko 支持五个 LLM 提供商，**填入任意一个**即可开始使用：
 
 | Provider | 用途 | 获取地址 |
 |----------|------|---------|
@@ -36,6 +36,7 @@ Neeko 支持四个 LLM 提供商，**填入任意一个**即可开始使用：
 | OpenAI | Embedding + 音视频转录（Whisper） | https://platform.openai.com |
 | Kimi（月之暗面） | Soul 提炼 + 对话（可选） | https://platform.moonshot.cn |
 | Gemini（Google） | Soul 提炼 + 对话（可选） | https://aistudio.google.com |
+| DeepSeek | Soul 提炼 + 对话（可选） | https://platform.deepseek.com |
 
 > API Key 在 Web UI 设置页填写并保存，CLI 和 Web UI 共享同一份配置。
 
@@ -78,6 +79,7 @@ node dist/index.js config
 node dist/index.js config --api-key sk-ant-xxx
 node dist/index.js config --openai-key sk-xxx
 node dist/index.js config --qdrant-url http://localhost:6333
+node dist/index.js config --training-profile full
 ```
 
 ---
@@ -109,6 +111,16 @@ npm run dev
 node dist/index.js create @elonmusk
 ```
 
+指定训练优化档位（推荐）：
+```bash
+node dist/index.js create @elonmusk --rounds 10 --training-profile full
+```
+
+快速培养（先出结果）：
+```bash
+node dist/index.js create @elonmusk --rounds 3 --training-profile full
+```
+
 流程说明：
 1. opencli 从 X.com 抓取该账号的推文（复用 Chrome 登录状态）
 2. 清洗 + 分块
@@ -134,11 +146,52 @@ node dist/index.js create --skill "全栈工程师"
 
 ---
 
+## 培养优化与对照实验
+
+`--training-profile` 可选值：
+- `baseline`：旧训练流程基线
+- `a1`：课程化训练（Curriculum）
+- `a2`：A1 + 评估器标尺校准 + 双评审
+- `a3`：A2 + 记忆写入治理（去重/冲突隔离）
+- `a4`：A3 + 收敛策略升级
+- `full`：完整优化（默认）
+
+运行 A/B 对照实验：
+```bash
+node dist/index.js experiment elonmusk --rounds 10
+```
+
+导出实验报告（JSON/CSV）：
+```bash
+node dist/index.js experiment elonmusk --rounds 10 --output-dir ./reports
+```
+
+启用质量门禁（可用于 CI）：
+```bash
+node dist/index.js experiment elonmusk --rounds 6 --gate
+```
+
+实验会对比 `baseline/a1/a2/a3/a4` 的质量与风险指标，并输出推荐默认档位。
+
+继续培养已创建 Persona：
+```bash
+node dist/index.js train elonmusk --mode quick
+node dist/index.js train elonmusk --mode full
+```
+
+---
+
 ## 与 Persona 对话
 
 ### Web UI
 
 点击 Persona 卡片上的「对话」按钮。
+
+在「培养中心」页面你可以：
+- 查看每轮培养回放明细与趋势图
+- 下载训练报告（JSON/CSV）
+- 查看实验历史，展开 profile 对比表
+- 一键将某个 profile 设为默认训练档位
 
 ### CLI
 
@@ -213,4 +266,4 @@ curl http://localhost:6333/health  # 检查服务健康
   soul.yaml      Soul 数据
 ```
 
-Qdrant 中的向量数据存储在集合 `neeko_{slug}`。
+Qdrant 中的向量数据存储在集合 `nico_{slug}`。

@@ -16,6 +16,7 @@ interface PersonaCardProps {
     memory_node_count: number;
     doc_count: number;
   };
+  onDelete?: (slug: string) => void;
 }
 
 // 根据 slug 生成一个稳定的柔和背景色
@@ -46,7 +47,7 @@ const statusLabel: Record<string, string> = {
   exported: '已导出',
 };
 
-export function PersonaCard({ persona }: PersonaCardProps) {
+export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
   const avatarColor = getAvatarColor(persona.slug);
   const initials = getInitials(persona.name);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -73,9 +74,11 @@ export function PersonaCard({ persona }: PersonaCardProps) {
     setMenuOpen(false);
   }
 
-  function handleDelete() {
-    console.log('删除 Persona', persona.slug);
+  async function handleDelete() {
+    if (!window.confirm(`确认删除 ${persona.name}？此操作不可恢复。`)) return;
     setMenuOpen(false);
+    await fetch(`/api/personas/${persona.slug}`, { method: 'DELETE' });
+    onDelete?.(persona.slug);
   }
 
   return (

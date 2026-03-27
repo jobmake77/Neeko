@@ -35,8 +35,10 @@ export async function GET() {
     openaiApiKey:     cfg.openaiApiKey     ? String(cfg.openaiApiKey)     : '',
     kimiApiKey:       cfg.kimiApiKey       ? String(cfg.kimiApiKey)       : '',
     geminiApiKey:     cfg.geminiApiKey     ? String(cfg.geminiApiKey)     : '',
+    deepseekApiKey:   cfg.deepseekApiKey   ? String(cfg.deepseekApiKey)   : '',
     qdrantUrl:        cfg.qdrantUrl        ? String(cfg.qdrantUrl)        : 'http://localhost:6333',
     activeProvider:   cfg.activeProvider   ? String(cfg.activeProvider)   : 'claude',
+    defaultTrainingProfile: cfg.defaultTrainingProfile ? String(cfg.defaultTrainingProfile) : 'full',
     ingestMode:       cfg.ingestMode       ? String(cfg.ingestMode)       : 'opencli',
     twitterApiKey:    cfg.twitterApiKey    ? String(cfg.twitterApiKey)    : '',
   });
@@ -52,8 +54,10 @@ export async function POST(req: Request) {
     ...(body.openaiApiKey     !== undefined && { openaiApiKey:     body.openaiApiKey }),
     ...(body.kimiApiKey       !== undefined && { kimiApiKey:       body.kimiApiKey }),
     ...(body.geminiApiKey     !== undefined && { geminiApiKey:     body.geminiApiKey }),
+    ...(body.deepseekApiKey   !== undefined && { deepseekApiKey:   body.deepseekApiKey }),
     ...(body.qdrantUrl        !== undefined && { qdrantUrl:        body.qdrantUrl }),
     ...(body.activeProvider   !== undefined && { activeProvider:   body.activeProvider }),
+    ...(body.defaultTrainingProfile !== undefined && { defaultTrainingProfile: body.defaultTrainingProfile }),
     ...(body.ingestMode       !== undefined && { ingestMode:       body.ingestMode }),
     ...(body.twitterApiKey    !== undefined && { twitterApiKey:    body.twitterApiKey }),
   };

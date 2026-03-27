@@ -5,9 +5,16 @@ import { join } from 'path';
 interface NeekoConfig {
   anthropicApiKey?: string;
   openaiApiKey?: string;
+  kimiApiKey?: string;
+  geminiApiKey?: string;
+  deepseekApiKey?: string;
+  activeProvider?: string;
+  ingestMode?: string;
+  twitterApiKey?: string;
   qdrantUrl?: string;
   qdrantApiKey?: string;
   defaultModel?: string;
+  defaultTrainingProfile?: string;
   neekoDataDir?: string;
 }
 
@@ -16,6 +23,7 @@ const conf = new Conf<NeekoConfig>({
   defaults: {
     qdrantUrl: 'http://localhost:6333',
     defaultModel: 'claude-sonnet-4-6',
+    defaultTrainingProfile: 'full',
     neekoDataDir: join(homedir(), '.neeko'),
   },
 });

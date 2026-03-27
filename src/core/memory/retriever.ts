@@ -25,14 +25,24 @@ export class MemoryRetriever {
     const { limit = 10, soulDimension, minConfidence = 0.3, includeArchived = false } = options;
 
     // Fetch more than needed so we can re-rank
-    const candidates = await this.store.search(collection, query, {
-      limit: limit * 3,
-      filter: {
-        status: includeArchived ? undefined : 'active',
-        soulDimension,
-        minConfidence,
-      },
-    });
+    let candidates: MemoryNode[] = [];
+    try {
+      candidates = await this.store.search(collection, query, {
+        limit: limit * 3,
+        filter: {
+          status: includeArchived ? undefined : 'active',
+          soulDimension,
+          minConfidence,
+        },
+      });
+    } catch (error) {
+      const message = String(error);
+      const missingCollection = message.includes('Not Found') || message.includes('404');
+      if (!missingCollection) throw error;
+      // Some legacy personas were created before vector collection bootstrap.
+      // Degrade gracefully to Soul-only chat instead of hard-failing.
+      return [];
+    }
 
     // Re-rank with time decay + reinforcement boost
     const scored = candidates.map((node) => ({
@@ -54,10 +64,18 @@ export class MemoryRetriever {
     statement: string,
     limit = 5
   ): Promise<MemoryNode[]> {
-    const candidates = await this.store.search(collection, statement, {
-      limit: limit * 4,
-      filter: { status: 'active' },
-    });
+    let candidates: MemoryNode[] = [];
+    try {
+      candidates = await this.store.search(collection, statement, {
+        limit: limit * 4,
+        filter: { status: 'active' },
+      });
+    } catch (error) {
+      const message = String(error);
+      const missingCollection = message.includes('Not Found') || message.includes('404');
+      if (!missingCollection) throw error;
+      return [];
+    }
 
     return candidates
       .filter((n) => n.relations.some((r) => r.relation_type === 'CONTRADICTS'))

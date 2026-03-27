@@ -1,18 +1,24 @@
+'use client';
+
+import { useState, useEffect } from 'react';
 import { PersonaCard, NewPersonaCard } from '@/components/persona-card';
 import { Search } from 'lucide-react';
 
-async function getPersonas() {
-  try {
-    const res = await fetch('http://localhost:3000/api/personas', { cache: 'no-store' });
-    if (!res.ok) return [];
-    return res.json();
-  } catch {
-    return [];
-  }
-}
+type PersonaItem = Parameters<typeof PersonaCard>[0]['persona'];
 
-export default async function Home() {
-  const personas = await getPersonas();
+export default function Home() {
+  const [personas, setPersonas] = useState<PersonaItem[]>([]);
+
+  useEffect(() => {
+    fetch('/api/personas', { cache: 'no-store' })
+      .then((r) => r.ok ? r.json() : [])
+      .then(setPersonas)
+      .catch(() => setPersonas([]));
+  }, []);
+
+  function handleDelete(slug: string) {
+    setPersonas((prev) => prev.filter((p) => p.slug !== slug));
+  }
 
   return (
     <div className="p-8 max-w-[1200px]">
@@ -52,8 +58,8 @@ export default async function Home() {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         <NewPersonaCard />
 
-        {personas.map((persona: Parameters<typeof PersonaCard>[0]['persona']) => (
-          <PersonaCard key={persona.id} persona={persona} />
+        {personas.map((persona) => (
+          <PersonaCard key={persona.id} persona={persona} onDelete={handleDelete} />
         ))}
 
         {personas.length === 0 && (

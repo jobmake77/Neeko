@@ -8,7 +8,6 @@ import { ArticleAdapter } from '../../core/pipeline/ingestion/article.js';
 import { DataCleaner, SemanticChunker } from '../../core/pipeline/cleaner.js';
 import { SoulExtractor, SoulAggregator } from '../../core/soul/extractor.js';
 import { MemoryStore } from '../../core/memory/store.js';
-import { MemoryRetriever } from '../../core/memory/retriever.js';
 import { TrainingLoop } from '../../core/training/loop.js';
 import { DataSourceRecommender } from '../../core/recommender/sources.js';
 import { settings } from '../../config/settings.js';
@@ -17,6 +16,8 @@ import { join } from 'path';
 import yaml from 'js-yaml';
 import { Soul } from '../../core/models/soul.js';
 import { Persona } from '../../core/models/persona.js';
+import { TrainingProfile } from '../../core/training/types.js';
+import { buildTrainingRunReport } from '../../core/training/report.js';
 
 function savePersona(persona: Persona, soul: Soul): void {
   const dir = settings.getPersonaDir(persona.slug);
@@ -25,8 +26,21 @@ function savePersona(persona: Persona, soul: Soul): void {
   writeFileSync(join(dir, 'soul.yaml'), yaml.dump(soul), 'utf-8');
 }
 
-export async function cmdCreate(target: string | undefined, options: { skill?: string }): Promise<void> {
+function saveTrainingReport(
+  slug: string,
+  profile: TrainingProfile,
+  history: Awaited<ReturnType<TrainingLoop['run']>>['history']
+): void {
+  const dir = settings.getPersonaDir(slug);
+  mkdirSync(dir, { recursive: true });
+  const report = buildTrainingRunReport(profile, history);
+  writeFileSync(join(dir, 'training-report.json'), JSON.stringify(report, null, 2), 'utf-8');
+}
+
+export async function cmdCreate(target: string | undefined, options: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string }): Promise<void> {
   intro(chalk.bold.cyan('✦ Neeko — 数字孪生工厂'));
+
+  const nonInteractive = options.yes === true;
 
   // ── Determine mode ────────────────────────────────────────────────────────
   let mode: 'single' | 'fusion';
@@ -104,16 +118,10 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   }
 
   // ── Create persona + soul ─────────────────────────────────────────────────
-  const persona = createPersona(displayName, mode, sourceTargets);
+  const persona = createPersona(displayName, mode, sourceTargets,
+    (s) => existsSync(settings.getPersonaDir(s))
+  );
   const soul = createEmptySoul(displayName, handle ? `@${handle}` : undefined);
-
-  const personaDir = settings.getPersonaDir(persona.slug);
-  if (existsSync(personaDir)) {
-    const overwrite = await confirm({
-      message: `Persona "${persona.slug}" already exists. Overwrite?`,
-    });
-    if (p.isCancel(overwrite) || !overwrite) { outro('Keeping existing persona.'); return; }
-  }
 
   // ── Ingest data ───────────────────────────────────────────────────────────
   const spin = spinner();
@@ -124,7 +132,13 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     openaiApiKey: settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY,
   });
 
-  await store.ensureCollection(persona.memory_collection);
+  let qdrantAvailable = false;
+  try {
+    await store.ensureCollection(persona.memory_collection);
+    qdrantAvailable = true;
+  } catch {
+    p.log.warn('Qdrant 不可达（跳过向量存储）。Soul 提炼和 Persona 文件仍会保存。\n启动 Qdrant：docker run -p 6333:6333 qdrant/qdrant');
+  }
 
   // ── 检查 opencli 可用性 ────────────────────────────────────────────────────
   if (mode === 'single') {
@@ -136,8 +150,12 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
         '安装后确保 Chrome 已登录 X.com，Neeko 将通过浏览器状态免 API 抓取推文。',
         '⚠ 缺少依赖'
       );
-      const proceed = await confirm({ message: '继续？（将跳过推文采集，仅创建空 Persona）' });
-      if (p.isCancel(proceed) || !proceed) { outro('已取消。'); return; }
+      if (!nonInteractive) {
+        const proceed = await confirm({ message: '继续？（将跳过推文采集，仅创建空 Persona）' });
+        if (p.isCancel(proceed) || !proceed) { outro('已取消。'); return; }
+      } else {
+        p.log.warn('opencli 未安装，跳过推文采集，仅创建空 Persona。');
+      }
     } else {
       p.log.info(`opencli ${version} 已就绪，将通过浏览器免 API 抓取推文`);
     }
@@ -187,36 +205,52 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   }
 
   // ── Ask about training ────────────────────────────────────────────────────
-  const runTraining = await confirm({
-    message: `Run cultivation loop now? (${chalk.cyan('~$2-5 estimated cost')})`,
-    initialValue: false,
-  });
+  const requestedRounds = parseInt(options.rounds ?? '0', 10);
+  const profile = normalizeTrainingProfile(options.trainingProfile);
+  let runTraining = requestedRounds > 0 && qdrantAvailable;
 
-  if (!p.isCancel(runTraining) && runTraining) {
-    const maxRounds = await select({
-      message: 'Training rounds',
-      options: [
-        { value: '5', label: '5 rounds (quick, ~$1)' },
-        { value: '10', label: '10 rounds (standard, ~$2-3)' },
-        { value: '20', label: '20 rounds (thorough, ~$5)' },
-      ],
+  if (qdrantAvailable && !nonInteractive && !runTraining) {
+    const ans = await confirm({
+      message: `Run cultivation loop now? (${chalk.cyan('~$2-5 estimated cost')})`,
+      initialValue: false,
     });
+    runTraining = !p.isCancel(ans) && !!ans;
+  }
 
-    if (!p.isCancel(maxRounds)) {
-      spin.start('Running cultivation loop...');
-      const retriever = new MemoryRetriever(store);
-      const loop = new TrainingLoop(currentSoul, persona, store);
-      const result = await loop.run({
-        maxRounds: parseInt(maxRounds as string),
-        onProgress: (progress) => {
-          spin.message(
-            `Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten} nodes, quality ${(progress.avgQualityScore * 100).toFixed(0)}%`
-          );
-        },
+  if (!qdrantAvailable && requestedRounds > 0) {
+    p.log.warn('跳过培养循环：Qdrant 不可达。');
+  }
+
+  if (runTraining) {
+    let maxRounds = requestedRounds || 10;
+
+    if (!nonInteractive && requestedRounds === 0) {
+      const roundsAns = await select({
+        message: 'Training rounds',
+        options: [
+          { value: '5', label: '5 rounds (quick, ~$1)' },
+          { value: '10', label: '10 rounds (standard, ~$2-3)' },
+          { value: '20', label: '20 rounds (thorough, ~$5)' },
+        ],
       });
-      currentSoul = result.soul;
-      spin.stop(`Training complete — ${result.totalRounds} rounds, confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
+      if (!p.isCancel(roundsAns)) maxRounds = parseInt(roundsAns as string);
     }
+
+    spin.start('Running cultivation loop...');
+    const loop = new TrainingLoop(currentSoul, persona, store);
+    const result = await loop.run({
+      maxRounds,
+      profile,
+      onProgress: (progress) => {
+        spin.message(
+          `Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten} nodes, quality ${(progress.avgQualityScore * 100).toFixed(0)}%, ` +
+          `dup ${(progress.observability.duplicationRate * 100).toFixed(0)}%, contra ${(progress.observability.contradictionRate * 100).toFixed(0)}%`
+        );
+      },
+    });
+    currentSoul = result.soul;
+    saveTrainingReport(persona.slug, profile, result.history);
+    spin.stop(`Training complete — ${result.totalRounds} rounds, confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
   }
 
   // ── Save ──────────────────────────────────────────────────────────────────
@@ -230,4 +264,13 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     `  Chat: ${chalk.bold(`nico chat ${persona.slug}`)}\n` +
     `  Export: ${chalk.bold(`nico export ${persona.slug} --to openclaw`)}`
   );
+}
+
+function normalizeTrainingProfile(raw?: string): TrainingProfile {
+  const fallback = String(settings.get('defaultTrainingProfile') ?? 'full').toLowerCase();
+  const value = String(raw ?? fallback).toLowerCase();
+  if (value === 'baseline' || value === 'a1' || value === 'a2' || value === 'a3' || value === 'a4' || value === 'full') {
+    return value;
+  }
+  return 'full';
 }

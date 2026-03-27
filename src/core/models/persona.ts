@@ -40,9 +40,15 @@ export type Persona = z.infer<typeof PersonaSchema>;
 export function createPersona(
   name: string,
   mode: 'single' | 'fusion',
-  sourceTargets: string[]
+  sourceTargets: string[],
+  dirExists: (slug: string) => boolean = () => false
 ): Persona {
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  let slug = base;
+  let counter = 1;
+  while (dirExists(slug)) {
+    slug = `${base}-${counter++}`;
+  }
   const now = new Date().toISOString();
   return {
     id: crypto.randomUUID(),

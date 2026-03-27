@@ -10,24 +10,57 @@ interface Message {
   content: string;
 }
 
-// 示例 persona（实际会从 API 获取）
-const MOCK_PERSONA = {
-  name: 'Elon Musk',
-  slug: 'elonmusk',
-  overall_confidence: 0.82,
-  training_rounds_completed: 8,
-  knowledge_domains: { expert: ['航天', '电动汽车', 'AI', '能源'] },
-};
+interface PersonaInfo {
+  name: string;
+  slug: string;
+  overall_confidence: number;
+  training_rounds_completed: number;
+  knowledge_domains: { expert: string[] };
+}
+
+function getAvatarColor(slug: string): string {
+  const colors = [
+    'oklch(0.88 0.08 0)',
+    'oklch(0.88 0.08 142)',
+    'oklch(0.88 0.08 60)',
+    'oklch(0.88 0.08 270)',
+    'oklch(0.88 0.08 200)',
+    'oklch(0.88 0.08 30)',
+  ];
+  let hash = 0;
+  for (const ch of slug) hash = (hash * 31 + ch.charCodeAt(0)) & 0xffffff;
+  return colors[Math.abs(hash) % colors.length];
+}
 
 export default function ChatPage({ params }: { params: Promise<{ slug: string }> }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [slug, setSlug] = useState('');
+  const [persona, setPersona] = useState<PersonaInfo | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    params.then((p) => setSlug(p.slug));
+    params.then((p) => {
+      setSlug(p.slug);
+      // Load persona info
+      fetch(`/api/personas/${p.slug}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.persona) {
+            const pa = data.persona;
+            const soul = data.soul;
+            setPersona({
+              name: pa.name,
+              slug: pa.slug,
+              overall_confidence: soul?.overall_confidence ?? 0,
+              training_rounds_completed: soul?.training_rounds_completed ?? pa.training_rounds ?? 0,
+              knowledge_domains: { expert: soul?.knowledge_domains?.expert ?? [] },
+            });
+          }
+        })
+        .catch(() => null);
+    });
   }, [params]);
 
   useEffect(() => {
@@ -35,24 +68,30 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
   }, [messages]);
 
   async function sendMessage() {
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || !slug) return;
     const userMsg = input.trim();
     setInput('');
     setMessages((prev) => [...prev, { role: 'user', content: userMsg }]);
     setLoading(true);
 
-    // Mock response — 实际接 /api/chat/[slug]
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `（${MOCK_PERSONA.name} 的 AI 模拟）这是一个示例回复。配置好 API Key 后，Persona 将基于真实的 Soul + Memory 进行回答。`,
-        },
-      ]);
+    try {
+      const res = await fetch(`/api/chat/${slug}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMsg, history: messages }),
+      });
+      const data = await res.json();
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply ?? '[无回复]' }]);
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: 'assistant', content: `[错误] ${String(err)}` }]);
+    } finally {
       setLoading(false);
-    }, 1200);
+    }
   }
+
+  const displayName = persona?.name ?? slug;
+  const initials = displayName.slice(0, 2).toUpperCase();
+  const avatarColor = getAvatarColor(slug);
 
   return (
     <div className="flex h-full">
@@ -63,13 +102,18 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
           <Link href="/" className="text-[oklch(0.55_0_0)] hover:text-[oklch(0.2_0_0)] transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </Link>
-          <div className="w-8 h-8 rounded-full bg-[oklch(0.88_0.08_0)] flex items-center justify-center text-[13px] font-semibold text-[oklch(0.35_0_0)]">
-            {MOCK_PERSONA.name.slice(0, 2).toUpperCase()}
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-semibold text-[oklch(0.35_0_0)]"
+            style={{ background: avatarColor }}
+          >
+            {initials}
           </div>
           <div>
-            <p className="font-semibold text-[14px]">{MOCK_PERSONA.name}</p>
+            <p className="font-semibold text-[14px]">{displayName}</p>
             <p className="text-[12px] text-[oklch(0.6_0_0)]">
-              Soul v{MOCK_PERSONA.training_rounds_completed} · 置信度 {Math.round(MOCK_PERSONA.overall_confidence * 100)}%
+              {persona
+                ? `Soul v${persona.training_rounds_completed} · 置信度 ${Math.round(persona.overall_confidence * 100)}%`
+                : '加载中...'}
             </p>
           </div>
         </div>
@@ -78,11 +122,14 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center py-20">
-              <div className="w-16 h-16 rounded-full bg-[oklch(0.88_0.08_0)] flex items-center justify-center text-2xl font-semibold text-[oklch(0.35_0_0)] mb-4">
-                {MOCK_PERSONA.name.slice(0, 2).toUpperCase()}
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-semibold text-[oklch(0.35_0_0)] mb-4"
+                style={{ background: avatarColor }}
+              >
+                {initials}
               </div>
               <p className="text-[16px] font-semibold text-[oklch(0.25_0_0)]">
-                开始与 {MOCK_PERSONA.name} 对话
+                开始与 {displayName} 对话
               </p>
               <p className="text-[13px] text-[oklch(0.6_0_0)] mt-2 max-w-[320px]">
                 这是基于公开数据构建的 AI 模拟，非真实人物。提问任何你想了解的话题。
@@ -107,8 +154,11 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
               className={cn('flex gap-3', msg.role === 'user' ? 'justify-end' : 'justify-start')}
             >
               {msg.role === 'assistant' && (
-                <div className="w-7 h-7 rounded-full bg-[oklch(0.88_0.08_0)] flex items-center justify-center text-[11px] font-semibold text-[oklch(0.35_0_0)] flex-shrink-0 mt-0.5">
-                  {MOCK_PERSONA.name.slice(0, 2).toUpperCase()}
+                <div
+                  className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold text-[oklch(0.35_0_0)] flex-shrink-0 mt-0.5"
+                  style={{ background: avatarColor }}
+                >
+                  {initials}
                 </div>
               )}
               <div
@@ -126,8 +176,11 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
 
           {loading && (
             <div className="flex gap-3">
-              <div className="w-7 h-7 rounded-full bg-[oklch(0.88_0.08_0)] flex items-center justify-center text-[11px] font-semibold text-[oklch(0.35_0_0)] flex-shrink-0 mt-0.5">
-                {MOCK_PERSONA.name.slice(0, 2).toUpperCase()}
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold text-[oklch(0.35_0_0)] flex-shrink-0 mt-0.5"
+                style={{ background: avatarColor }}
+              >
+                {initials}
               </div>
               <div className="bg-white border border-[oklch(0.91_0_0)] px-4 py-3 rounded-2xl rounded-bl-sm">
                 <Loader2 className="w-4 h-4 animate-spin text-[oklch(0.6_0_0)]" />
@@ -146,7 +199,7 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
               }}
-              placeholder={`向 ${MOCK_PERSONA.name} 提问...`}
+              placeholder={`向 ${displayName} 提问...`}
               rows={1}
               className="flex-1 bg-transparent outline-none resize-none text-[14px] placeholder:text-[oklch(0.65_0_0)] leading-relaxed"
               style={{ maxHeight: '120px' }}
@@ -175,37 +228,39 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
             <div>
               <div className="flex justify-between text-[12px] mb-1">
                 <span className="text-[oklch(0.5_0_0)]">整体置信度</span>
-                <span className="font-medium">{Math.round(MOCK_PERSONA.overall_confidence * 100)}%</span>
+                <span className="font-medium">{persona ? `${Math.round(persona.overall_confidence * 100)}%` : '—'}</span>
               </div>
               <div className="h-1.5 bg-[oklch(0.93_0_0)] rounded-full overflow-hidden">
                 <div
                   className="h-full bg-[oklch(0.72_0.18_142)] rounded-full transition-all"
-                  style={{ width: `${MOCK_PERSONA.overall_confidence * 100}%` }}
+                  style={{ width: persona ? `${persona.overall_confidence * 100}%` : '0%' }}
                 />
               </div>
             </div>
             <div className="flex justify-between text-[12.5px]">
               <span className="text-[oklch(0.55_0_0)]">训练轮次</span>
-              <span className="font-medium">{MOCK_PERSONA.training_rounds_completed} 轮</span>
+              <span className="font-medium">{persona ? `${persona.training_rounds_completed} 轮` : '—'}</span>
             </div>
           </div>
         </div>
 
-        <div className="border-t border-[oklch(0.93_0_0)] pt-4">
-          <p className="text-[12px] font-semibold text-[oklch(0.5_0_0)] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-            <Layers className="w-3.5 h-3.5" /> 知识域
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {MOCK_PERSONA.knowledge_domains.expert.map((domain) => (
-              <span
-                key={domain}
-                className="px-2 py-0.5 bg-[oklch(0.94_0.05_142)] text-[oklch(0.3_0.12_142)] rounded-full text-[11.5px] font-medium"
-              >
-                {domain}
-              </span>
-            ))}
+        {persona && persona.knowledge_domains.expert.length > 0 && (
+          <div className="border-t border-[oklch(0.93_0_0)] pt-4">
+            <p className="text-[12px] font-semibold text-[oklch(0.5_0_0)] uppercase tracking-wider mb-3 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5" /> 知识域
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {persona.knowledge_domains.expert.map((domain) => (
+                <span
+                  key={domain}
+                  className="px-2 py-0.5 bg-[oklch(0.94_0.05_142)] text-[oklch(0.3_0.12_142)] rounded-full text-[11.5px] font-medium"
+                >
+                  {domain}
+                </span>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

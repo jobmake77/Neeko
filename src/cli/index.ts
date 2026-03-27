@@ -2,16 +2,20 @@ import { Command } from 'commander';
 import { settings } from '../config/settings.js';
 import { cmdCreate } from './commands/create.js';
 import { cmdChat } from './commands/chat.js';
+import { cmdChatOnce } from './commands/chat-once.js';
 import { cmdList } from './commands/list.js';
 import { cmdExport } from './commands/export.js';
 import { cmdConfig } from './commands/config.js';
+import { cmdExperiment } from './commands/experiment.js';
+import { cmdTrain } from './commands/train.js';
 
 // Apply saved API keys to environment on startup
-const anthropicKey = settings.get('anthropicApiKey');
-if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
-
-const openaiKey = settings.get('openaiApiKey');
-if (openaiKey) process.env.OPENAI_API_KEY = openaiKey;
+const cfg = settings.getAll();
+if (cfg.anthropicApiKey) process.env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
+if (cfg.openaiApiKey)    process.env.OPENAI_API_KEY    = cfg.openaiApiKey;
+if (cfg.kimiApiKey)      process.env.KIMI_API_KEY       = cfg.kimiApiKey;
+if (cfg.geminiApiKey)    process.env.GOOGLE_GENERATIVE_AI_API_KEY = cfg.geminiApiKey;
+if (cfg.deepseekApiKey)  process.env.DEEPSEEK_API_KEY  = cfg.deepseekApiKey;
 
 const program = new Command();
 
@@ -25,7 +29,10 @@ program
   .command('create [target]')
   .description('Create a new persona agent (e.g. nico create @elonmusk)')
   .option('--skill <skill>', 'Create a composite agent by skill (Path B)')
-  .action(async (target?: string, options?: { skill?: string }) => {
+  .option('--yes', 'Skip all confirmation prompts (for non-interactive / Web UI use)')
+  .option('--rounds <n>', 'Training rounds to run automatically (0 = skip training)', '0')
+  .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
+  .action(async (target?: string, options?: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string }) => {
     await cmdCreate(target, options ?? {});
   });
 
@@ -35,6 +42,16 @@ program
   .description('Chat with a persona agent')
   .action(async (slug: string) => {
     await cmdChat(slug);
+  });
+
+// ─── nico chat-once (for Web UI) ─────────────────────────────────────────────
+program
+  .command('chat-once <slug>')
+  .description('Single-shot chat reply (used by Web UI)')
+  .requiredOption('--message <text>', 'User message')
+  .option('--history <json>', 'Conversation history as JSON array', '[]')
+  .action(async (slug: string, options: { message: string; history: string }) => {
+    await cmdChatOnce(slug, options);
   });
 
 // ─── nico list ───────────────────────────────────────────────────────────────
@@ -61,15 +78,57 @@ program
   .description('Configure API keys and settings')
   .option('--api-key <key>', 'Set Anthropic API key')
   .option('--openai-key <key>', 'Set OpenAI API key')
+  .option('--deepseek-key <key>', 'Set DeepSeek API key')
   .option('--qdrant-url <url>', 'Set Qdrant URL')
+  .option('--training-profile <profile>', 'Set default training profile: baseline | a1 | a2 | a3 | a4 | full')
   .option('--show', 'Show current configuration')
   .action(async (options: {
     apiKey?: string;
     openaiKey?: string;
+    deepseekKey?: string;
     qdrantUrl?: string;
+    trainingProfile?: string;
     show?: boolean;
   }) => {
     await cmdConfig(options);
+  });
+
+// ─── nico experiment ────────────────────────────────────────────────────────
+program
+  .command('experiment <slug>')
+  .description('Run A/B training profiles (baseline, a1-a4) for quality comparison')
+  .option('--rounds <n>', 'Rounds per profile', '10')
+  .option('--output-dir <dir>', 'Write JSON/CSV reports to this directory')
+  .option('--gate', 'Enable quality gate: compare full vs baseline and fail on regression')
+  .option('--max-quality-drop <n>', 'Allowed quality drop for full vs baseline', '0.02')
+  .option('--max-contradiction-rise <n>', 'Allowed contradiction rate rise for full vs baseline', '0.03')
+  .option('--max-duplication-rise <n>', 'Allowed duplication rate rise for full vs baseline', '0.05')
+  .action(async (slug: string, options: {
+    rounds?: string;
+    outputDir?: string;
+    gate?: boolean;
+    maxQualityDrop?: string;
+    maxContradictionRise?: string;
+    maxDuplicationRise?: string;
+  }) => {
+    await cmdExperiment(slug, options);
+  });
+
+// ─── nico train ─────────────────────────────────────────────────────────────
+program
+  .command('train <slug>')
+  .description('Continue cultivation for an existing persona')
+  .option('--mode <mode>', 'Training mode: quick | full')
+  .option('--rounds <n>', 'Training rounds (overrides mode)')
+  .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
+  .option('--retries <n>', 'Retry count for transient model format errors', '2')
+  .action(async (slug: string, options: {
+    mode?: string;
+    rounds?: string;
+    trainingProfile?: string;
+    retries?: string;
+  }) => {
+    await cmdTrain(slug, options);
   });
 
 program.parseAsync(process.argv).catch((err: Error) => {

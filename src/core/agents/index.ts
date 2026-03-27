@@ -1,11 +1,16 @@
 import { generateText, generateObject } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
 import { z } from 'zod';
 import { Soul } from '../models/soul.js';
-import { MemoryNode } from '../models/memory.js';
+import { resolveModel } from '../../config/model.js';
 import { SoulRenderer } from '../soul/renderer.js';
 import { MemoryRetriever } from '../memory/retriever.js';
-import { MemoryStore } from '../memory/store.js';
+import { CALIBRATION_SET, EVALUATION_RUBRIC } from '../training/evaluation.js';
+import {
+  QuestionStrategy,
+  RoundObservability,
+  TargetDimension,
+  TrainingQuestion,
+} from '../training/types.js';
 
 // ─── Persona Agent ────────────────────────────────────────────────────────────
 // Plays the role of the target person using Soul+Memory RAG
@@ -13,7 +18,7 @@ import { MemoryStore } from '../memory/store.js';
 export class PersonaAgent {
   private renderer = new SoulRenderer();
   // Use cheaper model for persona conversations
-  private model = anthropic('claude-haiku-4-5-20251001');
+  private model = resolveModel();
 
   constructor(
     private readonly soul: Soul,
@@ -56,51 +61,70 @@ export class PersonaAgent {
 const QuestionSetSchema = z.object({
   questions: z.array(z.object({
     question: z.string(),
-    strategy: z.enum(['blind_spot', 'stress_test', 'consistency', 'scenario']),
+    strategy: z.enum(['blind_spot', 'stress_test', 'consistency', 'scenario']) as z.ZodType<QuestionStrategy>,
     target_dimension: z.enum([
       'language_style', 'values', 'thinking_patterns',
       'behavioral_traits', 'knowledge_domains', 'general',
-    ]),
+    ]) as z.ZodType<TargetDimension>,
     expected_challenge_level: z.enum(['easy', 'medium', 'hard']),
   })),
 });
 
 export class TrainerAgent {
-  private model = anthropic('claude-haiku-4-5-20251001');
+  private model = resolveModel();
 
   async generateQuestions(
     soul: Soul,
     round: number,
-    previousQuestions: string[] = []
-  ): Promise<Array<{
-    question: string;
-    strategy: string;
-    target_dimension: string;
-    expected_challenge_level: string;
-  }>> {
+    previousQuestions: string[] = [],
+    options: {
+      strategyTargets?: Array<{ strategy: QuestionStrategy; count: number }>;
+      lowConfidenceDimensions?: TargetDimension[];
+      previousRound?: RoundObservability;
+      questionsPerRound?: number;
+    } = {}
+  ): Promise<TrainingQuestion[]> {
+    const strategyTargets = options.strategyTargets ?? [
+      { strategy: 'consistency', count: 1 },
+      { strategy: 'scenario', count: 2 },
+      { strategy: 'stress_test', count: 1 },
+      { strategy: 'blind_spot', count: 1 },
+    ];
+    const lowConfidence = options.lowConfidenceDimensions ?? this.lowConfidenceDimensions(soul);
+    const questionCount = options.questionsPerRound ?? 5;
+    const constraints = strategyTargets
+      .map((s) => `${s.strategy}: ${s.count}`)
+      .join(', ');
+
     const { object } = await generateObject({
       model: this.model,
       schema: QuestionSetSchema,
       prompt: `You are designing training questions to evaluate and improve a Persona Agent simulating "${soul.target_name}".
 
 Round: ${round}
-Dimensions with low confidence: ${this.lowConfidenceDimensions(soul).join(', ') || 'none'}
+Dimensions with low confidence: ${lowConfidence.join(', ') || 'none'}
 Previously used questions (avoid repeating): ${previousQuestions.slice(-10).join(' | ') || 'none'}
+Previous round contradiction rate: ${options.previousRound?.contradictionRate.toFixed(2) ?? 'n/a'}
+Previous round low-confidence coverage: ${options.previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
 
-Generate 5 diverse questions using these 4 strategies:
+Use curriculum constraints:
+- Required strategy mix: ${constraints}
+- Total questions: ${questionCount}
+
+Question strategy definitions:
 1. **blind_spot**: Questions about topics they might avoid or lack expertise in (expose gaps)
 2. **stress_test**: Challenging scenarios that test consistency under pressure
 3. **consistency**: Questions that should have predictable answers based on known beliefs
 4. **scenario**: Practical problem-solving in their domain of expertise
 
-Return exactly 5 questions spanning different strategies and target dimensions.`,
+Return exactly ${questionCount} questions spanning different target dimensions, with strict strategy counts.`,
     });
 
     return object.questions;
   }
 
-  private lowConfidenceDimensions(soul: Soul): string[] {
-    const dims: string[] = [];
+  private lowConfidenceDimensions(soul: Soul): TargetDimension[] {
+    const dims: TargetDimension[] = [];
     if (soul.language_style.vocabulary_preferences.length < 5) dims.push('language_style');
     if (soul.values.core_beliefs.length < 3) dims.push('values');
     if (soul.thinking_patterns.reasoning_style.length < 2) dims.push('thinking_patterns');
@@ -132,19 +156,79 @@ export type Evaluation = z.infer<typeof EvaluationSchema>;
 
 export class EvaluatorAgent {
   // High quality model for evaluation — accuracy over cost
-  private model = anthropic('claude-sonnet-4-6');
+  private model = resolveModel();
 
   async evaluate(
     question: string,
     response: string,
     personaName: string,
-    strategy: string
+    strategy: string,
+    options: {
+      calibrationEnabled?: boolean;
+      dualReview?: boolean;
+      disagreementThreshold?: number;
+    } = {}
   ): Promise<Evaluation> {
+    const primary = await this.runSingleEvaluation(question, response, personaName, strategy, {
+      calibrationEnabled: options.calibrationEnabled ?? true,
+      reviewerRole: 'primary',
+    });
+
+    const dualReview = options.dualReview ?? false;
+    if (!dualReview) return primary;
+
+    const secondary = await this.runSingleEvaluation(question, response, personaName, strategy, {
+      calibrationEnabled: options.calibrationEnabled ?? true,
+      reviewerRole: 'secondary',
+    });
+
+    const threshold = options.disagreementThreshold ?? 0.2;
+    const disagree =
+      primary.verdict !== secondary.verdict ||
+      Math.abs(primary.overall_score - secondary.overall_score) >= threshold;
+
+    if (!disagree) return primary;
+
+    return {
+      consistency_score: (primary.consistency_score + secondary.consistency_score) / 2,
+      authenticity_score: (primary.authenticity_score + secondary.authenticity_score) / 2,
+      depth_score: (primary.depth_score + secondary.depth_score) / 2,
+      overall_score: (primary.overall_score + secondary.overall_score) / 2,
+      verdict: primary.overall_score >= secondary.overall_score ? primary.verdict : secondary.verdict,
+      insights: Array.from(new Set([...primary.insights, ...secondary.insights])).slice(0, 8),
+      new_memory_candidates: primary.new_memory_candidates.length >= secondary.new_memory_candidates.length
+        ? primary.new_memory_candidates
+        : secondary.new_memory_candidates,
+    };
+  }
+
+  private async runSingleEvaluation(
+    question: string,
+    response: string,
+    personaName: string,
+    strategy: string,
+    options: {
+      calibrationEnabled: boolean;
+      reviewerRole: 'primary' | 'secondary';
+    }
+  ): Promise<Evaluation> {
+    const calibrationContext = options.calibrationEnabled
+      ? CALIBRATION_SET.map((c, idx) =>
+        `Example ${idx + 1}\nQ: ${c.question}\nA: ${c.response}\nExpected: consistency=${c.expected.consistency}, authenticity=${c.expected.authenticity}, depth=${c.expected.depth}, verdict=${c.expected.verdict}`
+      ).join('\n\n')
+      : 'Calibration examples disabled.';
+
     const { object } = await generateObject({
       model: this.model,
       schema: EvaluationSchema,
       prompt: `You are an independent quality evaluator for a persona simulation of "${personaName}".
 You do NOT have access to their internal Soul configuration — evaluate purely based on response quality.
+Reviewer role: ${options.reviewerRole}
+
+${EVALUATION_RUBRIC}
+
+Calibration examples:
+${calibrationContext}
 
 Question asked (strategy: ${strategy}):
 "${question}"
@@ -189,7 +273,7 @@ const DirectorDecisionSchema = z.object({
 export type DirectorDecision = z.infer<typeof DirectorDecisionSchema>;
 
 export class DirectorAgent {
-  private model = anthropic('claude-sonnet-4-6');
+  private model = resolveModel();
 
   async review(
     soul: Soul,
@@ -200,6 +284,7 @@ export class DirectorAgent {
       nodes_reinforced: number;
       avg_quality_score: number;
       evaluations: Evaluation[];
+      observability?: RoundObservability;
     }
   ): Promise<DirectorDecision> {
     const { object } = await generateObject({
@@ -226,6 +311,14 @@ Verdict distribution this round:
 - Reinforce: ${roundSummary.evaluations.filter((e) => e.verdict === 'reinforce').length}
 - Discard: ${roundSummary.evaluations.filter((e) => e.verdict === 'discard').length}
 - Contradictions: ${roundSummary.evaluations.filter((e) => e.verdict === 'flag_contradiction').length}
+${roundSummary.observability ? `
+Observability signals:
+- Duplication rate: ${(roundSummary.observability.duplicationRate * 100).toFixed(1)}%
+- Contradiction rate: ${(roundSummary.observability.contradictionRate * 100).toFixed(1)}%
+- Low-confidence coverage: ${(roundSummary.observability.lowConfidenceCoverage * 100).toFixed(1)}%
+- New high-value memories: ${roundSummary.observability.newHighValueMemories}
+- Quarantined memories: ${roundSummary.observability.quarantinedMemories}
+` : ''}
 
 Decide whether to continue training, suggest soul updates, and estimate coverage.
 Coverage score reflects how well we've explored ${soul.target_name}'s worldview (0-1).`,

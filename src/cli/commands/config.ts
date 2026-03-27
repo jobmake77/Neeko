@@ -1,12 +1,15 @@
 import * as p from '@clack/prompts';
-import { intro, outro, text, password, confirm } from '@clack/prompts';
+import { intro, outro, text, password, select } from '@clack/prompts';
 import chalk from 'chalk';
 import { settings } from '../../config/settings.js';
+import { TrainingProfile } from '../../core/training/types.js';
 
 export async function cmdConfig(options: {
   apiKey?: string;
   openaiKey?: string;
+  deepseekKey?: string;
   qdrantUrl?: string;
+  trainingProfile?: string;
   show?: boolean;
 }): Promise<void> {
   if (options.show) {
@@ -34,13 +37,23 @@ export async function cmdConfig(options: {
     process.env.OPENAI_API_KEY = options.openaiKey;
     console.log(chalk.green('✓ OpenAI API key saved'));
   }
+  if (options.deepseekKey) {
+    settings.set('deepseekApiKey', options.deepseekKey);
+    process.env.DEEPSEEK_API_KEY = options.deepseekKey;
+    console.log(chalk.green('✓ DeepSeek API key saved'));
+  }
   if (options.qdrantUrl) {
     settings.set('qdrantUrl', options.qdrantUrl);
     console.log(chalk.green(`✓ Qdrant URL saved: ${options.qdrantUrl}`));
   }
+  if (options.trainingProfile) {
+    const profile = normalizeTrainingProfile(options.trainingProfile);
+    settings.set('defaultTrainingProfile', profile);
+    console.log(chalk.green(`✓ Default training profile saved: ${profile}`));
+  }
 
   // If no flags provided, run interactive config
-  if (!options.apiKey && !options.openaiKey && !options.qdrantUrl && !options.show) {
+  if (!options.apiKey && !options.openaiKey && !options.deepseekKey && !options.qdrantUrl && !options.trainingProfile && !options.show) {
     intro(chalk.bold.cyan('✦ Nico Configuration'));
 
     const anthropicKey = await password({
@@ -57,6 +70,13 @@ export async function cmdConfig(options: {
       settings.set('openaiApiKey', openaiKey as string);
     }
 
+    const deepseekKey = await password({
+      message: 'DeepSeek API Key (deepseek-chat)',
+    });
+    if (!p.isCancel(deepseekKey) && deepseekKey) {
+      settings.set('deepseekApiKey', deepseekKey as string);
+    }
+
     const qdrant = await text({
       message: 'Qdrant URL',
       defaultValue: 'http://localhost:6333',
@@ -66,6 +86,30 @@ export async function cmdConfig(options: {
       settings.set('qdrantUrl', qdrant as string);
     }
 
+    const trainingProfile = await select({
+      message: 'Default training profile',
+      options: [
+        { value: 'full', label: 'full (recommended)' },
+        { value: 'a4', label: 'a4' },
+        { value: 'a3', label: 'a3' },
+        { value: 'a2', label: 'a2' },
+        { value: 'a1', label: 'a1' },
+        { value: 'baseline', label: 'baseline' },
+      ],
+      initialValue: normalizeTrainingProfile(String(settings.get('defaultTrainingProfile') ?? 'full')),
+    });
+    if (!p.isCancel(trainingProfile)) {
+      settings.set('defaultTrainingProfile', normalizeTrainingProfile(trainingProfile as string));
+    }
+
     outro(chalk.green('✓ Configuration saved'));
   }
+}
+
+function normalizeTrainingProfile(raw: string): TrainingProfile {
+  const value = raw.toLowerCase();
+  if (value === 'baseline' || value === 'a1' || value === 'a2' || value === 'a3' || value === 'a4' || value === 'full') {
+    return value;
+  }
+  return 'full';
 }

@@ -1,11 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { AtSign, Lightbulb, ArrowRight, ArrowLeft, Loader2, Check } from 'lucide-react';
+import { AtSign, Lightbulb, ArrowRight, ArrowLeft, Check, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type Mode = 'single' | 'fusion' | null;
+type BuildStatus = 'idle' | 'running' | 'success' | 'error';
+type CultivationMode = 'quick' | 'full';
 
 export default function CreatePage() {
   const router = useRouter();
@@ -13,17 +15,122 @@ export default function CreatePage() {
   const [mode, setMode] = useState<Mode>(null);
   const [handle, setHandle] = useState('');
   const [skill, setSkill] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [cultivationMode, setCultivationMode] = useState<CultivationMode>('quick');
+
+  // Build state
+  const [buildStatus, setBuildStatus] = useState<BuildStatus>('idle');
+  const [logs, setLogs] = useState<string[]>([]);
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
 
   function handleCreate() {
-    setLoading(true);
-    // 实际会调用后端 API；这里先 mock 跳回首页
-    setTimeout(() => {
-      setLoading(false);
-      router.push('/');
-    }, 2000);
+    setBuildStatus('running');
+    setLogs([]);
+
+    const params = new URLSearchParams({ mode: mode! });
+    if (mode === 'single') params.set('handle', handle.replace(/^@/, ''));
+    else params.set('skill', skill);
+    params.set('rounds', cultivationMode === 'quick' ? '3' : '10');
+    params.set('trainingProfile', 'full');
+
+    const es = new EventSource(`/api/create?${params}`);
+
+    es.onmessage = (e) => {
+      const { line } = JSON.parse(e.data);
+      setLogs((prev) => [...prev, line]);
+    };
+
+    es.addEventListener('done', (e) => {
+      const { success } = JSON.parse((e as MessageEvent).data);
+      setBuildStatus(success ? 'success' : 'error');
+      es.close();
+    });
+
+    es.onerror = () => {
+      setLogs((prev) => [...prev, '连接中断，请检查服务是否正常运行。']);
+      setBuildStatus('error');
+      es.close();
+    };
   }
 
+  // ── Building view ─────────────────────────────────────────────────────────
+  if (buildStatus !== 'idle') {
+    return (
+      <div className="p-8 max-w-[700px]">
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-[oklch(0.15_0_0)]">
+            {buildStatus === 'running' && '构建中…'}
+            {buildStatus === 'success' && 'Persona 已就绪'}
+            {buildStatus === 'error' && '构建失败'}
+          </h1>
+          <p className="text-[14px] text-[oklch(0.55_0_0)] mt-1">
+            {mode === 'single' ? `@${handle}` : skill}
+          </p>
+        </div>
+
+        {/* Status badge */}
+        <div className={cn(
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl mb-5 text-[13.5px] font-medium w-fit',
+          buildStatus === 'running' && 'bg-[oklch(0.95_0.02_240)] text-[oklch(0.35_0.1_240)]',
+          buildStatus === 'success' && 'bg-[oklch(0.94_0.06_142)] text-[oklch(0.3_0.15_142)]',
+          buildStatus === 'error'   && 'bg-[oklch(0.96_0.04_0)] text-[oklch(0.45_0.15_0)]',
+        )}>
+          {buildStatus === 'running' && <><Loader2 className="w-4 h-4 animate-spin" />正在执行流程…</>}
+          {buildStatus === 'success' && <><CheckCircle2 className="w-4 h-4" />全部完成</>}
+          {buildStatus === 'error'   && <><XCircle className="w-4 h-4" />构建出错</>}
+        </div>
+
+        {/* Log terminal */}
+        <div className="bg-[oklch(0.1_0_0)] rounded-2xl p-4 font-mono text-[12.5px] leading-relaxed h-[380px] overflow-y-auto space-y-0.5">
+          {logs.length === 0 && (
+            <span className="text-[oklch(0.5_0_0)]">等待输出…</span>
+          )}
+          {logs.map((line, i) => (
+            <div key={i} className={cn(
+              'text-[oklch(0.82_0_0)]',
+              line.startsWith('❌') && 'text-[oklch(0.65_0.15_0)]',
+              line.startsWith('✓') && 'text-[oklch(0.72_0.18_142)]',
+              line.startsWith('▶') && 'text-[oklch(0.7_0.1_240)]',
+            )}>
+              {line}
+            </div>
+          ))}
+          <div ref={logEndRef} />
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-3 mt-5">
+          {buildStatus === 'success' && (
+            <button
+              onClick={() => router.push('/')}
+              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[oklch(0.72_0.18_142)] text-white text-[13.5px] font-medium hover:bg-[oklch(0.62_0.18_142)] transition-colors"
+            >
+              <CheckCircle2 className="w-4 h-4" /> 查看 Persona
+            </button>
+          )}
+          {buildStatus === 'error' && (
+            <button
+              onClick={() => { setBuildStatus('idle'); setLogs([]); setStep(3); }}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-[oklch(0.88_0_0)] text-[13.5px] text-[oklch(0.4_0_0)] hover:bg-[oklch(0.97_0_0)] transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4" /> 返回重试
+            </button>
+          )}
+          <button
+            onClick={() => router.push('/')}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-[oklch(0.88_0_0)] text-[13.5px] text-[oklch(0.4_0_0)] hover:bg-[oklch(0.97_0_0)] transition-colors"
+          >
+            回首页
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Wizard view ───────────────────────────────────────────────────────────
   return (
     <div className="p-8 max-w-[700px]">
       {/* Header */}
@@ -38,16 +145,14 @@ export default function CreatePage() {
       <div className="flex items-center gap-2 mb-8">
         {[1, 2, 3].map((s) => (
           <div key={s} className="flex items-center gap-2">
-            <div
-              className={cn(
-                'w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-semibold transition-colors',
-                step > s
-                  ? 'bg-[oklch(0.72_0.18_142)] text-white'
-                  : step === s
-                  ? 'bg-[oklch(0.15_0_0)] text-white'
-                  : 'bg-[oklch(0.92_0_0)] text-[oklch(0.55_0_0)]'
-              )}
-            >
+            <div className={cn(
+              'w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-semibold transition-colors',
+              step > s
+                ? 'bg-[oklch(0.72_0.18_142)] text-white'
+                : step === s
+                ? 'bg-[oklch(0.15_0_0)] text-white'
+                : 'bg-[oklch(0.92_0_0)] text-[oklch(0.55_0_0)]'
+            )}>
               {step > s ? <Check className="w-3.5 h-3.5" /> : s}
             </div>
             <span className={cn(
@@ -61,7 +166,7 @@ export default function CreatePage() {
         ))}
       </div>
 
-      {/* Step 1: 选择模式 */}
+      {/* Step 1 */}
       {step === 1 && (
         <div className="space-y-4">
           <p className="text-[14px] text-[oklch(0.4_0_0)] font-medium mb-4">选择创建方式</p>
@@ -118,7 +223,7 @@ export default function CreatePage() {
         </div>
       )}
 
-      {/* Step 2: 配置来源 */}
+      {/* Step 2 */}
       {step === 2 && (
         <div className="space-y-5">
           {mode === 'single' ? (
@@ -136,8 +241,7 @@ export default function CreatePage() {
                 />
               </div>
               <p className="text-[12px] text-[oklch(0.65_0_0)] mt-2">
-                通过 <code className="bg-[oklch(0.93_0_0)] px-1 rounded">opencli</code> 复用 Chrome 登录状态抓取推文，无需 API Key。
-                请确保 Chrome 已登录 X.com。
+                通过 <code className="bg-[oklch(0.93_0_0)] px-1 rounded">opencli</code> 复用 Chrome 登录状态抓取推文，无需 API Key。请确保 Chrome 已登录 X.com。
               </p>
             </div>
           ) : (
@@ -175,7 +279,7 @@ export default function CreatePage() {
         </div>
       )}
 
-      {/* Step 3: 确认并开始 */}
+      {/* Step 3 */}
       {step === 3 && (
         <div className="space-y-5">
           <div className="bg-white rounded-2xl border border-[oklch(0.91_0_0)] p-5 space-y-3">
@@ -191,9 +295,42 @@ export default function CreatePage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-[oklch(0.6_0_0)]">预计花费</span>
-                <span className="font-medium text-[oklch(0.4_0.1_142)]">~$2–5</span>
+                <span className="font-medium text-[oklch(0.4_0.1_142)]">
+                  {cultivationMode === 'quick' ? '~$0.5–1.5' : '~$2–5'}
+                </span>
               </div>
             </div>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-[oklch(0.91_0_0)] p-5">
+            <p className="text-[13px] font-medium text-[oklch(0.4_0_0)] mb-3">培养模式</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCultivationMode('quick')}
+                className={cn(
+                  'px-4 py-2 rounded-lg text-[13px] border transition-colors',
+                  cultivationMode === 'quick'
+                    ? 'bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)] border-[oklch(0.85_0.03_142)]'
+                    : 'bg-white border-[oklch(0.9_0_0)] text-[oklch(0.45_0_0)] hover:bg-[oklch(0.97_0_0)]'
+                )}
+              >
+                快速培养（3 轮）
+              </button>
+              <button
+                onClick={() => setCultivationMode('full')}
+                className={cn(
+                  'px-4 py-2 rounded-lg text-[13px] border transition-colors',
+                  cultivationMode === 'full'
+                    ? 'bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)] border-[oklch(0.85_0.03_142)]'
+                    : 'bg-white border-[oklch(0.9_0_0)] text-[oklch(0.45_0_0)] hover:bg-[oklch(0.97_0_0)]'
+                )}
+              >
+                全量培养（10 轮）
+              </button>
+            </div>
+            <p className="text-[12px] text-[oklch(0.58_0_0)] mt-2">
+              快速培养完成后，可在培养中心继续培养。
+            </p>
           </div>
 
           <div className="bg-[oklch(0.97_0.02_60)] rounded-xl p-4 text-[13px] text-[oklch(0.45_0.08_60)]">
@@ -209,14 +346,9 @@ export default function CreatePage() {
             </button>
             <button
               onClick={handleCreate}
-              disabled={loading}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[oklch(0.72_0.18_142)] text-white text-[13.5px] font-medium hover:bg-[oklch(0.62_0.18_142)] transition-colors disabled:opacity-70"
+              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[oklch(0.72_0.18_142)] text-white text-[13.5px] font-medium hover:bg-[oklch(0.62_0.18_142)] transition-colors"
             >
-              {loading ? (
-                <><Loader2 className="w-4 h-4 animate-spin" /> 构建中...</>
-              ) : (
-                <>开始构建 <ArrowRight className="w-4 h-4" /></>
-              )}
+              开始构建 <ArrowRight className="w-4 h-4" />
             </button>
           </div>
         </div>

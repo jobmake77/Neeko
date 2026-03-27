@@ -167,46 +167,50 @@ score = confidence
 
 #### PersonaAgent
 
-- 模型：`claude-haiku-4-5-20251001`（成本优先）
+- 模型：按 `activeProvider` 动态解析（Claude/OpenAI/Kimi/Gemini/DeepSeek）
 - 每次对话触发 RAG 检索（top-8 相关记忆节点）
 - 将记忆上下文拼入 System Prompt
 
 #### TrainerAgent
 
-- 模型：`claude-haiku-4-5-20251001`
-- 每轮生成 5 个问题，覆盖 4 种策略：
+- 模型：按 `activeProvider` 动态解析
+- 每轮基于 `TrainingPolicy` 生成问题，覆盖 4 种策略：
   - `blind_spot`：探测知识盲区
   - `stress_test`：压力测试一致性
   - `consistency`：验证已知立场
   - `scenario`：专业情境扩展
+- 默认课程顺序：`consistency -> scenario -> stress_test -> blind_spot`
 
 #### EvaluatorAgent
 
-- 模型：`claude-sonnet-4-6`（精度优先）
+- 模型：按 `activeProvider` 动态解析
 - **不接触 Soul 内容**，纯从用户视角评分
 - 输出四个分数：consistency / authenticity / depth / overall
 - 裁定：`write | reinforce | discard | flag_contradiction`
+- 支持 `EvaluationRubric + CalibrationSet` 标尺校准
+- 支持双评审（仅在评分分歧超过阈值时触发融合）
 
 #### DirectorAgent
 
-- 模型：`claude-sonnet-4-6`
+- 模型：按 `activeProvider` 动态解析
 - 每轮结束后综合评估
 - 决定是否继续训练
-- 输出 coverage_score 和 soul_updates 建议
+- 输出 coverage_score、soul_updates 与可观测指标摘要
 
 ---
 
 ### 培养循环 — `src/core/training/`
 
-**状态机：**
+**状态机（v2）：**
 
 ```
 IDLE
-  → GENERATING_QUESTIONS（Trainer 生成问题）
+  → GENERATING_QUESTIONS（TrainingPolicy + Trainer 课程化出题）
   → RUNNING_CONVERSATION（Persona 回答）
-  → EVALUATING（Evaluator 打分）
-  → UPDATING_MEMORY（写入/强化/丢弃）
+  → EVALUATING（Evaluator 标尺校准 + 可选双评审）
+  → UPDATING_MEMORY（MemoryGovernance：写入/强化/丢弃/冲突隔离）
   → DIRECTOR_REVIEW（Director 综合评估）
+  → OBSERVABILITY_AGGREGATION（评分分布/覆盖率/矛盾率/重复率）
   → CONVERGENCE_CHECK
       ├── 未收敛 → 回到 GENERATING_QUESTIONS
       └── 收敛 → DONE
@@ -217,7 +221,17 @@ IDLE
 1. 连续 3 轮新写入节点数 < 3
 2. `soul.overall_confidence` > 0.80
 3. `soul.coverage_score` > 0.85
-4. 安全上限：最多 20 轮
+4. `contradiction_rate` < 0.15
+5. 最近 3 轮 `new_high_value_memories` 平均值趋稳（默认 <= 1.5）
+6. 安全上限：最多 20 轮
+
+**可观测指标（每轮）**
+
+- 评分分布：`min / p50 / p90 / max`
+- 低置信维度覆盖率：`low_confidence_coverage`
+- 风险指标：`contradiction_rate`、`duplication_rate`
+- 记忆质量：`new_high_value_memories`、`quarantined_memories`
+- 记忆增长：`memory_growth_by_type`
 
 ---
 
@@ -230,12 +244,15 @@ web/app/
   page.tsx              Persona 卡片列表（Server Component，读 ~/.neeko/personas/）
   create/page.tsx       新建向导（3步，Client Component）
   chat/[slug]/page.tsx  对话页（流式输出，Soul 侧边栏）
-  training/page.tsx     培养中心（进度展示）
+  training/page.tsx     培养中心（报告看板 + 轮次趋势 + 实验历史）
   export/page.tsx       导出页
   settings/page.tsx     API Key 配置
   api/
     personas/route.ts          GET：列出所有 Persona
     personas/[slug]/route.ts   GET：单个 Persona + Soul 详情
+    training/route.ts          GET：训练报告列表
+    training/[slug]/route.ts   GET：单个 Persona 训练轮次报告
+    experiments/[slug]/route.ts GET：实验历史报告列表
 ```
 
 ### 设计规范
@@ -257,7 +274,7 @@ web/app/
       soul.yaml       Soul 结构化数据
 ```
 
-Qdrant 集合命名规范：`neeko_{slug}`
+Qdrant 集合命名规范：`nico_{slug}`
 
 ---
 

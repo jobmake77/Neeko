@@ -1,8 +1,8 @@
 import { generateObject } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
 import { z } from 'zod';
 import { SemanticChunk } from '../models/memory.js';
 import { Soul, ConfidentItem } from '../models/soul.js';
+import { resolveModel } from '../../config/model.js';
 
 // ─── Extraction result per chunk ─────────────────────────────────────────────
 
@@ -42,14 +42,12 @@ type ChunkExtraction = z.infer<typeof ChunkExtractionSchema>;
 // ─── Soul Extractor ──────────────────────────────────────────────────────────
 
 export class SoulExtractor {
-  private readonly model = anthropic('claude-sonnet-4-6');
-
   async extractFromChunk(
     chunk: SemanticChunk,
     targetName: string
   ): Promise<ChunkExtraction> {
     const { object } = await generateObject({
-      model: this.model,
+      model: resolveModel(),
       schema: ChunkExtractionSchema,
       prompt: `You are analyzing a piece of content written by or attributed to "${targetName}".
 Extract structured personality/soul information from this content.

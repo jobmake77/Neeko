@@ -19,6 +19,7 @@ export async function GET(req: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
+      let clientDisconnected = false;
       let currentRound = 0;
       let totalRounds = expectedRounds;
       let percent = 0;
@@ -26,10 +27,20 @@ export async function GET(req: Request) {
       let stageLabel = '初始化任务';
 
       function send(data: string) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ line: data })}\n\n`));
+        if (clientDisconnected) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ line: data })}\n\n`));
+        } catch {
+          clientDisconnected = true;
+        }
       }
       function sendEvent(event: string, data: object) {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        if (clientDisconnected) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          clientDisconnected = true;
+        }
       }
       function expectedRangeMinutes(): [number, number] {
         if (totalRounds <= 3) return [15, 30];
@@ -154,7 +165,9 @@ export async function GET(req: Request) {
           });
           sendEvent('done', { success: false });
         }
-        controller.close();
+        if (!clientDisconnected) {
+          controller.close();
+        }
       });
 
       child.on('error', (err) => {
@@ -164,8 +177,12 @@ export async function GET(req: Request) {
       });
 
       req.signal.addEventListener('abort', () => {
-        child.kill();
-        controller.close();
+        clientDisconnected = true;
+        try {
+          controller.close();
+        } catch {
+          // ignore
+        }
       });
     },
   });

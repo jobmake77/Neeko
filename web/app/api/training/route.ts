@@ -24,6 +24,14 @@ function getPersonaRoot() {
   return join(homedir(), '.neeko', 'personas');
 }
 
+function isStalled(status: string | undefined, runtimeUpdatedAt?: string): boolean {
+  if (status !== 'training') return false;
+  if (!runtimeUpdatedAt) return true;
+  const ts = new Date(runtimeUpdatedAt).getTime();
+  if (!Number.isFinite(ts)) return true;
+  return Date.now() - ts > 15 * 60 * 1000;
+}
+
 export async function GET() {
   const root = getPersonaRoot();
   if (!existsSync(root)) return NextResponse.json([]);
@@ -49,10 +57,11 @@ export async function GET() {
           : null;
         const runtimeProgress = readRuntimeProgress(slug);
         if (!report && !runtimeProgress) return null;
+        const stalled = isStalled(persona.status, runtimeProgress?.updatedAt);
         return {
           slug: persona.slug,
           name: persona.name,
-          status: persona.status ?? 'created',
+          status: stalled ? 'stalled' : persona.status ?? 'created',
           report,
           runtime_progress: runtimeProgress,
         };

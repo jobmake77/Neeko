@@ -8,6 +8,14 @@ function getDataDir() {
   return join(homedir(), '.neeko', 'personas');
 }
 
+function isStalled(status: string | undefined, runtimeUpdatedAt?: string): boolean {
+  if (status !== 'training') return false;
+  if (!runtimeUpdatedAt) return true;
+  const ts = new Date(runtimeUpdatedAt).getTime();
+  if (!Number.isFinite(ts)) return true;
+  return Date.now() - ts > 15 * 60 * 1000;
+}
+
 export async function GET() {
   const dir = getDataDir();
   if (!existsSync(dir)) {
@@ -24,8 +32,10 @@ export async function GET() {
       if (!existsSync(personaPath)) return null;
       const persona = JSON.parse(readFileSync(personaPath, 'utf-8'));
       const runtimeProgress = readRuntimeProgress(slug);
+      const stalled = isStalled(persona.status, runtimeProgress?.updatedAt);
       return {
         ...persona,
+        status: stalled ? 'stalled' : persona.status,
         runtime_progress: runtimeProgress,
       };
     })

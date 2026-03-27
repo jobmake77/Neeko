@@ -138,7 +138,9 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
       {persona.runtime_progress && persona.status !== 'converged' && (
         <div className="rounded-xl border border-[oklch(0.9_0_0)] bg-[oklch(0.985_0_0)] p-2.5">
           <div className="flex items-center justify-between text-[11.5px]">
-            <span className="text-[oklch(0.35_0.1_240)] font-medium">{persona.runtime_progress.stageLabel}</span>
+            <span className="text-[oklch(0.35_0.1_240)] font-medium">
+              {persona.status === 'stalled' ? '疑似卡住' : persona.runtime_progress.stageLabel}
+            </span>
             <span className="text-[oklch(0.58_0_0)]">{Math.round(persona.runtime_progress.percent)}%</span>
           </div>
           <div className="mt-1.5 h-1.5 rounded-full bg-[oklch(0.92_0_0)] overflow-hidden">
@@ -148,7 +150,9 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
             />
           </div>
           <p className="mt-1.5 text-[11px] text-[oklch(0.58_0_0)]">
-            {persona.runtime_progress.currentRound}/{persona.runtime_progress.totalRounds} 轮 · 预计剩余 {persona.runtime_progress.etaMin}-{persona.runtime_progress.etaMax} 分钟
+            {persona.status === 'stalled'
+              ? '超过 15 分钟无进展，建议到培养中心继续培养'
+              : `${persona.runtime_progress.currentRound}/${persona.runtime_progress.totalRounds} 轮 · 预计剩余 ${persona.runtime_progress.etaMin}-${persona.runtime_progress.etaMax} 分钟`}
           </p>
         </div>
       )}

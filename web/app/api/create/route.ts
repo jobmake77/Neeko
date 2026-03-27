@@ -1,5 +1,8 @@
 import { spawn } from 'child_process';
 import { writeRuntimeProgress } from '@/lib/runtime-progress';
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,6 +21,7 @@ export async function GET(req: Request) {
   const trainingProfile = url.searchParams.get('trainingProfile'); // e.g. full
   const expectedRounds = rounds && /^\d+$/.test(rounds) ? Math.max(1, parseInt(rounds, 10)) : 10;
   const startTs = Date.now();
+  const candidatePrefix = normalizeSlugCandidate(mode === 'single' ? handle : skill);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -62,12 +66,15 @@ export async function GET(req: Request) {
           etaMax,
         };
         sendEvent('progress', payload);
+        if (!activeSlug) {
+          activeSlug = resolveRecentSlug(candidatePrefix, startTs);
+        }
         if (activeSlug) {
           writeRuntimeProgress(activeSlug, payload);
         }
       }
       function parseProgressLine(line: string) {
-        const slugMatch = line.match(/^Slug:\s+([a-z0-9][a-z0-9-_]*)$/i);
+        const slugMatch = line.match(/Slug:\s*([a-z0-9][a-z0-9-_]*)/i);
         if (slugMatch) {
           activeSlug = slugMatch[1];
           emitProgress();
@@ -207,4 +214,42 @@ export async function GET(req: Request) {
       Connection: 'keep-alive',
     },
   });
+}
+
+function normalizeSlugCandidate(raw: string | null): string {
+  const value = String(raw ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return value;
+}
+
+function resolveRecentSlug(candidatePrefix: string, startTs: number): string | null {
+  const root = join(homedir(), '.neeko', 'personas');
+  if (!existsSync(root)) return null;
+  const dirs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  const recent = dirs
+    .map((slug) => {
+      const path = join(root, slug, 'persona.json');
+      if (!existsSync(path)) return null;
+      try {
+        const persona = JSON.parse(readFileSync(path, 'utf-8')) as { slug?: string; updated_at?: string };
+        const updatedAt = new Date(persona.updated_at ?? 0).getTime();
+        return {
+          slug,
+          updatedAt,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter((item): item is { slug: string; updatedAt: number } => !!item)
+    .filter((item) => item.updatedAt >= startTs - 10 * 60 * 1000)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+
+  if (candidatePrefix) {
+    const matched = recent.find((item) => item.slug === candidatePrefix || item.slug.startsWith(`${candidatePrefix}-`));
+    if (matched) return matched.slug;
+  }
+  return recent[0]?.slug ?? null;
 }

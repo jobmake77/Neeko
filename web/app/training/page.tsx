@@ -60,6 +60,32 @@ interface ExperimentHistoryItem {
   };
 }
 
+interface StreamProgress {
+  stage: string;
+  stageLabel: string;
+  percent: number;
+  currentRound: number;
+  totalRounds: number;
+  elapsedSec: number;
+  etaMin: number;
+  etaMax: number;
+}
+
+const TRAIN_STAGE_ORDER = ['init', 'training', 'finalize', 'done'] as const;
+const TRAIN_STAGE_LABEL: Record<string, string> = {
+  init: '初始化任务',
+  training: '培养循环',
+  finalize: '收尾与保存',
+  done: '培养完成',
+};
+
+function formatDuration(sec: number): string {
+  const minutes = Math.floor(sec / 60);
+  const seconds = sec % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m ${seconds}s`;
+}
+
 export default function TrainingPage() {
   const [items, setItems] = useState<TrainingCardItem[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string>('');
@@ -71,6 +97,16 @@ export default function TrainingPage() {
   const [continueMode, setContinueMode] = useState<'quick' | 'full'>('quick');
   const [continueStatus, setContinueStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [continueLogs, setContinueLogs] = useState<string[]>([]);
+  const [continueProgress, setContinueProgress] = useState<StreamProgress>({
+    stage: 'init',
+    stageLabel: TRAIN_STAGE_LABEL.init,
+    percent: 0,
+    currentRound: 0,
+    totalRounds: 3,
+    elapsedSec: 0,
+    etaMin: 15,
+    etaMax: 30,
+  });
   const continueSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -119,6 +155,16 @@ export default function TrainingPage() {
     setContinueMode(mode);
     setContinueStatus('running');
     setContinueLogs([]);
+    setContinueProgress({
+      stage: 'init',
+      stageLabel: TRAIN_STAGE_LABEL.init,
+      percent: 0,
+      currentRound: 0,
+      totalRounds: mode === 'quick' ? 3 : 10,
+      elapsedSec: 0,
+      etaMin: mode === 'quick' ? 15 : 30,
+      etaMax: mode === 'quick' ? 30 : 90,
+    });
 
     const params = new URLSearchParams({
       slug: selectedSlug,
@@ -133,10 +179,25 @@ export default function TrainingPage() {
       const { line } = JSON.parse(e.data);
       setContinueLogs((prev) => [...prev, line]);
     };
+    es.addEventListener('progress', (e) => {
+      const data = JSON.parse((e as MessageEvent).data) as StreamProgress;
+      setContinueProgress((prev) => ({ ...prev, ...data }));
+    });
 
     es.addEventListener('done', (e) => {
       const { success } = JSON.parse((e as MessageEvent).data);
       setContinueStatus(success ? 'success' : 'error');
+      if (success) {
+        setContinueProgress((prev) => ({
+          ...prev,
+          stage: 'done',
+          stageLabel: TRAIN_STAGE_LABEL.done,
+          percent: 100,
+          currentRound: prev.totalRounds,
+          etaMin: 0,
+          etaMax: 0,
+        }));
+      }
       es.close();
       continueSourceRef.current = null;
       if (success) reloadTrainingData(selectedSlug);
@@ -387,9 +448,56 @@ export default function TrainingPage() {
               </span>
             </div>
             {continueStatus !== 'idle' && (
-              <p className="mt-2 text-[12px] text-[oklch(0.55_0_0)]">
-                状态：{continueStatus === 'running' ? `运行中（${continueMode}）` : continueStatus === 'success' ? '完成' : '失败'}
-              </p>
+              <div className="mt-3 rounded-lg border border-[oklch(0.9_0_0)] bg-white p-3">
+                <div className="flex items-center justify-between text-[12.5px]">
+                  <p className="font-medium text-[oklch(0.25_0_0)]">
+                    状态：{continueStatus === 'running' ? `运行中（${continueMode}）` : continueStatus === 'success' ? '完成' : '失败'}
+                  </p>
+                  <p className="text-[oklch(0.55_0_0)]">{Math.round(continueProgress.percent)}%</p>
+                </div>
+                <p className="mt-1 text-[12px] text-[oklch(0.55_0_0)]">当前阶段：{continueProgress.stageLabel}</p>
+                <div className="mt-2 h-2.5 rounded-full bg-[oklch(0.93_0_0)] overflow-hidden">
+                  <div
+                    className="h-full bg-[oklch(0.72_0.18_142)] transition-all duration-500"
+                    style={{ width: `${Math.max(2, continueProgress.percent)}%` }}
+                  />
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[12px]">
+                  <div className="rounded-md bg-[oklch(0.97_0_0)] px-2.5 py-2">
+                    <p className="text-[oklch(0.55_0_0)]">已耗时</p>
+                    <p className="font-medium text-[oklch(0.2_0_0)]">{formatDuration(continueProgress.elapsedSec)}</p>
+                  </div>
+                  <div className="rounded-md bg-[oklch(0.97_0_0)] px-2.5 py-2">
+                    <p className="text-[oklch(0.55_0_0)]">预计剩余</p>
+                    <p className="font-medium text-[oklch(0.2_0_0)]">{continueProgress.etaMin} - {continueProgress.etaMax} 分钟</p>
+                  </div>
+                </div>
+                <p className="mt-2 text-[12px] text-[oklch(0.55_0_0)]">
+                  当前轮次：{Math.min(continueProgress.currentRound, continueProgress.totalRounds)} / {continueProgress.totalRounds}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {TRAIN_STAGE_ORDER.map((key) => {
+                    const currentIdx = TRAIN_STAGE_ORDER.indexOf(continueProgress.stage as (typeof TRAIN_STAGE_ORDER)[number]);
+                    const idx = TRAIN_STAGE_ORDER.indexOf(key);
+                    const done = idx < Math.max(0, currentIdx);
+                    const active = key === continueProgress.stage;
+                    return (
+                      <span
+                        key={key}
+                        className={
+                          done
+                            ? 'text-[11px] px-2 py-1 rounded-full border border-[oklch(0.82_0.06_142)] bg-[oklch(0.95_0.04_142)] text-[oklch(0.3_0.12_142)]'
+                            : active
+                            ? 'text-[11px] px-2 py-1 rounded-full border border-[oklch(0.8_0.05_240)] bg-[oklch(0.95_0.03_240)] text-[oklch(0.32_0.1_240)]'
+                            : 'text-[11px] px-2 py-1 rounded-full border border-[oklch(0.9_0_0)] bg-[oklch(0.98_0_0)] text-[oklch(0.6_0_0)]'
+                        }
+                      >
+                        {TRAIN_STAGE_LABEL[key]}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
             )}
             {continueLogs.length > 0 && (
               <div className="mt-2 max-h-36 overflow-y-auto rounded-md bg-[oklch(0.12_0_0)] p-2 font-mono text-[11.5px]">

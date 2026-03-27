@@ -8,6 +8,34 @@ import { cn } from '@/lib/utils';
 type Mode = 'single' | 'fusion' | null;
 type BuildStatus = 'idle' | 'running' | 'success' | 'error';
 type CultivationMode = 'quick' | 'full';
+type BuildProgress = {
+  stage: string;
+  stageLabel: string;
+  percent: number;
+  currentRound: number;
+  totalRounds: number;
+  elapsedSec: number;
+  etaMin: number;
+  etaMax: number;
+};
+
+const BUILD_STAGE_ORDER = ['init', 'ingestion', 'preprocess', 'soul', 'training', 'finalize', 'done'] as const;
+const BUILD_STAGE_LABEL: Record<string, string> = {
+  init: '初始化任务',
+  ingestion: '采集数据源',
+  preprocess: '清洗与切片',
+  soul: '提炼 Soul',
+  training: '培养循环',
+  finalize: '收尾与保存',
+  done: '培养完成',
+};
+
+function formatDuration(sec: number): string {
+  const minutes = Math.floor(sec / 60);
+  const seconds = sec % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m ${seconds}s`;
+}
 
 export default function CreatePage() {
   const router = useRouter();
@@ -20,6 +48,16 @@ export default function CreatePage() {
   // Build state
   const [buildStatus, setBuildStatus] = useState<BuildStatus>('idle');
   const [logs, setLogs] = useState<string[]>([]);
+  const [progress, setProgress] = useState<BuildProgress>({
+    stage: 'init',
+    stageLabel: BUILD_STAGE_LABEL.init,
+    percent: 0,
+    currentRound: 0,
+    totalRounds: cultivationMode === 'quick' ? 3 : 10,
+    elapsedSec: 0,
+    etaMin: 15,
+    etaMax: 30,
+  });
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,6 +67,16 @@ export default function CreatePage() {
   function handleCreate() {
     setBuildStatus('running');
     setLogs([]);
+    setProgress({
+      stage: 'init',
+      stageLabel: BUILD_STAGE_LABEL.init,
+      percent: 0,
+      currentRound: 0,
+      totalRounds: cultivationMode === 'quick' ? 3 : 10,
+      elapsedSec: 0,
+      etaMin: cultivationMode === 'quick' ? 15 : 30,
+      etaMax: cultivationMode === 'quick' ? 30 : 90,
+    });
 
     const params = new URLSearchParams({ mode: mode! });
     if (mode === 'single') params.set('handle', handle.replace(/^@/, ''));
@@ -42,9 +90,24 @@ export default function CreatePage() {
       const { line } = JSON.parse(e.data);
       setLogs((prev) => [...prev, line]);
     };
+    es.addEventListener('progress', (e) => {
+      const data = JSON.parse((e as MessageEvent).data) as BuildProgress;
+      setProgress((prev) => ({ ...prev, ...data }));
+    });
 
     es.addEventListener('done', (e) => {
       const { success } = JSON.parse((e as MessageEvent).data);
+      if (success) {
+        setProgress((prev) => ({
+          ...prev,
+          stage: 'done',
+          stageLabel: BUILD_STAGE_LABEL.done,
+          percent: 100,
+          currentRound: prev.totalRounds,
+          etaMin: 0,
+          etaMax: 0,
+        }));
+      }
       setBuildStatus(success ? 'success' : 'error');
       es.close();
     });
@@ -81,6 +144,53 @@ export default function CreatePage() {
           {buildStatus === 'running' && <><Loader2 className="w-4 h-4 animate-spin" />正在执行流程…</>}
           {buildStatus === 'success' && <><CheckCircle2 className="w-4 h-4" />全部完成</>}
           {buildStatus === 'error'   && <><XCircle className="w-4 h-4" />构建出错</>}
+        </div>
+
+        <div className="mb-5 rounded-2xl border border-[oklch(0.9_0_0)] bg-white p-4">
+          <div className="flex items-center justify-between text-[12.5px]">
+            <p className="font-medium text-[oklch(0.25_0_0)]">当前阶段：{progress.stageLabel}</p>
+            <p className="text-[oklch(0.55_0_0)]">{Math.round(progress.percent)}%</p>
+          </div>
+          <div className="mt-2 h-2.5 rounded-full bg-[oklch(0.93_0_0)] overflow-hidden">
+            <div
+              className="h-full bg-[oklch(0.72_0.18_142)] transition-all duration-500"
+              style={{ width: `${Math.max(2, progress.percent)}%` }}
+            />
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-[12px]">
+            <div className="rounded-lg bg-[oklch(0.97_0_0)] px-3 py-2">
+              <p className="text-[oklch(0.55_0_0)]">已耗时</p>
+              <p className="font-medium text-[oklch(0.2_0_0)]">{formatDuration(progress.elapsedSec)}</p>
+            </div>
+            <div className="rounded-lg bg-[oklch(0.97_0_0)] px-3 py-2">
+              <p className="text-[oklch(0.55_0_0)]">预计剩余</p>
+              <p className="font-medium text-[oklch(0.2_0_0)]">{progress.etaMin} - {progress.etaMax} 分钟</p>
+            </div>
+          </div>
+          <p className="mt-2 text-[12px] text-[oklch(0.55_0_0)]">
+            当前轮次：{Math.min(progress.currentRound, progress.totalRounds)} / {progress.totalRounds}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {BUILD_STAGE_ORDER.map((key) => {
+              const currentIdx = BUILD_STAGE_ORDER.indexOf(progress.stage as (typeof BUILD_STAGE_ORDER)[number]);
+              const idx = BUILD_STAGE_ORDER.indexOf(key);
+              const done = idx < Math.max(0, currentIdx);
+              const active = key === progress.stage;
+              return (
+                <span
+                  key={key}
+                  className={cn(
+                    'text-[11px] px-2 py-1 rounded-full border',
+                    done && 'border-[oklch(0.82_0.06_142)] bg-[oklch(0.95_0.04_142)] text-[oklch(0.3_0.12_142)]',
+                    active && 'border-[oklch(0.8_0.05_240)] bg-[oklch(0.95_0.03_240)] text-[oklch(0.32_0.1_240)]',
+                    !done && !active && 'border-[oklch(0.9_0_0)] bg-[oklch(0.98_0_0)] text-[oklch(0.6_0_0)]',
+                  )}
+                >
+                  {BUILD_STAGE_LABEL[key]}
+                </span>
+              );
+            })}
+          </div>
         </div>
 
         {/* Log terminal */}

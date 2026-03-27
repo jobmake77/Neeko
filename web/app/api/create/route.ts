@@ -5,7 +5,6 @@ export const dynamic = 'force-dynamic';
 
 // 去掉 ANSI 转义色彩码
 function stripAnsi(str: string) {
-  // eslint-disable-next-line no-control-regex
   return str.replace(/\x1B\[[0-9;]*[mGKHF]/g, '');
 }
 
@@ -16,15 +15,88 @@ export async function GET(req: Request) {
   const skill = url.searchParams.get('skill');    // e.g. 全栈工程师
   const rounds = url.searchParams.get('rounds');  // e.g. 10
   const trainingProfile = url.searchParams.get('trainingProfile'); // e.g. full
+  const expectedRounds = rounds && /^\d+$/.test(rounds) ? Math.max(1, parseInt(rounds, 10)) : 10;
+  const startTs = Date.now();
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
+      let currentRound = 0;
+      let totalRounds = expectedRounds;
+      let percent = 0;
+      let stage = 'init';
+      let stageLabel = '初始化任务';
+
       function send(data: string) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ line: data })}\n\n`));
       }
       function sendEvent(event: string, data: object) {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      }
+      function expectedRangeMinutes(): [number, number] {
+        if (totalRounds <= 3) return [15, 30];
+        if (totalRounds <= 10) return [30, 90];
+        return [60, 180];
+      }
+      function emitProgress(next?: Partial<{ stage: string; stageLabel: string; percent: number; currentRound: number; totalRounds: number }>) {
+        if (next?.stage) stage = next.stage;
+        if (next?.stageLabel) stageLabel = next.stageLabel;
+        if (typeof next?.percent === 'number') percent = Math.max(percent, Math.min(100, next.percent));
+        if (typeof next?.currentRound === 'number') currentRound = next.currentRound;
+        if (typeof next?.totalRounds === 'number') totalRounds = Math.max(1, next.totalRounds);
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+        const [minTotal, maxTotal] = expectedRangeMinutes();
+        const elapsedMin = elapsedSec / 60;
+        const etaMin = Math.max(0, Math.ceil(minTotal - elapsedMin));
+        const etaMax = Math.max(0, Math.ceil(maxTotal - elapsedMin));
+        sendEvent('progress', {
+          stage,
+          stageLabel,
+          percent,
+          currentRound,
+          totalRounds,
+          elapsedSec,
+          etaMin,
+          etaMax,
+        });
+      }
+      function parseProgressLine(line: string) {
+        const roundMatch = line.match(/Round\s+(\d+)\/(\d+)/i);
+        if (roundMatch) {
+          const round = parseInt(roundMatch[1], 10);
+          const maxRounds = parseInt(roundMatch[2], 10);
+          emitProgress({
+            stage: 'training',
+            stageLabel: '培养循环',
+            totalRounds: maxRounds,
+            currentRound: round,
+            percent: 60 + (round / Math.max(1, maxRounds)) * 35,
+          });
+          return;
+        }
+        if (line.includes('启动构建')) {
+          emitProgress({ stage: 'init', stageLabel: '初始化任务', percent: 2 });
+          return;
+        }
+        if (line.includes('抓取') || line.includes('获取内容')) {
+          emitProgress({ stage: 'ingestion', stageLabel: '采集数据源', percent: 15 });
+          return;
+        }
+        if (line.includes('Cleaning and chunking') || line.includes('semantic chunks ready')) {
+          emitProgress({ stage: 'preprocess', stageLabel: '清洗与切片', percent: 38 });
+          return;
+        }
+        if (line.includes('Extracting soul') || line.includes('Soul v')) {
+          emitProgress({ stage: 'soul', stageLabel: '提炼 Soul', percent: 52 });
+          return;
+        }
+        if (line.includes('Running cultivation loop')) {
+          emitProgress({ stage: 'training', stageLabel: '培养循环', percent: 60 });
+          return;
+        }
+        if (line.includes('Training complete') || line.includes('created!') || line.startsWith('✓')) {
+          emitProgress({ stage: 'finalize', stageLabel: '收尾与保存', percent: 98 });
+        }
       }
 
       // Build CLI args
@@ -50,6 +122,7 @@ export async function GET(req: Request) {
       }
 
       send(`▶ 启动构建：${mode === 'single' ? `@${handle}` : skill}`);
+      emitProgress({ stage: 'init', stageLabel: '初始化任务', percent: 3 });
 
       const child = spawn(process.execPath, args, {
         cwd: repoRoot,
@@ -62,7 +135,10 @@ export async function GET(req: Request) {
         const lines = stripAnsi(chunk.toString()).split('\n');
         for (const line of lines) {
           const trimmed = line.trim();
-          if (trimmed) send(trimmed);
+          if (trimmed) {
+            send(trimmed);
+            parseProgressLine(trimmed);
+          }
         }
       });
 
@@ -70,15 +146,29 @@ export async function GET(req: Request) {
         const lines = stripAnsi(chunk.toString()).split('\n');
         for (const line of lines) {
           const trimmed = line.trim();
-          if (trimmed) send(trimmed);
+          if (trimmed) {
+            send(trimmed);
+            parseProgressLine(trimmed);
+          }
         }
       });
 
       child.on('close', (code) => {
         if (code === 0) {
+          emitProgress({ stage: 'done', stageLabel: '培养完成', percent: 100, currentRound: totalRounds });
           sendEvent('done', { success: true });
         } else {
           send(`❌ 进程退出（code ${code}）`);
+          sendEvent('progress', {
+            stage: 'error',
+            stageLabel: '执行失败',
+            percent,
+            currentRound,
+            totalRounds,
+            elapsedSec: Math.max(0, Math.floor((Date.now() - startTs) / 1000)),
+            etaMin: 0,
+            etaMax: 0,
+          });
           sendEvent('done', { success: false });
         }
         controller.close();

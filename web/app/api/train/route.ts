@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { writeRuntimeProgress } from '@/lib/runtime-progress';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,7 +47,7 @@ export async function GET(req: Request) {
         const elapsedMin = elapsedSec / 60;
         const etaMin = Math.max(0, Math.ceil(minTotal - elapsedMin));
         const etaMax = Math.max(0, Math.ceil(maxTotal - elapsedMin));
-        sendEvent('progress', {
+        const payload = {
           stage,
           stageLabel,
           percent,
@@ -55,7 +56,11 @@ export async function GET(req: Request) {
           elapsedSec,
           etaMin,
           etaMax,
-        });
+        };
+        sendEvent('progress', payload);
+        if (slug) {
+          writeRuntimeProgress(slug, payload);
+        }
       }
       function parseProgressLine(line: string) {
         const roundMatch = line.match(/Round\s+(\d+)\/(\d+)/i);

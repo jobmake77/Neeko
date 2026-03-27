@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { readdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { readRuntimeProgress } from '@/lib/runtime-progress';
 
 function getDataDir() {
   return join(homedir(), '.neeko', 'personas');
@@ -21,7 +22,12 @@ export async function GET() {
     .map((slug) => {
       const personaPath = join(dir, slug, 'persona.json');
       if (!existsSync(personaPath)) return null;
-      return JSON.parse(readFileSync(personaPath, 'utf-8'));
+      const persona = JSON.parse(readFileSync(personaPath, 'utf-8'));
+      const runtimeProgress = readRuntimeProgress(slug);
+      return {
+        ...persona,
+        runtime_progress: runtimeProgress,
+      };
     })
     .filter(Boolean);
 

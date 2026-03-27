@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Dumbbell, Circle, TrendingUp, ShieldAlert, ChevronRight, Download } from 'lucide-react';
 
 interface TrainingCardItem {
   slug: string;
   name: string;
+  status?: string;
   report: {
     generated_at: string;
     profile: string;
@@ -17,7 +19,8 @@ interface TrainingCardItem {
       total_nodes_written: number;
       total_high_value_memories: number;
     };
-  };
+  } | null;
+  runtime_progress?: StreamProgress | null;
 }
 
 interface TrainingRoundDetail {
@@ -87,6 +90,7 @@ function formatDuration(sec: number): string {
 }
 
 export default function TrainingPage() {
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<TrainingCardItem[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string>('');
   const [detail, setDetail] = useState<TrainingDetailResponse | null>(null);
@@ -121,10 +125,15 @@ export default function TrainingPage() {
       .then((r) => (r.ok ? r.json() : []))
       .then((data: TrainingCardItem[]) => {
         setItems(data);
+        const slugFromUrl = searchParams.get('slug');
+        if (slugFromUrl && data.some((item) => item.slug === slugFromUrl)) {
+          setSelectedSlug(slugFromUrl);
+          return;
+        }
         if (data.length > 0) setSelectedSlug((prev) => prev || data[0].slug);
       })
       .catch(() => setItems([]));
-  }, []);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!selectedSlug) return;
@@ -352,46 +361,93 @@ export default function TrainingPage() {
               <div className="flex items-center justify-between">
                 <p className="text-[15px] font-semibold text-[oklch(0.2_0_0)]">{item.name}</p>
                 <div className="flex items-center gap-2">
-                  <span className="text-[12px] px-2 py-1 rounded-full bg-[oklch(0.94_0.05_142)] text-[oklch(0.3_0.12_142)]">
-                    {item.report.profile}
-                  </span>
+                  {item.report ? (
+                    <span className="text-[12px] px-2 py-1 rounded-full bg-[oklch(0.94_0.05_142)] text-[oklch(0.3_0.12_142)]">
+                      {item.report.profile}
+                    </span>
+                  ) : (
+                    <span className="text-[12px] px-2 py-1 rounded-full bg-[oklch(0.95_0.02_240)] text-[oklch(0.35_0.1_240)]">
+                      {item.runtime_progress?.stageLabel ?? '运行中'}
+                    </span>
+                  )}
                   <ChevronRight className="w-4 h-4 text-[oklch(0.7_0_0)]" />
                 </div>
               </div>
               <p className="text-[12px] text-[oklch(0.6_0_0)] mt-1">/{item.slug}</p>
               <div className="grid grid-cols-2 gap-3 mt-4 text-[12.5px]">
                 <div className="rounded-lg bg-[oklch(0.97_0_0)] p-3">
-                  <p className="text-[oklch(0.55_0_0)]">平均质量</p>
+                  <p className="text-[oklch(0.55_0_0)]">{item.report ? '平均质量' : '当前进度'}</p>
                   <p className="mt-1 font-semibold text-[oklch(0.25_0_0)]">
-                    {(item.report.summary.avg_quality_score * 100).toFixed(1)}%
+                    {item.report ? `${(item.report.summary.avg_quality_score * 100).toFixed(1)}%` : `${Math.round(item.runtime_progress?.percent ?? 0)}%`}
                   </p>
                 </div>
                 <div className="rounded-lg bg-[oklch(0.97_0_0)] p-3">
-                  <p className="text-[oklch(0.55_0_0)]">矛盾率</p>
+                  <p className="text-[oklch(0.55_0_0)]">{item.report ? '矛盾率' : '预计剩余'}</p>
                   <p className="mt-1 font-semibold text-[oklch(0.25_0_0)]">
-                    {(item.report.summary.avg_contradiction_rate * 100).toFixed(1)}%
+                    {item.report ? `${(item.report.summary.avg_contradiction_rate * 100).toFixed(1)}%` : `${item.runtime_progress?.etaMin ?? 0}-${item.runtime_progress?.etaMax ?? 0} 分钟`}
                   </p>
                 </div>
                 <div className="rounded-lg bg-[oklch(0.97_0_0)] p-3">
-                  <p className="text-[oklch(0.55_0_0)]">新增记忆</p>
+                  <p className="text-[oklch(0.55_0_0)]">{item.report ? '新增记忆' : '当前轮次'}</p>
                   <p className="mt-1 font-semibold text-[oklch(0.25_0_0)]">
-                    {item.report.summary.total_nodes_written}
+                    {item.report ? item.report.summary.total_nodes_written : `${item.runtime_progress?.currentRound ?? 0}/${item.runtime_progress?.totalRounds ?? 0}`}
                   </p>
                 </div>
                 <div className="rounded-lg bg-[oklch(0.97_0_0)] p-3">
-                  <p className="text-[oklch(0.55_0_0)]">高价值记忆</p>
+                  <p className="text-[oklch(0.55_0_0)]">{item.report ? '高价值记忆' : '已耗时'}</p>
                   <p className="mt-1 font-semibold text-[oklch(0.25_0_0)]">
-                    {item.report.summary.total_high_value_memories}
+                    {item.report ? item.report.summary.total_high_value_memories : formatDuration(item.runtime_progress?.elapsedSec ?? 0)}
                   </p>
                 </div>
               </div>
-              <p className="text-[11.5px] text-[oklch(0.62_0_0)] mt-3">
-                最近训练：{new Date(item.report.generated_at).toLocaleString()}
-              </p>
+              {item.report ? (
+                <p className="text-[11.5px] text-[oklch(0.62_0_0)] mt-3">
+                  最近训练：{new Date(item.report.generated_at).toLocaleString()}
+                </p>
+              ) : (
+                <p className="text-[11.5px] text-[oklch(0.62_0_0)] mt-3">
+                  实时更新：{item.runtime_progress?.stageLabel ?? '处理中'}
+                </p>
+              )}
             </button>
           ))}
         </div>
       )}
+
+      {selectedSlug && !detail && (() => {
+        const selected = items.find((item) => item.slug === selectedSlug);
+        if (!selected?.runtime_progress) return null;
+        const progress = selected.runtime_progress;
+        return (
+          <div className="mb-10 rounded-2xl border border-[oklch(0.9_0_0)] bg-white p-5">
+            <p className="text-[15px] font-semibold text-[oklch(0.2_0_0)]">
+              {selected.name} · 实时培养进度
+            </p>
+            <p className="mt-1 text-[12px] text-[oklch(0.58_0_0)]">当前阶段：{progress.stageLabel}</p>
+            <div className="mt-3 h-2.5 rounded-full bg-[oklch(0.93_0_0)] overflow-hidden">
+              <div className="h-full bg-[oklch(0.72_0.18_142)] transition-all duration-500" style={{ width: `${Math.max(2, progress.percent)}%` }} />
+            </div>
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-[12px]">
+              <div className="rounded-md bg-[oklch(0.97_0_0)] px-3 py-2">
+                <p className="text-[oklch(0.55_0_0)]">进度</p>
+                <p className="font-medium text-[oklch(0.2_0_0)]">{Math.round(progress.percent)}%</p>
+              </div>
+              <div className="rounded-md bg-[oklch(0.97_0_0)] px-3 py-2">
+                <p className="text-[oklch(0.55_0_0)]">轮次</p>
+                <p className="font-medium text-[oklch(0.2_0_0)]">{progress.currentRound}/{progress.totalRounds}</p>
+              </div>
+              <div className="rounded-md bg-[oklch(0.97_0_0)] px-3 py-2">
+                <p className="text-[oklch(0.55_0_0)]">已耗时</p>
+                <p className="font-medium text-[oklch(0.2_0_0)]">{formatDuration(progress.elapsedSec)}</p>
+              </div>
+              <div className="rounded-md bg-[oklch(0.97_0_0)] px-3 py-2">
+                <p className="text-[oklch(0.55_0_0)]">预计剩余</p>
+                <p className="font-medium text-[oklch(0.2_0_0)]">{progress.etaMin}-{progress.etaMax} 分钟</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {detail && detail.report.rounds.length > 0 && (
         <div className="mb-10 rounded-2xl border border-[oklch(0.9_0_0)] bg-white p-5 overflow-x-auto">

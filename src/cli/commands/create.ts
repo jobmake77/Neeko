@@ -122,6 +122,8 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     (s) => existsSync(settings.getPersonaDir(s))
   );
   const soul = createEmptySoul(displayName, handle ? `@${handle}` : undefined);
+  console.log(chalk.dim(`Slug: ${persona.slug}`));
+  savePersona(persona, soul);
 
   // ── Ingest data ───────────────────────────────────────────────────────────
   const spin = spinner();
@@ -161,7 +163,11 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     }
   }
 
+  let currentSoul = soul;
   let allDocs: Awaited<ReturnType<TwitterAdapter['fetch']>> = [];
+  persona.status = 'ingesting';
+  persona.updated_at = new Date().toISOString();
+  savePersona(persona, currentSoul);
   if (mode === 'single' && handle) {
     spin.start(`正在通过 opencli 抓取 @${handle} 的推文（复用 Chrome 登录状态）...`);
     const adapter = new TwitterAdapter();
@@ -193,7 +199,9 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   spin.stop(`${chunks.length} semantic chunks ready`);
 
   // ── Soul extraction ───────────────────────────────────────────────────────
-  let currentSoul = soul;
+  persona.status = 'refining';
+  persona.updated_at = new Date().toISOString();
+  savePersona(persona, currentSoul);
   if (chunks.length > 0) {
     spin.start(`Extracting soul from ${chunks.length} chunks...`);
     const extractor = new SoulExtractor();
@@ -222,6 +230,9 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   }
 
   if (runTraining) {
+    persona.status = 'training';
+    persona.updated_at = new Date().toISOString();
+    savePersona(persona, currentSoul);
     let maxRounds = requestedRounds || 10;
 
     if (!nonInteractive && requestedRounds === 0) {
@@ -249,6 +260,9 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
       },
     });
     currentSoul = result.soul;
+    persona.training_rounds = result.totalRounds;
+    persona.last_trained_at = new Date().toISOString();
+    persona.updated_at = new Date().toISOString();
     saveTrainingReport(persona.slug, profile, result.history);
     spin.stop(`Training complete — ${result.totalRounds} rounds, confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
   }
@@ -256,6 +270,7 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   // ── Save ──────────────────────────────────────────────────────────────────
   persona.status = 'converged';
   persona.doc_count = allDocs.length;
+  persona.updated_at = new Date().toISOString();
   savePersona(persona, currentSoul);
 
   outro(

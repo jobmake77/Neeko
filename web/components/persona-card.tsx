@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { MessageSquare, MoreHorizontal } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { useState, useEffect, useRef } from 'react';
 
 interface PersonaCardProps {
@@ -15,6 +14,17 @@ interface PersonaCardProps {
     training_rounds: number;
     memory_node_count: number;
     doc_count: number;
+    runtime_progress?: {
+      stage: string;
+      stageLabel: string;
+      percent: number;
+      currentRound: number;
+      totalRounds: number;
+      elapsedSec: number;
+      etaMin: number;
+      etaMax: number;
+      updatedAt: string;
+    } | null;
   };
   onDelete?: (slug: string) => void;
 }
@@ -37,15 +47,6 @@ function getAvatarColor(slug: string): string {
 function getInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
-
-const statusLabel: Record<string, string> = {
-  created: '初始化',
-  ingesting: '采集中',
-  refining: '提炼中',
-  training: '培养中',
-  converged: '已就绪',
-  exported: '已导出',
-};
 
 export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
   const avatarColor = getAvatarColor(persona.slug);
@@ -134,18 +135,44 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
         </p>
       </div>
 
-      {/* Chat button */}
-      <Link
-        href={`/chat/${persona.slug}`}
-        className="flex items-center justify-center gap-2 py-2 rounded-xl text-[13.5px] font-medium transition-colors"
-        style={{
-          background: 'oklch(0.94 0.05 142)',
-          color: 'oklch(0.3 0.12 142)',
-        }}
-      >
-        <MessageSquare className="w-4 h-4" />
-        对话
-      </Link>
+      {persona.runtime_progress && persona.status !== 'converged' && (
+        <div className="rounded-xl border border-[oklch(0.9_0_0)] bg-[oklch(0.985_0_0)] p-2.5">
+          <div className="flex items-center justify-between text-[11.5px]">
+            <span className="text-[oklch(0.35_0.1_240)] font-medium">{persona.runtime_progress.stageLabel}</span>
+            <span className="text-[oklch(0.58_0_0)]">{Math.round(persona.runtime_progress.percent)}%</span>
+          </div>
+          <div className="mt-1.5 h-1.5 rounded-full bg-[oklch(0.92_0_0)] overflow-hidden">
+            <div
+              className="h-full bg-[oklch(0.72_0.18_142)] transition-all duration-500"
+              style={{ width: `${Math.max(2, persona.runtime_progress.percent)}%` }}
+            />
+          </div>
+          <p className="mt-1.5 text-[11px] text-[oklch(0.58_0_0)]">
+            {persona.runtime_progress.currentRound}/{persona.runtime_progress.totalRounds} 轮 · 预计剩余 {persona.runtime_progress.etaMin}-{persona.runtime_progress.etaMax} 分钟
+          </p>
+        </div>
+      )}
+
+      {persona.status === 'converged' || persona.status === 'exported' ? (
+        <Link
+          href={`/chat/${persona.slug}`}
+          className="flex items-center justify-center gap-2 py-2 rounded-xl text-[13.5px] font-medium transition-colors"
+          style={{
+            background: 'oklch(0.94 0.05 142)',
+            color: 'oklch(0.3 0.12 142)',
+          }}
+        >
+          <MessageSquare className="w-4 h-4" />
+          对话
+        </Link>
+      ) : (
+        <Link
+          href={`/training?slug=${persona.slug}`}
+          className="flex items-center justify-center gap-2 py-2 rounded-xl text-[13.5px] font-medium transition-colors border border-[oklch(0.85_0.03_142)] bg-[oklch(0.97_0.03_142)] text-[oklch(0.3_0.12_142)] hover:bg-[oklch(0.95_0.03_142)]"
+        >
+          查看进度
+        </Link>
+      )}
     </div>
   );
 }

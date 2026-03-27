@@ -10,10 +10,23 @@ export default function Home() {
   const [personas, setPersonas] = useState<PersonaItem[]>([]);
 
   useEffect(() => {
-    fetch('/api/personas', { cache: 'no-store' })
-      .then((r) => r.ok ? r.json() : [])
-      .then(setPersonas)
-      .catch(() => setPersonas([]));
+    let cancelled = false;
+    const load = () => {
+      fetch('/api/personas', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((data) => {
+          if (!cancelled) setPersonas(data);
+        })
+        .catch(() => {
+          if (!cancelled) setPersonas([]);
+        });
+    };
+    load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, []);
 
   function handleDelete(slug: string) {

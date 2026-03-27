@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { readRuntimeProgress } from '@/lib/runtime-progress';
 
 interface TrainingReportSummary {
   generated_at: string;
@@ -35,18 +36,25 @@ export async function GET() {
     .map((slug) => {
       const personaPath = join(root, slug, 'persona.json');
       const reportPath = join(root, slug, 'training-report.json');
-      if (!existsSync(personaPath) || !existsSync(reportPath)) return null;
+      if (!existsSync(personaPath)) return null;
 
       try {
         const persona = JSON.parse(readFileSync(personaPath, 'utf-8')) as {
           slug: string;
           name: string;
+          status?: string;
         };
-        const report = JSON.parse(readFileSync(reportPath, 'utf-8')) as TrainingReportSummary;
+        const report = existsSync(reportPath)
+          ? (JSON.parse(readFileSync(reportPath, 'utf-8')) as TrainingReportSummary)
+          : null;
+        const runtimeProgress = readRuntimeProgress(slug);
+        if (!report && !runtimeProgress) return null;
         return {
           slug: persona.slug,
           name: persona.name,
+          status: persona.status ?? 'created',
           report,
+          runtime_progress: runtimeProgress,
         };
       } catch {
         return null;
@@ -54,8 +62,8 @@ export async function GET() {
     })
     .filter(Boolean)
     .sort((a, b) => {
-      const ta = new Date((a as { report: TrainingReportSummary }).report.generated_at).getTime();
-      const tb = new Date((b as { report: TrainingReportSummary }).report.generated_at).getTime();
+      const ta = new Date((a as { report?: TrainingReportSummary; runtime_progress?: { updatedAt?: string } }).report?.generated_at ?? (a as { runtime_progress?: { updatedAt?: string } }).runtime_progress?.updatedAt ?? 0).getTime();
+      const tb = new Date((b as { report?: TrainingReportSummary; runtime_progress?: { updatedAt?: string } }).report?.generated_at ?? (b as { runtime_progress?: { updatedAt?: string } }).runtime_progress?.updatedAt ?? 0).getTime();
       return tb - ta;
     });
 

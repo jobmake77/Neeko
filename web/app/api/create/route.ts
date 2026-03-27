@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { writeRuntimeProgress } from '@/lib/runtime-progress';
+import { writeRuntimeProgress, writeRuntimeTaskState } from '@/lib/runtime-progress';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -28,6 +28,7 @@ export async function GET(req: Request) {
     start(controller) {
       let clientDisconnected = false;
       let activeSlug: string | null = null;
+      let childPid: number | null = null;
       let currentRound = 0;
       let totalRounds = expectedRounds;
       let percent = 0;
@@ -82,6 +83,11 @@ export async function GET(req: Request) {
         }
         if (activeSlug) {
           writeRuntimeProgress(activeSlug, payload);
+          writeRuntimeTaskState(activeSlug, {
+            state: 'running',
+            pid: childPid,
+            startedAt: new Date(startTs).toISOString(),
+          });
         }
       }
       function parseProgressLine(line: string) {
@@ -160,6 +166,7 @@ export async function GET(req: Request) {
         // 让子进程跑非交互式（跳过 confirm prompts）
         // 使用 stdio pipe 捕获输出
       });
+      childPid = child.pid ?? null;
 
       child.stdout.on('data', (chunk: Buffer) => {
         const lines = stripAnsi(chunk.toString()).split('\n');
@@ -186,9 +193,26 @@ export async function GET(req: Request) {
       child.on('close', (code) => {
         if (code === 0) {
           emitProgress({ stage: 'done', stageLabel: '培养完成', percent: 100, currentRound: totalRounds });
+          if (activeSlug) {
+            writeRuntimeTaskState(activeSlug, {
+              state: 'done',
+              pid: childPid,
+              startedAt: new Date(startTs).toISOString(),
+              finishedAt: new Date().toISOString(),
+            });
+          }
           sendEvent('done', { success: true });
         } else {
           send(`❌ 进程退出（code ${code}）`);
+          if (activeSlug) {
+            writeRuntimeTaskState(activeSlug, {
+              state: 'failed',
+              pid: childPid,
+              startedAt: new Date(startTs).toISOString(),
+              finishedAt: new Date().toISOString(),
+              lastError: `exit code ${code}`,
+            });
+          }
           sendEvent('progress', {
             stage: 'error',
             stageLabel: '执行失败',
@@ -208,6 +232,15 @@ export async function GET(req: Request) {
 
       child.on('error', (err) => {
         send(`❌ 启动失败：${err.message}`);
+        if (activeSlug) {
+          writeRuntimeTaskState(activeSlug, {
+            state: 'failed',
+            pid: childPid,
+            startedAt: new Date(startTs).toISOString(),
+            finishedAt: new Date().toISOString(),
+            lastError: err.message,
+          });
+        }
         sendEvent('done', { success: false });
         controller.close();
       });

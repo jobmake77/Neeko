@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { readRuntimeProgress } from '@/lib/runtime-progress';
+import { isPidAlive, readRuntimeProgress, readRuntimeTaskState } from '@/lib/runtime-progress';
 
 interface TrainingReportSummary {
   generated_at: string;
@@ -24,8 +24,13 @@ function getPersonaRoot() {
   return join(homedir(), '.neeko', 'personas');
 }
 
-function isStalled(status: string | undefined, runtimeUpdatedAt?: string): boolean {
+function isStalled(
+  status: string | undefined,
+  runtimeUpdatedAt?: string,
+  taskState?: { state: string; pid: number | null; updatedAt: string } | null
+): boolean {
   if (status !== 'training') return false;
+  if (taskState?.state === 'running' && isPidAlive(taskState.pid)) return false;
   if (!runtimeUpdatedAt) return true;
   const ts = new Date(runtimeUpdatedAt).getTime();
   if (!Number.isFinite(ts)) return true;
@@ -56,14 +61,16 @@ export async function GET() {
           ? (JSON.parse(readFileSync(reportPath, 'utf-8')) as TrainingReportSummary)
           : null;
         const runtimeProgress = readRuntimeProgress(slug);
+        const taskState = readRuntimeTaskState(slug);
         if (!report && !runtimeProgress) return null;
-        const stalled = isStalled(persona.status, runtimeProgress?.updatedAt);
+        const stalled = isStalled(persona.status, runtimeProgress?.updatedAt, taskState);
         return {
           slug: persona.slug,
           name: persona.name,
           status: stalled ? 'stalled' : persona.status ?? 'created',
           report,
           runtime_progress: runtimeProgress,
+          runtime_task: taskState,
         };
       } catch {
         return null;

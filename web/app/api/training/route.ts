@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { isPidAlive, readRuntimeProgress, readRuntimeTaskState } from '@/lib/runtime-progress';
+import { maybeAutoRecoverTraining } from '@/lib/auto-recover';
 
 interface TrainingReportSummary {
   generated_at: string;
@@ -64,10 +65,11 @@ export async function GET() {
         const taskState = readRuntimeTaskState(slug);
         if (!report && !runtimeProgress) return null;
         const stalled = isStalled(persona.status, runtimeProgress?.updatedAt, taskState);
+        const recovering = stalled && maybeAutoRecoverTraining(slug, taskState, runtimeProgress);
         return {
           slug: persona.slug,
           name: persona.name,
-          status: stalled ? 'stalled' : persona.status ?? 'created',
+          status: recovering ? 'recovering' : stalled ? 'stalled' : persona.status ?? 'created',
           report,
           runtime_progress: runtimeProgress,
           runtime_task: taskState,

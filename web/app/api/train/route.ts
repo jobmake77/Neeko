@@ -1,5 +1,10 @@
 import { spawn } from 'child_process';
-import { writeRuntimeProgress, writeRuntimeTaskState } from '@/lib/runtime-progress';
+import {
+  estimateEtaRangeMinutes,
+  patchRuntimeTaskState,
+  recordEtaSample,
+  writeRuntimeProgress,
+} from '@/lib/runtime-progress';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,11 +48,6 @@ export async function GET(req: Request) {
           clientDisconnected = true;
         }
       }
-      function expectedRangeMinutes(): [number, number] {
-        if (totalRounds <= 3) return [15, 30];
-        if (totalRounds <= 10) return [30, 90];
-        return [60, 180];
-      }
       function emitProgress(next?: Partial<{ stage: string; stageLabel: string; percent: number; currentRound: number; totalRounds: number }>) {
         if (next?.stage) stage = next.stage;
         if (next?.stageLabel) stageLabel = next.stageLabel;
@@ -55,10 +55,7 @@ export async function GET(req: Request) {
         if (typeof next?.currentRound === 'number') currentRound = next.currentRound;
         if (typeof next?.totalRounds === 'number') totalRounds = Math.max(1, next.totalRounds);
         const elapsedSec = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-        const [minTotal, maxTotal] = expectedRangeMinutes();
-        const elapsedMin = elapsedSec / 60;
-        const etaMin = Math.max(0, Math.ceil(minTotal - elapsedMin));
-        const etaMax = Math.max(0, Math.ceil(maxTotal - elapsedMin));
+        const { etaMin, etaMax } = estimateEtaRangeMinutes('train', totalRounds, elapsedSec);
         const payload = {
           stage,
           stageLabel,
@@ -72,10 +69,13 @@ export async function GET(req: Request) {
         sendEvent('progress', payload);
         if (slug) {
           writeRuntimeProgress(slug, payload);
-          writeRuntimeTaskState(slug, {
+          patchRuntimeTaskState(slug, {
             state: 'running',
             pid: childPid,
             startedAt: new Date(startTs).toISOString(),
+            taskType: 'train',
+            rounds: totalRounds,
+            profile: trainingProfile?.toLowerCase() ?? 'full',
           });
         }
       }
@@ -158,23 +158,30 @@ export async function GET(req: Request) {
         if (code === 0) {
           emitProgress({ stage: 'done', stageLabel: '培养完成', percent: 100, currentRound: totalRounds });
           if (slug) {
-            writeRuntimeTaskState(slug, {
+            patchRuntimeTaskState(slug, {
               state: 'done',
               pid: childPid,
               startedAt: new Date(startTs).toISOString(),
               finishedAt: new Date().toISOString(),
+              taskType: 'train',
+              rounds: totalRounds,
+              profile: trainingProfile?.toLowerCase() ?? 'full',
             });
+            recordEtaSample('train', totalRounds, Math.max(1, Math.floor((Date.now() - startTs) / 1000)));
           }
           sendEvent('done', { success: true });
         } else {
           send(`❌ 进程退出（code ${code}）`);
           if (slug) {
-            writeRuntimeTaskState(slug, {
+            patchRuntimeTaskState(slug, {
               state: 'failed',
               pid: childPid,
               startedAt: new Date(startTs).toISOString(),
               finishedAt: new Date().toISOString(),
               lastError: `exit code ${code}`,
+              taskType: 'train',
+              rounds: totalRounds,
+              profile: trainingProfile?.toLowerCase() ?? 'full',
             });
           }
           sendEvent('progress', {
@@ -197,12 +204,15 @@ export async function GET(req: Request) {
       child.on('error', (err) => {
         send(`❌ 启动失败：${err.message}`);
         if (slug) {
-          writeRuntimeTaskState(slug, {
+          patchRuntimeTaskState(slug, {
             state: 'failed',
             pid: childPid,
             startedAt: new Date(startTs).toISOString(),
             finishedAt: new Date().toISOString(),
             lastError: err.message,
+            taskType: 'train',
+            rounds: totalRounds,
+            profile: trainingProfile?.toLowerCase() ?? 'full',
           });
         }
         sendEvent('done', { success: false });

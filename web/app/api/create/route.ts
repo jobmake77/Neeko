@@ -1,5 +1,10 @@
 import { spawn } from 'child_process';
-import { writeRuntimeProgress, writeRuntimeTaskState } from '@/lib/runtime-progress';
+import {
+  estimateEtaRangeMinutes,
+  patchRuntimeTaskState,
+  recordEtaSample,
+  writeRuntimeProgress,
+} from '@/lib/runtime-progress';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -51,11 +56,6 @@ export async function GET(req: Request) {
           clientDisconnected = true;
         }
       }
-      function expectedRangeMinutes(): [number, number] {
-        if (totalRounds <= 3) return [15, 30];
-        if (totalRounds <= 10) return [30, 90];
-        return [60, 180];
-      }
       function emitProgress(next?: Partial<{ stage: string; stageLabel: string; percent: number; currentRound: number; totalRounds: number }>) {
         if (next?.stage) stage = next.stage;
         if (next?.stageLabel) stageLabel = next.stageLabel;
@@ -63,10 +63,7 @@ export async function GET(req: Request) {
         if (typeof next?.currentRound === 'number') currentRound = next.currentRound;
         if (typeof next?.totalRounds === 'number') totalRounds = Math.max(1, next.totalRounds);
         const elapsedSec = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-        const [minTotal, maxTotal] = expectedRangeMinutes();
-        const elapsedMin = elapsedSec / 60;
-        const etaMin = Math.max(0, Math.ceil(minTotal - elapsedMin));
-        const etaMax = Math.max(0, Math.ceil(maxTotal - elapsedMin));
+        const { etaMin, etaMax } = estimateEtaRangeMinutes('create', totalRounds, elapsedSec);
         const payload = {
           stage,
           stageLabel,
@@ -83,10 +80,13 @@ export async function GET(req: Request) {
         }
         if (activeSlug) {
           writeRuntimeProgress(activeSlug, payload);
-          writeRuntimeTaskState(activeSlug, {
+          patchRuntimeTaskState(activeSlug, {
             state: 'running',
             pid: childPid,
             startedAt: new Date(startTs).toISOString(),
+            taskType: 'create',
+            rounds: totalRounds,
+            profile: trainingProfile?.toLowerCase() ?? 'full',
           });
         }
       }
@@ -194,23 +194,30 @@ export async function GET(req: Request) {
         if (code === 0) {
           emitProgress({ stage: 'done', stageLabel: '培养完成', percent: 100, currentRound: totalRounds });
           if (activeSlug) {
-            writeRuntimeTaskState(activeSlug, {
+            patchRuntimeTaskState(activeSlug, {
               state: 'done',
               pid: childPid,
               startedAt: new Date(startTs).toISOString(),
               finishedAt: new Date().toISOString(),
+              taskType: 'create',
+              rounds: totalRounds,
+              profile: trainingProfile?.toLowerCase() ?? 'full',
             });
+            recordEtaSample('create', totalRounds, Math.max(1, Math.floor((Date.now() - startTs) / 1000)));
           }
           sendEvent('done', { success: true });
         } else {
           send(`❌ 进程退出（code ${code}）`);
           if (activeSlug) {
-            writeRuntimeTaskState(activeSlug, {
+            patchRuntimeTaskState(activeSlug, {
               state: 'failed',
               pid: childPid,
               startedAt: new Date(startTs).toISOString(),
               finishedAt: new Date().toISOString(),
               lastError: `exit code ${code}`,
+              taskType: 'create',
+              rounds: totalRounds,
+              profile: trainingProfile?.toLowerCase() ?? 'full',
             });
           }
           sendEvent('progress', {
@@ -233,12 +240,15 @@ export async function GET(req: Request) {
       child.on('error', (err) => {
         send(`❌ 启动失败：${err.message}`);
         if (activeSlug) {
-          writeRuntimeTaskState(activeSlug, {
+          patchRuntimeTaskState(activeSlug, {
             state: 'failed',
             pid: childPid,
             startedAt: new Date(startTs).toISOString(),
             finishedAt: new Date().toISOString(),
             lastError: err.message,
+            taskType: 'create',
+            rounds: totalRounds,
+            profile: trainingProfile?.toLowerCase() ?? 'full',
           });
         }
         sendEvent('done', { success: false });

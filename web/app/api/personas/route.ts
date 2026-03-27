@@ -3,6 +3,7 @@ import { readdirSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { isPidAlive, readRuntimeProgress, readRuntimeTaskState } from '@/lib/runtime-progress';
+import { maybeAutoRecoverTraining } from '@/lib/auto-recover';
 
 function getDataDir() {
   return join(homedir(), '.neeko', 'personas');
@@ -39,9 +40,10 @@ export async function GET() {
       const runtimeProgress = readRuntimeProgress(slug);
       const taskState = readRuntimeTaskState(slug);
       const stalled = isStalled(persona.status, runtimeProgress?.updatedAt, taskState);
+      const recovering = stalled && maybeAutoRecoverTraining(slug, taskState, runtimeProgress);
       return {
         ...persona,
-        status: stalled ? 'stalled' : persona.status,
+        status: recovering ? 'recovering' : stalled ? 'stalled' : persona.status,
         runtime_progress: runtimeProgress,
         runtime_task: taskState,
       };

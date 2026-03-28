@@ -15,6 +15,7 @@ function isStalled(
   taskState?: { state: string; pid: number | null; updatedAt: string } | null
 ): boolean {
   if (status !== 'training') return false;
+  if (taskState?.state === 'queued') return false;
   if (taskState?.state === 'failed') return true;
   if (taskState?.state === 'running') {
     const alive = isPidAlive(taskState.pid);

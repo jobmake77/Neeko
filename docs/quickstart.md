@@ -70,16 +70,16 @@ npm run build
 ### 方式 B：CLI 交互式配置
 
 ```bash
-node dist/index.js config
+node dist/cli/index.js config
 ```
 
 ### 方式 C：命令行参数
 
 ```bash
-node dist/index.js config --api-key sk-ant-xxx
-node dist/index.js config --openai-key sk-xxx
-node dist/index.js config --qdrant-url http://localhost:6333
-node dist/index.js config --training-profile full
+node dist/cli/index.js config --api-key sk-ant-xxx
+node dist/cli/index.js config --openai-key sk-xxx
+node dist/cli/index.js config --qdrant-url http://localhost:6333
+node dist/cli/index.js config --training-profile full
 ```
 
 ---
@@ -108,17 +108,17 @@ npm run dev
 
 **通过 CLI：**
 ```bash
-node dist/index.js create @elonmusk
+node dist/cli/index.js create @elonmusk
 ```
 
 指定训练优化档位（推荐）：
 ```bash
-node dist/index.js create @elonmusk --rounds 10 --training-profile full
+node dist/cli/index.js create @elonmusk --rounds 10 --training-profile full
 ```
 
 快速培养（先出结果）：
 ```bash
-node dist/index.js create @elonmusk --rounds 3 --training-profile full
+node dist/cli/index.js create @elonmusk --rounds 3 --training-profile full
 ```
 
 流程说明：
@@ -135,7 +135,7 @@ node dist/index.js create @elonmusk --rounds 3 --training-profile full
 适合没有明确标杆人物，需要拼合多方经验的场景。
 
 ```bash
-node dist/index.js create --skill "全栈工程师"
+node dist/cli/index.js create --skill "全栈工程师"
 ```
 
 流程：
@@ -158,25 +158,25 @@ node dist/index.js create --skill "全栈工程师"
 
 运行 A/B 对照实验：
 ```bash
-node dist/index.js experiment elonmusk --rounds 10
+node dist/cli/index.js experiment elonmusk --rounds 10
 ```
 
 导出实验报告（JSON/CSV）：
 ```bash
-node dist/index.js experiment elonmusk --rounds 10 --output-dir ./reports
+node dist/cli/index.js experiment elonmusk --rounds 10 --output-dir ./reports
 ```
 
 启用质量门禁（可用于 CI）：
 ```bash
-node dist/index.js experiment elonmusk --rounds 6 --gate
+node dist/cli/index.js experiment elonmusk --rounds 6 --gate
 ```
 
 实验会对比 `baseline/a1/a2/a3/a4` 的质量与风险指标，并输出推荐默认档位。
 
 继续培养已创建 Persona：
 ```bash
-node dist/index.js train elonmusk --mode quick
-node dist/index.js train elonmusk --mode full
+node dist/cli/index.js train elonmusk --mode quick
+node dist/cli/index.js train elonmusk --mode full
 ```
 
 ---
@@ -196,7 +196,7 @@ node dist/index.js train elonmusk --mode full
 ### CLI
 
 ```bash
-node dist/index.js chat elonmusk
+node dist/cli/index.js chat elonmusk
 ```
 
 输入 `exit` 退出对话。
@@ -212,7 +212,7 @@ node dist/index.js chat elonmusk
 ### CLI
 
 ```bash
-node dist/index.js export elonmusk --to openclaw
+node dist/cli/index.js export elonmusk --to openclaw
 ```
 
 输出目录：`./neeko-export-elonmusk/`
@@ -267,3 +267,24 @@ curl http://localhost:6333/health  # 检查服务健康
 ```
 
 Qdrant 中的向量数据存储在集合 `nico_{slug}`。
+
+## 运行时监控与断点续训
+
+当 Web 培养任务运行时，Neeko 会写入以下文件（按 persona 独立）：
+
+```
+~/.neeko/personas/{slug}/
+  runtime-task.json       # queued / running / done / failed
+  runtime-progress.json   # stage / percent / round / eta
+  training-context.json   # requested_rounds / completed_rounds / last_error
+  training-report.json    # 每轮报告（增量落盘）
+```
+
+并在全局写入租约锁：
+
+```
+~/.neeko/runtime/locks/train-{slug}.lock
+```
+
+锁包含 `fencing_token` 与 `expires_at`，训练 worker 会定时心跳续约。  
+如果进程异常退出且锁过期/持有者失活，系统会自动恢复继续培养。

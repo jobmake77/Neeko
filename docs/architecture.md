@@ -272,9 +272,36 @@ web/app/
     {slug}/
       persona.json    Persona 元数据
       soul.yaml       Soul 结构化数据
+      runtime-task.json      任务状态
+      runtime-progress.json  实时进度
+      training-context.json  断点续训上下文
+      training-report.json   训练轮次报告（增量落盘）
 ```
 
 Qdrant 集合命名规范：`nico_{slug}`
+
+运行时锁：
+```
+~/.neeko/runtime/locks/
+  train-{slug}.lock
+```
+
+锁记录字段：
+- `owner_id`
+- `pid`
+- `fencing_token`
+- `job_id`
+- `acquired_at`
+- `last_heartbeat_at`
+- `expires_at`
+
+### 锁与恢复策略
+
+1. 同一 persona 训练任务串行执行（单实例）
+2. 使用租约锁（Lease Lock）而非纯 PID 锁
+3. Worker 定时心跳续租；续租失败会主动终止，避免双写
+4. 锁过期或持有进程失活时允许抢占（token 递增）
+5. 训练中按轮次 checkpoint 落盘；中断后从 `training-context.json` 续训
 
 ---
 

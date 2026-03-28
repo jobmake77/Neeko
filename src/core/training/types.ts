@@ -48,6 +48,8 @@ export interface RoundObservability {
     episodic: number;
     working: number;
   };
+  gapFocusedQuestions: number;
+  totalQuestions: number;
 }
 
 export interface MemoryCandidateForGovernance {

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { MessageSquare, MoreHorizontal } from 'lucide-react';
+import { MessageSquare, MoreHorizontal, TrendingUp, TrendingDown } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 
 interface PersonaCardProps {
@@ -24,6 +24,14 @@ interface PersonaCardProps {
       etaMin: number;
       etaMax: number;
       updatedAt: string;
+    } | null;
+    skill_summary?: {
+      origin_count: number;
+      expanded_count: number;
+      updated_at: string | null;
+      coverage_score: number | null;
+      gap_focused_questions_ratio: number | null;
+      gap_focused_trend_delta: number | null;
     } | null;
   };
   onDelete?: (slug: string) => void;
@@ -82,6 +90,18 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
     onDelete?.(persona.slug);
   }
 
+  const skillSummary = persona.skill_summary ?? {
+    origin_count: 0,
+    expanded_count: 0,
+    updated_at: null,
+    coverage_score: null,
+    gap_focused_questions_ratio: null,
+    gap_focused_trend_delta: null,
+  };
+  const updatedText = skillSummary.updated_at
+    ? new Date(skillSummary.updated_at).toLocaleString('zh-CN', { hour12: false })
+    : '未生成';
+
   return (
     <div className="bg-white rounded-2xl border border-[oklch(0.91_0.002_90)] p-5 flex flex-col gap-4 hover:shadow-md transition-shadow relative">
       {/* ⋯ menu */}
@@ -135,6 +155,43 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
         </p>
       </div>
 
+      <div className="rounded-xl border border-[oklch(0.9_0_0)] bg-[oklch(0.985_0_0)] p-2.5">
+        <div className="flex items-center justify-between">
+          <p className="text-[12px] font-medium text-[oklch(0.25_0_0)]">Skills</p>
+          <Link
+            href={`/skills/${persona.slug}`}
+            className="text-[11px] text-[oklch(0.35_0.1_240)] hover:text-[oklch(0.3_0.15_240)]"
+          >
+            查看详情
+          </Link>
+        </div>
+        <p className="mt-1 text-[11.5px] text-[oklch(0.55_0_0)]">
+          原点 {skillSummary.origin_count} · 扩展 {skillSummary.expanded_count}
+        </p>
+        <p className="mt-0.5 text-[11px] text-[oklch(0.58_0_0)]">
+          覆盖分：{typeof skillSummary.coverage_score === 'number' ? `${(skillSummary.coverage_score * 100).toFixed(1)}%` : '未计算'}
+        </p>
+        <p className="mt-0.5 text-[11px] text-[oklch(0.58_0_0)]">
+          缺口聚焦题：{typeof skillSummary.gap_focused_questions_ratio === 'number' ? `${(skillSummary.gap_focused_questions_ratio * 100).toFixed(1)}%` : '未统计'}
+        </p>
+        {typeof skillSummary.gap_focused_trend_delta === 'number' && (
+          <p className="mt-0.5 text-[11px] flex items-center gap-1">
+            {skillSummary.gap_focused_trend_delta >= 0 ? (
+              <TrendingUp className="w-3 h-3 text-[oklch(0.35_0.12_142)]" />
+            ) : (
+              <TrendingDown className="w-3 h-3 text-[oklch(0.5_0.12_40)]" />
+            )}
+            <span className={skillSummary.gap_focused_trend_delta >= 0 ? 'text-[oklch(0.35_0.12_142)]' : 'text-[oklch(0.5_0.12_40)]'}>
+              {skillSummary.gap_focused_trend_delta >= 0 ? '+' : ''}
+              {(skillSummary.gap_focused_trend_delta * 100).toFixed(1)}%
+            </span>
+          </p>
+        )}
+        <p className="mt-0.5 text-[11px] text-[oklch(0.6_0_0)]">
+          最近更新：{updatedText}
+        </p>
+      </div>
+
       {persona.runtime_progress && persona.status !== 'converged' && (
         <div className="rounded-xl border border-[oklch(0.9_0_0)] bg-[oklch(0.985_0_0)] p-2.5">
           <div className="flex items-center justify-between text-[11.5px]">
@@ -159,6 +216,12 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
               : persona.status === 'recovering'
               ? '检测到中断，系统已自动发起继续培养'
               : `${persona.runtime_progress.currentRound}/${persona.runtime_progress.totalRounds} 轮 · 预计剩余 ${persona.runtime_progress.etaMin}-${persona.runtime_progress.etaMax} 分钟`}
+          </p>
+          <p className="mt-1 text-[11px] text-[oklch(0.58_0_0)]">
+            最近 Skill 覆盖：{typeof skillSummary.coverage_score === 'number' ? `${(skillSummary.coverage_score * 100).toFixed(1)}%` : '未计算'}
+          </p>
+          <p className="mt-1 text-[11px] text-[oklch(0.58_0_0)]">
+            缺口聚焦题占比：{typeof skillSummary.gap_focused_questions_ratio === 'number' ? `${(skillSummary.gap_focused_questions_ratio * 100).toFixed(1)}%` : '未统计'}
           </p>
         </div>
       )}

@@ -8,6 +8,7 @@ import { cmdExport } from './commands/export.js';
 import { cmdConfig } from './commands/config.js';
 import { cmdExperiment } from './commands/experiment.js';
 import { cmdTrain } from './commands/train.js';
+import { cmdSkillsRefresh } from './commands/skills-refresh.js';
 
 // Apply saved API keys to environment on startup
 const cfg = settings.getAll();
@@ -129,6 +130,14 @@ program
     retries?: string;
   }) => {
     await cmdTrain(slug, options);
+  });
+
+// ─── nico skills-refresh ────────────────────────────────────────────────────
+program
+  .command('skills-refresh <slug>')
+  .description('Rebuild persona skill library from latest signals')
+  .action(async (slug: string) => {
+    await cmdSkillsRefresh(slug);
   });
 
 program.parseAsync(process.argv).catch((err: Error) => {

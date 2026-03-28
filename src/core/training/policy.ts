@@ -55,13 +55,14 @@ export class TrainingPolicy {
     round: number,
     profile: TrainingProfile,
     questionsPerRound = 5,
-    previousRound?: RoundObservability
+    previousRound?: RoundObservability,
+    skillGapPressure = 0
   ): QuestionPlan {
     const lowConfidenceDimensions = this.lowConfidenceDimensions(soul);
     const stage = this.resolveStage(round, profile, previousRound);
     const weights = STRATEGY_BY_STAGE[stage];
 
-    const strategyTargets = this.allocateCounts(weights, questionsPerRound);
+    const strategyTargets = this.allocateCounts(weights, questionsPerRound, profile, skillGapPressure);
     return { stage, strategyTargets, lowConfidenceDimensions };
   }
 
@@ -84,7 +85,9 @@ export class TrainingPolicy {
 
   private allocateCounts(
     weights: Array<{ strategy: QuestionStrategy; weight: number }>,
-    total: number
+    total: number,
+    profile: TrainingProfile,
+    skillGapPressure: number
   ): Array<{ strategy: QuestionStrategy; count: number }> {
     const base = weights.map((w) => ({
       strategy: w.strategy,
@@ -96,6 +99,28 @@ export class TrainingPolicy {
       base[cursor % base.length].count++;
       cursor++;
       assigned++;
+    }
+    const advancedProfile =
+      profile === 'a1' || profile === 'a2' || profile === 'a3' || profile === 'a4' || profile === 'full';
+    if (advancedProfile && skillGapPressure >= 0.34 && total >= 4) {
+      const target = base.find((b) => b.strategy === 'blind_spot') ?? base[0];
+      const from = base
+        .filter((b) => b.strategy !== 'blind_spot' && b.count > 1)
+        .sort((a, b) => b.count - a.count)[0];
+      if (from) {
+        from.count -= 1;
+        target.count += 1;
+      }
+    }
+    if (advancedProfile && skillGapPressure >= 0.67 && total >= 5) {
+      const target = base.find((b) => b.strategy === 'scenario') ?? base[0];
+      const from = base
+        .filter((b) => b.strategy !== 'scenario' && b.count > 1)
+        .sort((a, b) => b.count - a.count)[0];
+      if (from) {
+        from.count -= 1;
+        target.count += 1;
+      }
     }
     return base.filter((b) => b.count > 0);
   }

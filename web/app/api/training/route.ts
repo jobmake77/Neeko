@@ -18,7 +18,15 @@ interface TrainingReportSummary {
     total_nodes_reinforced: number;
     total_high_value_memories: number;
     total_quarantined_memories: number;
+    origin_skills_added?: number;
+    expanded_skills_added?: number;
+    skill_coverage_score?: number;
+    gap_focused_questions_ratio?: number;
   };
+  rounds?: Array<{
+    gap_focused_questions?: number;
+    total_questions?: number;
+  }>;
 }
 
 function getPersonaRoot() {
@@ -68,6 +76,20 @@ export async function GET() {
         const report = existsSync(reportPath)
           ? (JSON.parse(readFileSync(reportPath, 'utf-8')) as TrainingReportSummary)
           : null;
+        const rounds = Array.isArray(report?.rounds) ? report.rounds : [];
+        const last = rounds[rounds.length - 1];
+        const prev = rounds[rounds.length - 2];
+        const toRatio = (item?: { gap_focused_questions?: number; total_questions?: number }) => {
+          if (!item || typeof item.gap_focused_questions !== 'number' || typeof item.total_questions !== 'number') return null;
+          if (item.total_questions <= 0) return null;
+          return item.gap_focused_questions / item.total_questions;
+        };
+        const lastRatio = toRatio(last);
+        const prevRatio = toRatio(prev);
+        const gapFocusedTrendDelta =
+          typeof lastRatio === 'number' && typeof prevRatio === 'number'
+            ? lastRatio - prevRatio
+            : null;
         const runtimeProgress = readRuntimeProgress(slug);
         const taskState = readRuntimeTaskState(slug);
         if (!report && !runtimeProgress) return null;
@@ -78,6 +100,7 @@ export async function GET() {
           name: persona.name,
           status: recovering ? 'recovering' : stalled ? 'stalled' : persona.status ?? 'created',
           report,
+          gap_focused_trend_delta: gapFocusedTrendDelta,
           runtime_progress: runtimeProgress,
           runtime_task: taskState,
         };
@@ -87,8 +110,13 @@ export async function GET() {
     })
     .filter(Boolean)
     .sort((a, b) => {
-      const ta = new Date((a as { report?: TrainingReportSummary; runtime_progress?: { updatedAt?: string } }).report?.generated_at ?? (a as { runtime_progress?: { updatedAt?: string } }).runtime_progress?.updatedAt ?? 0).getTime();
-      const tb = new Date((b as { report?: TrainingReportSummary; runtime_progress?: { updatedAt?: string } }).report?.generated_at ?? (b as { runtime_progress?: { updatedAt?: string } }).runtime_progress?.updatedAt ?? 0).getTime();
+      const aa = a as { gap_focused_trend_delta?: number | null; report?: TrainingReportSummary; runtime_progress?: { updatedAt?: string } };
+      const bb = b as { gap_focused_trend_delta?: number | null; report?: TrainingReportSummary; runtime_progress?: { updatedAt?: string } };
+      const ad = typeof aa.gap_focused_trend_delta === 'number' ? aa.gap_focused_trend_delta : -Infinity;
+      const bd = typeof bb.gap_focused_trend_delta === 'number' ? bb.gap_focused_trend_delta : -Infinity;
+      if (ad !== bd) return bd - ad;
+      const ta = new Date(aa.report?.generated_at ?? aa.runtime_progress?.updatedAt ?? 0).getTime();
+      const tb = new Date(bb.report?.generated_at ?? bb.runtime_progress?.updatedAt ?? 0).getTime();
       return tb - ta;
     });
 

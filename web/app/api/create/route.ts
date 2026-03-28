@@ -126,8 +126,20 @@ export async function GET(req: Request) {
           emitProgress({ stage: 'soul', stageLabel: '提炼 Soul', percent: 52 });
           return;
         }
+        if (line.includes('[SKILL_STAGE] skill_origin_extract')) {
+          emitProgress({ stage: 'skill_origin_extract', stageLabel: 'Skill 原点提炼', percent: 58 });
+          return;
+        }
+        if (line.includes('[SKILL_STAGE] skill_expand')) {
+          emitProgress({ stage: 'skill_expand', stageLabel: 'Skill 相似扩展', percent: 64 });
+          return;
+        }
+        if (line.includes('[SKILL_STAGE] skill_merge')) {
+          emitProgress({ stage: 'skill_merge', stageLabel: 'Skill 融合入库', percent: 70 });
+          return;
+        }
         if (line.includes('Running cultivation loop')) {
-          emitProgress({ stage: 'training', stageLabel: '培养循环', percent: 60 });
+          emitProgress({ stage: 'training', stageLabel: '培养循环', percent: 72 });
           return;
         }
         if (line.includes('Training complete') || line.includes('created!') || line.startsWith('✓')) {

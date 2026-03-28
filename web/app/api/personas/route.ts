@@ -44,6 +44,75 @@ export async function GET() {
       const personaPath = join(dir, slug, 'persona.json');
       if (!existsSync(personaPath)) return null;
       const persona = JSON.parse(readFileSync(personaPath, 'utf-8'));
+      const skillsPath = join(dir, slug, 'skills.json');
+      const reportPath = join(dir, slug, 'training-report.json');
+      const skillSummary = existsSync(skillsPath)
+        ? (() => {
+          try {
+            const parsed = JSON.parse(readFileSync(skillsPath, 'utf-8')) as {
+              origin_skills?: unknown[];
+              expanded_skills?: unknown[];
+              updated_at?: string;
+            };
+            const report = existsSync(reportPath)
+              ? (() => {
+                try {
+                  return JSON.parse(readFileSync(reportPath, 'utf-8')) as {
+                    summary?: { skill_coverage_score?: number; gap_focused_questions_ratio?: number };
+                    rounds?: Array<{ gap_focused_questions?: number; total_questions?: number }>;
+                  };
+                } catch {
+                  return null;
+                }
+              })()
+              : null;
+            const rounds = Array.isArray(report?.rounds) ? report.rounds : [];
+            const last = rounds[rounds.length - 1];
+            const prev = rounds[rounds.length - 2];
+            const toRatio = (item?: { gap_focused_questions?: number; total_questions?: number }) => {
+              if (!item || typeof item.gap_focused_questions !== 'number' || typeof item.total_questions !== 'number') return null;
+              if (item.total_questions <= 0) return null;
+              return item.gap_focused_questions / item.total_questions;
+            };
+            const lastRatio = toRatio(last);
+            const prevRatio = toRatio(prev);
+            const trendDelta =
+              typeof lastRatio === 'number' && typeof prevRatio === 'number'
+                ? lastRatio - prevRatio
+                : null;
+            return {
+              origin_count: Array.isArray(parsed.origin_skills) ? parsed.origin_skills.length : 0,
+              expanded_count: Array.isArray(parsed.expanded_skills) ? parsed.expanded_skills.length : 0,
+              updated_at: parsed.updated_at ?? null,
+              coverage_score:
+                typeof report?.summary?.skill_coverage_score === 'number'
+                  ? report.summary.skill_coverage_score
+                  : null,
+              gap_focused_questions_ratio:
+                typeof report?.summary?.gap_focused_questions_ratio === 'number'
+                  ? report.summary.gap_focused_questions_ratio
+                  : null,
+              gap_focused_trend_delta: trendDelta,
+            };
+          } catch {
+            return {
+              origin_count: 0,
+              expanded_count: 0,
+              updated_at: null,
+              coverage_score: null,
+              gap_focused_questions_ratio: null,
+              gap_focused_trend_delta: null,
+            };
+          }
+        })()
+        : {
+          origin_count: 0,
+          expanded_count: 0,
+          updated_at: null,
+          coverage_score: null,
+          gap_focused_questions_ratio: null,
+          gap_focused_trend_delta: null,
+        };
       const runtimeProgress = readRuntimeProgress(slug);
       const taskState = readRuntimeTaskState(slug);
       const stalled = isStalled(persona.status, runtimeProgress?.updatedAt, taskState);
@@ -51,6 +120,7 @@ export async function GET() {
       return {
         ...persona,
         status: recovering ? 'recovering' : stalled ? 'stalled' : persona.status,
+        skill_summary: skillSummary,
         runtime_progress: runtimeProgress,
         runtime_task: taskState,
       };

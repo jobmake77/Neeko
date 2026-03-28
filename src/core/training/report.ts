@@ -15,6 +15,10 @@ export interface TrainingRunReport {
     total_nodes_reinforced: number;
     total_high_value_memories: number;
     total_quarantined_memories: number;
+    origin_skills_added: number;
+    expanded_skills_added: number;
+    skill_coverage_score: number;
+    gap_focused_questions_ratio: number;
   };
   rounds: Array<{
     round: number;
@@ -27,6 +31,8 @@ export interface TrainingRunReport {
     low_confidence_coverage: number;
     new_high_value_memories: number;
     quarantined_memories: number;
+    gap_focused_questions: number;
+    total_questions: number;
     score_distribution: TrainingProgress['observability']['scoreDistribution'];
   }>;
 }
@@ -35,7 +41,8 @@ export type TrainingRoundSnapshot = TrainingRunReport['rounds'][number];
 
 export function buildTrainingRunReport(
   profile: TrainingProfile,
-  history: TrainingProgress[]
+  history: TrainingProgress[],
+  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
 ): TrainingRunReport {
   const rounds = history.map((item) => ({
     round: item.round,
@@ -48,15 +55,18 @@ export function buildTrainingRunReport(
     low_confidence_coverage: item.observability.lowConfidenceCoverage,
     new_high_value_memories: item.observability.newHighValueMemories,
     quarantined_memories: item.observability.quarantinedMemories,
+    gap_focused_questions: item.observability.gapFocusedQuestions,
+    total_questions: item.observability.totalQuestions,
     score_distribution: item.observability.scoreDistribution,
   }));
 
-  return buildTrainingRunReportFromRounds(profile, rounds);
+  return buildTrainingRunReportFromRounds(profile, rounds, skillMetrics);
 }
 
 export function buildTrainingRunReportFromRounds(
   profile: TrainingProfile,
-  rounds: TrainingRoundSnapshot[]
+  rounds: TrainingRoundSnapshot[],
+  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
 ): TrainingRunReport {
   const normalizedRounds = [...rounds].sort((a, b) => a.round - b.round);
 
@@ -65,6 +75,8 @@ export function buildTrainingRunReportFromRounds(
   const totalNodesReinforced = normalizedRounds.reduce((sum, r) => sum + r.nodes_reinforced, 0);
   const totalHighValueMemories = normalizedRounds.reduce((sum, r) => sum + r.new_high_value_memories, 0);
   const totalQuarantinedMemories = normalizedRounds.reduce((sum, r) => sum + r.quarantined_memories, 0);
+  const totalGapFocusedQuestions = normalizedRounds.reduce((sum, r) => sum + (r.gap_focused_questions ?? 0), 0);
+  const totalQuestions = normalizedRounds.reduce((sum, r) => sum + (r.total_questions ?? 0), 0);
 
   return {
     schema_version: 1,
@@ -80,6 +92,10 @@ export function buildTrainingRunReportFromRounds(
       total_nodes_reinforced: totalNodesReinforced,
       total_high_value_memories: totalHighValueMemories,
       total_quarantined_memories: totalQuarantinedMemories,
+      origin_skills_added: skillMetrics?.originSkillsAdded ?? 0,
+      expanded_skills_added: skillMetrics?.expandedSkillsAdded ?? 0,
+      skill_coverage_score: skillMetrics?.skillCoverageScore ?? 0,
+      gap_focused_questions_ratio: totalQuestions > 0 ? totalGapFocusedQuestions / totalQuestions : 0,
     },
     rounds: normalizedRounds,
   };

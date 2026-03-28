@@ -10,6 +10,7 @@ import { Persona } from '../../core/models/persona.js';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import yaml from 'js-yaml';
+import { loadSkillLibrary } from '../../core/skills/library.js';
 
 function loadPersona(slug: string): { persona: Persona; soul: Soul } | null {
   const dir = settings.getPersonaDir(slug);
@@ -41,7 +42,8 @@ export async function cmdChat(slug: string): Promise<void> {
     openaiApiKey: settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY,
   });
   const retriever = new MemoryRetriever(store);
-  const agent = new PersonaAgent(soul, retriever, persona.memory_collection);
+  const skillLibrary = loadSkillLibrary(settings.getPersonaDir(slug), slug);
+  const agent = new PersonaAgent(soul, retriever, persona.memory_collection, skillLibrary);
 
   const history: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 

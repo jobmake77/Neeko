@@ -14,6 +14,11 @@ import {
   TrainingRunReport,
 } from '../../core/training/report.js';
 import { TrainingProfile } from '../../core/training/types.js';
+import {
+  loadSkillLibrary,
+  refreshSkillLibraryFromSignals,
+  saveSkillLibrary,
+} from '../../core/skills/library.js';
 
 export async function cmdTrain(
   slug: string,
@@ -56,6 +61,14 @@ export async function cmdTrain(
   persona.status = 'training';
   persistPersonaAndSoul(dir, persona, soul);
 
+  console.log('[SKILL_STAGE] skill_origin_extract');
+  const previousSkills = loadSkillLibrary(dir, slug);
+  const memorySignals = await buildMemorySignals(store, persona.memory_collection, soul);
+  const skillLibrary = await refreshSkillLibraryFromSignals(persona, soul, memorySignals, previousSkills);
+  console.log('[SKILL_STAGE] skill_expand');
+  saveSkillLibrary(dir, skillLibrary);
+  console.log('[SKILL_STAGE] skill_merge');
+
   const result = await runWithRetry(
     retries,
     async () => {
@@ -88,10 +101,20 @@ export async function cmdTrain(
     low_confidence_coverage: item.observability.lowConfidenceCoverage,
     new_high_value_memories: item.observability.newHighValueMemories,
     quarantined_memories: item.observability.quarantinedMemories,
+    gap_focused_questions: item.observability.gapFocusedQuestions,
+    total_questions: item.observability.totalQuestions,
     score_distribution: item.observability.scoreDistribution,
   }));
 
-  const merged = buildTrainingRunReportFromRounds(profile, [...existingRounds, ...newRounds]);
+  const covered = skillLibrary.origin_skills.filter((o) =>
+    skillLibrary.expanded_skills.some((e) => e.origin_id === o.id)
+  ).length;
+  const merged = buildTrainingRunReportFromRounds(profile, [...existingRounds, ...newRounds], {
+    originSkillsAdded: skillLibrary.origin_skills.length,
+    expandedSkillsAdded: skillLibrary.expanded_skills.length,
+    skillCoverageScore:
+      skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length,
+  });
   mkdirSync(dir, { recursive: true });
   writeFileSync(reportPath, JSON.stringify(merged, null, 2), 'utf-8');
 
@@ -182,4 +205,31 @@ function readExistingRounds(reportPath: string): TrainingRoundSnapshot[] {
   } catch {
     return [];
   }
+}
+
+async function buildMemorySignals(
+  store: MemoryStore,
+  collection: string,
+  soul: Soul
+): Promise<string[]> {
+  const queries = new Set<string>();
+  for (const d of soul.knowledge_domains.expert.slice(0, 5)) queries.add(d);
+  for (const b of soul.values.core_beliefs.slice(0, 5)) queries.add(b.belief);
+  if (queries.size === 0) {
+    queries.add(`${soul.target_name} method`);
+    queries.add(`${soul.target_name} decision`);
+  }
+
+  const signals: string[] = [];
+  for (const query of queries) {
+    try {
+      const nodes = await store.search(collection, query, { limit: 6, filter: { minConfidence: 0.45 } });
+      for (const node of nodes) {
+        signals.push(`${node.summary}\n${node.original_text.slice(0, 200)}`);
+      }
+    } catch {
+      // ignore search failures for refresh path
+    }
+  }
+  return Array.from(new Set(signals)).slice(0, 80);
 }

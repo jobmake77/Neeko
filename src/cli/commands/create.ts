@@ -18,6 +18,11 @@ import { Soul } from '../../core/models/soul.js';
 import { Persona } from '../../core/models/persona.js';
 import { TrainingProfile } from '../../core/training/types.js';
 import { buildTrainingRunReport } from '../../core/training/report.js';
+import {
+  buildSkillLibraryFromSources,
+  loadSkillLibrary,
+  saveSkillLibrary,
+} from '../../core/skills/library.js';
 
 function savePersona(persona: Persona, soul: Soul): void {
   const dir = settings.getPersonaDir(persona.slug);
@@ -29,11 +34,12 @@ function savePersona(persona: Persona, soul: Soul): void {
 function saveTrainingReport(
   slug: string,
   profile: TrainingProfile,
-  history: Awaited<ReturnType<TrainingLoop['run']>>['history']
+  history: Awaited<ReturnType<TrainingLoop['run']>>['history'],
+  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
 ): void {
   const dir = settings.getPersonaDir(slug);
   mkdirSync(dir, { recursive: true });
-  const report = buildTrainingRunReport(profile, history);
+  const report = buildTrainingRunReport(profile, history, skillMetrics);
   writeFileSync(join(dir, 'training-report.json'), JSON.stringify(report, null, 2), 'utf-8');
 }
 
@@ -212,6 +218,25 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     spin.stop(`Soul v${currentSoul.version} — confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
   }
 
+  // ── Skill origin extraction + auto expansion ─────────────────────────────
+  console.log('[SKILL_STAGE] skill_origin_extract');
+  spin.start('Extracting skill origins and building skill library...');
+  const personaDir = settings.getPersonaDir(persona.slug);
+  const previousSkills = loadSkillLibrary(personaDir, persona.slug);
+  const skillLibrary = await buildSkillLibraryFromSources(
+    persona,
+    currentSoul,
+    chunks.slice(0, 80),
+    cleanDocs.slice(0, 80),
+    previousSkills
+  );
+  console.log('[SKILL_STAGE] skill_expand');
+  saveSkillLibrary(personaDir, skillLibrary);
+  console.log('[SKILL_STAGE] skill_merge');
+  spin.stop(
+    `Skill library updated — origins ${skillLibrary.origin_skills.length}, expanded ${skillLibrary.expanded_skills.length}`
+  );
+
   // ── Ask about training ────────────────────────────────────────────────────
   const requestedRounds = parseInt(options.rounds ?? '0', 10);
   const profile = normalizeTrainingProfile(options.trainingProfile);
@@ -263,7 +288,18 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     persona.training_rounds = result.totalRounds;
     persona.last_trained_at = new Date().toISOString();
     persona.updated_at = new Date().toISOString();
-    saveTrainingReport(persona.slug, profile, result.history);
+    const originSkillsAdded = skillLibrary.origin_skills.length;
+    const expandedSkillsAdded = skillLibrary.expanded_skills.length;
+    const covered = skillLibrary.origin_skills.filter(
+      (o) => skillLibrary.expanded_skills.some((e) => e.origin_id === o.id)
+    ).length;
+    const skillCoverageScore =
+      skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length;
+    saveTrainingReport(persona.slug, profile, result.history, {
+      originSkillsAdded,
+      expandedSkillsAdded,
+      skillCoverageScore,
+    });
     spin.stop(`Training complete — ${result.totalRounds} rounds, confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
   }
 

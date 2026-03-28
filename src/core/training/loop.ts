@@ -8,6 +8,9 @@ import { checkConvergence, ConvergenceState } from './convergence.js';
 import { TrainingPolicy } from './policy.js';
 import { GovernanceDecision, MemoryGovernance } from './governance.js';
 import { RoundObservability, TrainingProfile } from './types.js';
+import { settings } from '../../config/settings.js';
+import { computeCoverageByOrigin, loadSkillLibrary } from '../skills/library.js';
+import { PersonaSkillLibrary } from '../skills/types.js';
 
 export interface TrainingOptions {
   maxRounds?: number;
@@ -43,14 +46,16 @@ export class TrainingLoop {
   private retriever: MemoryRetriever;
   private trainingPolicy: TrainingPolicy;
   private governance: MemoryGovernance;
+  private skillLibrary: PersonaSkillLibrary | null;
 
   constructor(
     private soul: Soul,
     private readonly persona: Persona,
     private readonly store: MemoryStore
   ) {
+    this.skillLibrary = this.loadSkills();
     this.retriever = new MemoryRetriever(store);
-    this.personaAgent = new PersonaAgent(soul, this.retriever, persona.memory_collection);
+    this.personaAgent = new PersonaAgent(soul, this.retriever, persona.memory_collection, this.skillLibrary);
     this.trainerAgent = new TrainerAgent();
     this.evaluatorAgent = new EvaluatorAgent();
     this.directorAgent = new DirectorAgent();
@@ -69,12 +74,15 @@ export class TrainingLoop {
 
     for (let round = 1; round <= maxRounds; round++) {
       // ── Step 1: Generate questions ─────────────────────────────────────────
+      const gapHints = this.skillGapHints();
+      const gapPressure = this.skillGapPressure();
       const plan = this.trainingPolicy.buildQuestionPlan(
         this.soul,
         round,
         profile,
         questionsPerRound,
-        previousRoundObservability
+        previousRoundObservability,
+        gapPressure
       );
       const questionSet = await this.trainerAgent.generateQuestions(
         this.soul,
@@ -85,9 +93,15 @@ export class TrainingLoop {
           lowConfidenceDimensions: plan.lowConfidenceDimensions,
           previousRound: previousRoundObservability,
           questionsPerRound,
+          skillHints: this.skillHints(),
+          skillGapHints: gapHints,
         }
       );
       allPreviousQuestions.push(...questionSet.map((q) => q.question));
+      const gapFocusedQuestions = this.countGapFocusedQuestions(
+        questionSet.map((q) => q.question),
+        gapHints
+      );
 
       // ── Step 2: Run conversations + evaluate ───────────────────────────────
       const roundEvaluations: Evaluation[] = [];
@@ -216,6 +230,8 @@ export class TrainingLoop {
         highValueMemoriesThisRound,
         quarantinedThisRound,
         memoryGrowthByType,
+        gapFocusedQuestions,
+        totalQuestions: questionSet.length,
       });
 
       const directorDecision = await this.directorAgent.review(this.soul, {
@@ -297,6 +313,8 @@ export class TrainingLoop {
       episodic: number;
       working: number;
     };
+    gapFocusedQuestions: number;
+    totalQuestions: number;
   }): RoundObservability {
     const scores = input.evaluations.map((e) => e.overall_score).sort((a, b) => a - b);
     const byIndex = (p: number) => {
@@ -319,6 +337,71 @@ export class TrainingLoop {
       newHighValueMemories: input.highValueMemoriesThisRound,
       quarantinedMemories: input.quarantinedThisRound,
       memoryGrowthByType: input.memoryGrowthByType,
+      gapFocusedQuestions: input.gapFocusedQuestions,
+      totalQuestions: input.totalQuestions,
     };
+  }
+
+  private loadSkills(): PersonaSkillLibrary | null {
+    try {
+      const dir = settings.getPersonaDir(this.persona.slug);
+      return loadSkillLibrary(dir, this.persona.slug);
+    } catch {
+      return null;
+    }
+  }
+
+  private skillHints(): string[] {
+    if (!this.skillLibrary) return [];
+    const coverage = computeCoverageByOrigin(this.skillLibrary);
+    const gapOrigins = coverage
+      .filter((item) => item.missing_slots > 0)
+      .slice(0, 6)
+      .map((item) => {
+        const origin = this.skillLibrary?.origin_skills.find((s) => s.id === item.origin_id);
+        return origin
+          ? `[GAP:${item.missing_slots}] ${origin.name}: ${origin.how}`
+          : `[GAP:${item.missing_slots}] ${item.origin_name}`;
+      });
+    const origins = this.skillLibrary.origin_skills.map((s) => `${s.name}: ${s.how}`).slice(0, 8);
+    const expanded = this.skillLibrary.expanded_skills
+      .map((s) => `${s.name}: ${s.transferable_summary}`)
+      .slice(0, 8);
+    return [...gapOrigins, ...origins, ...expanded];
+  }
+
+  private skillGapHints(): string[] {
+    if (!this.skillLibrary) return [];
+    return computeCoverageByOrigin(this.skillLibrary)
+      .filter((item) => item.missing_slots > 0)
+      .slice(0, 6)
+      .map((item) => {
+        const origin = this.skillLibrary?.origin_skills.find((s) => s.id === item.origin_id);
+        const how = origin?.how ?? '';
+        return `${item.origin_name} (missing ${item.missing_slots}/3)${how ? ` -> ${how}` : ''}`;
+      });
+  }
+
+  private skillGapPressure(): number {
+    if (!this.skillLibrary) return 0;
+    const coverage = computeCoverageByOrigin(this.skillLibrary);
+    if (coverage.length === 0) return 0;
+    const focused = coverage.slice(0, Math.min(4, coverage.length));
+    const avgMissingRatio =
+      focused.reduce((sum, item) => sum + item.missing_slots / 3, 0) / focused.length;
+    return Math.max(0, Math.min(1, avgMissingRatio));
+  }
+
+  private countGapFocusedQuestions(questions: string[], gapHints: string[]): number {
+    if (questions.length === 0 || gapHints.length === 0) return 0;
+    const keys = gapHints
+      .map((hint) => hint.split('(')[0].trim().toLowerCase())
+      .filter(Boolean);
+    let hit = 0;
+    for (const q of questions) {
+      const lower = q.toLowerCase();
+      if (keys.some((k) => k && lower.includes(k))) hit++;
+    }
+    return hit;
   }
 }

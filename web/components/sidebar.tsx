@@ -12,7 +12,7 @@ import {
 import { cn } from '@/lib/utils';
 
 const navItems = [
-  { href: '/create', icon: Plus, label: '新建 Persona', highlight: true },
+  { href: '/create', icon: Plus, label: '新建 Persona' },
   { href: '/', icon: Users, label: '我的 Persona' },
   { href: '/training', icon: Dumbbell, label: '培养中心' },
 ];
@@ -36,7 +36,7 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-2 space-y-0.5">
-        {navItems.map(({ href, icon: Icon, label, highlight }) => {
+        {navItems.map(({ href, icon: Icon, label }) => {
           const active = pathname === href;
           return (
             <Link

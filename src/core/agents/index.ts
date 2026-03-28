@@ -5,6 +5,8 @@ import { resolveModel } from '../../config/model.js';
 import { SoulRenderer } from '../soul/renderer.js';
 import { MemoryRetriever } from '../memory/retriever.js';
 import { CALIBRATION_SET, EVALUATION_RUBRIC } from '../training/evaluation.js';
+import { PersonaSkillLibrary } from '../skills/types.js';
+import { buildSkillContextForQuery } from '../skills/library.js';
 import {
   QuestionStrategy,
   RoundObservability,
@@ -57,7 +59,8 @@ export class PersonaAgent {
   constructor(
     private readonly soul: Soul,
     private readonly retriever: MemoryRetriever,
-    private readonly collection: string
+    private readonly collection: string,
+    private readonly skillLibrary: PersonaSkillLibrary | null = null
   ) {}
 
   async respond(
@@ -71,8 +74,10 @@ export class PersonaAgent {
     });
 
     const memoryContext = this.retriever.formatContext(memories);
+    const skillContext = buildSkillContextForQuery(this.skillLibrary, userMessage, 4);
     const systemPrompt = this.renderer.render(this.soul) +
-      (memoryContext ? `\n\n${memoryContext}` : '');
+      (memoryContext ? `\n\n${memoryContext}` : '') +
+      (skillContext ? `\n\n${skillContext}` : '');
 
     const { text } = await withRetry(
       () =>
@@ -120,6 +125,8 @@ export class TrainerAgent {
       lowConfidenceDimensions?: TargetDimension[];
       previousRound?: RoundObservability;
       questionsPerRound?: number;
+      skillHints?: string[];
+      skillGapHints?: string[];
     } = {}
   ): Promise<TrainingQuestion[]> {
     const strategyTargets = options.strategyTargets ?? [
@@ -130,6 +137,8 @@ export class TrainerAgent {
     ];
     const lowConfidence = options.lowConfidenceDimensions ?? this.lowConfidenceDimensions(soul);
     const questionCount = options.questionsPerRound ?? 5;
+    const skillHints = options.skillHints ?? [];
+    const skillGapHints = options.skillGapHints ?? [];
     const constraints = strategyTargets
       .map((s) => `${s.strategy}: ${s.count}`)
       .join(', ');
@@ -146,6 +155,8 @@ Dimensions with low confidence: ${lowConfidence.join(', ') || 'none'}
 Previously used questions (avoid repeating): ${previousQuestions.slice(-10).join(' | ') || 'none'}
 Previous round contradiction rate: ${options.previousRound?.contradictionRate.toFixed(2) ?? 'n/a'}
 Previous round low-confidence coverage: ${options.previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
+Priority skill gaps (must prioritize if relevant): ${skillGapHints.slice(0, 8).join(' | ') || 'none'}
+Skill hints (prefer covering these, if relevant): ${skillHints.slice(0, 12).join(' | ') || 'none'}
 
 Use curriculum constraints:
 - Required strategy mix: ${constraints}

@@ -7,6 +7,7 @@ import { Persona } from '../../core/models/persona.js';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import yaml from 'js-yaml';
+import { loadSkillLibrary } from '../../core/skills/library.js';
 
 /**
  * Single-shot chat for Web UI — reads --message and --history, prints reply to stdout, exits.
@@ -45,7 +46,8 @@ export async function cmdChatOnce(
   }
 
   const retriever = new MemoryRetriever(store);
-  const agent = new PersonaAgent(soul, retriever, persona.memory_collection);
+  const skillLibrary = loadSkillLibrary(dir, slug);
+  const agent = new PersonaAgent(soul, retriever, persona.memory_collection, skillLibrary);
 
   const reply = await agent.respond(options.message, history);
   process.stdout.write(reply);

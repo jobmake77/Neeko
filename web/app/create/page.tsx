@@ -19,12 +19,26 @@ type BuildProgress = {
   etaMax: number;
 };
 
-const BUILD_STAGE_ORDER = ['init', 'ingestion', 'preprocess', 'soul', 'training', 'finalize', 'done'] as const;
+const BUILD_STAGE_ORDER = [
+  'init',
+  'ingestion',
+  'preprocess',
+  'soul',
+  'skill_origin_extract',
+  'skill_expand',
+  'skill_merge',
+  'training',
+  'finalize',
+  'done',
+] as const;
 const BUILD_STAGE_LABEL: Record<string, string> = {
   init: '初始化任务',
   ingestion: '采集数据源',
   preprocess: '清洗与切片',
   soul: '提炼 Soul',
+  skill_origin_extract: 'Skill 原点提炼',
+  skill_expand: 'Skill 相似扩展',
+  skill_merge: 'Skill 融合入库',
   training: '培养循环',
   finalize: '收尾与保存',
   done: '培养完成',

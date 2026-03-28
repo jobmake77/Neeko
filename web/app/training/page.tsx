@@ -8,6 +8,7 @@ interface TrainingCardItem {
   slug: string;
   name: string;
   status?: string;
+  gap_focused_trend_delta?: number | null;
   report: {
     generated_at: string;
     profile: string;
@@ -18,6 +19,10 @@ interface TrainingCardItem {
       avg_duplication_rate: number;
       total_nodes_written: number;
       total_high_value_memories: number;
+      origin_skills_added?: number;
+      expanded_skills_added?: number;
+      skill_coverage_score?: number;
+      gap_focused_questions_ratio?: number;
     };
   } | null;
   runtime_progress?: StreamProgress | null;
@@ -34,12 +39,28 @@ interface TrainingRoundDetail {
   low_confidence_coverage: number;
   new_high_value_memories: number;
   quarantined_memories: number;
+  gap_focused_questions?: number;
+  total_questions?: number;
 }
 
 interface TrainingDetailResponse {
   persona: { slug: string; name: string };
   report: {
     profile: string;
+    summary?: {
+      avg_quality_score?: number;
+      avg_contradiction_rate?: number;
+      avg_duplication_rate?: number;
+      avg_low_confidence_coverage?: number;
+      total_nodes_written?: number;
+      total_nodes_reinforced?: number;
+      total_high_value_memories?: number;
+      total_quarantined_memories?: number;
+      origin_skills_added?: number;
+      expanded_skills_added?: number;
+      skill_coverage_score?: number;
+      gap_focused_questions_ratio?: number;
+    };
     rounds: TrainingRoundDetail[];
   };
 }
@@ -74,9 +95,12 @@ interface StreamProgress {
   etaMax: number;
 }
 
-const TRAIN_STAGE_ORDER = ['init', 'training', 'finalize', 'done'] as const;
+const TRAIN_STAGE_ORDER = ['init', 'skill_origin_extract', 'skill_expand', 'skill_merge', 'training', 'finalize', 'done'] as const;
 const TRAIN_STAGE_LABEL: Record<string, string> = {
   init: '初始化任务',
+  skill_origin_extract: 'Skill 原点提炼',
+  skill_expand: 'Skill 相似扩展',
+  skill_merge: 'Skill 融合入库',
   training: '培养循环',
   finalize: '收尾与保存',
   done: '培养完成',
@@ -300,6 +324,9 @@ export default function TrainingPage() {
       'nodes_reinforced',
       'new_high_value_memories',
       'quarantined_memories',
+      'gap_focused_questions',
+      'total_questions',
+      'gap_focused_questions_ratio',
     ];
     const rows = detail.report.rounds.map((r) =>
       [
@@ -313,6 +340,11 @@ export default function TrainingPage() {
         r.nodes_reinforced,
         r.new_high_value_memories,
         r.quarantined_memories,
+        r.gap_focused_questions ?? 0,
+        r.total_questions ?? 0,
+        (typeof r.gap_focused_questions === 'number' && typeof r.total_questions === 'number' && r.total_questions > 0)
+          ? (r.gap_focused_questions / r.total_questions).toFixed(6)
+          : '0.000000',
       ].join(',')
     );
     const csv = [head.join(','), ...rows].join('\n');
@@ -391,6 +423,11 @@ export default function TrainingPage() {
                 </div>
               </div>
               <p className="text-[12px] text-[oklch(0.6_0_0)] mt-1">/{item.slug}</p>
+              {typeof item.gap_focused_trend_delta === 'number' && (
+                <p className="text-[11.5px] mt-1 text-[oklch(0.52_0.08_240)]">
+                  缺口趋势：{item.gap_focused_trend_delta >= 0 ? '+' : ''}{(item.gap_focused_trend_delta * 100).toFixed(1)}%
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-3 mt-4 text-[12.5px]">
                 <div className="rounded-lg bg-[oklch(0.97_0_0)] p-3">
                   <p className="text-[oklch(0.55_0_0)]">{item.report ? '平均质量' : '当前进度'}</p>
@@ -405,15 +442,31 @@ export default function TrainingPage() {
                   </p>
                 </div>
                 <div className="rounded-lg bg-[oklch(0.97_0_0)] p-3">
-                  <p className="text-[oklch(0.55_0_0)]">{item.report ? '新增记忆' : '当前轮次'}</p>
+                  <p className="text-[oklch(0.55_0_0)]">
+                    {item.report
+                      ? (typeof item.report.summary.skill_coverage_score === 'number' ? 'Skill 覆盖' : '新增记忆')
+                      : '当前轮次'}
+                  </p>
                   <p className="mt-1 font-semibold text-[oklch(0.25_0_0)]">
-                    {item.report ? item.report.summary.total_nodes_written : `${item.runtime_progress?.currentRound ?? 0}/${item.runtime_progress?.totalRounds ?? 0}`}
+                    {item.report
+                      ? (typeof item.report.summary.skill_coverage_score === 'number'
+                        ? `${(item.report.summary.skill_coverage_score * 100).toFixed(1)}%`
+                        : item.report.summary.total_nodes_written)
+                      : `${item.runtime_progress?.currentRound ?? 0}/${item.runtime_progress?.totalRounds ?? 0}`}
                   </p>
                 </div>
                 <div className="rounded-lg bg-[oklch(0.97_0_0)] p-3">
-                  <p className="text-[oklch(0.55_0_0)]">{item.report ? '高价值记忆' : '已耗时'}</p>
+                  <p className="text-[oklch(0.55_0_0)]">
+                    {item.report
+                      ? (typeof item.report.summary.origin_skills_added === 'number' ? 'Skill 新增' : '高价值记忆')
+                      : '已耗时'}
+                  </p>
                   <p className="mt-1 font-semibold text-[oklch(0.25_0_0)]">
-                    {item.report ? item.report.summary.total_high_value_memories : formatDuration(item.runtime_progress?.elapsedSec ?? 0)}
+                    {item.report
+                      ? (typeof item.report.summary.origin_skills_added === 'number'
+                        ? `${item.report.summary.origin_skills_added ?? 0}/${item.report.summary.expanded_skills_added ?? 0}`
+                        : item.report.summary.total_high_value_memories)
+                      : formatDuration(item.runtime_progress?.elapsedSec ?? 0)}
                   </p>
                 </div>
               </div>
@@ -424,6 +477,11 @@ export default function TrainingPage() {
               ) : (
                 <p className="text-[11.5px] text-[oklch(0.62_0_0)] mt-3">
                   实时更新：{item.runtime_progress?.stageLabel ?? '处理中'}
+                </p>
+              )}
+              {item.report && typeof item.report.summary.gap_focused_questions_ratio === 'number' && (
+                <p className="text-[11.5px] text-[oklch(0.52_0.08_240)] mt-1">
+                  缺口聚焦题占比：{(item.report.summary.gap_focused_questions_ratio * 100).toFixed(1)}%
                 </p>
               )}
             </button>
@@ -492,6 +550,34 @@ export default function TrainingPage() {
           </div>
 
           <div className="mb-4 rounded-xl border border-[oklch(0.9_0_0)] bg-[oklch(0.985_0_0)] p-3">
+            {detail.report.summary && (
+              <div className="mb-3 grid grid-cols-1 md:grid-cols-4 gap-2 text-[12px]">
+                <div className="rounded-md bg-white border border-[oklch(0.9_0_0)] px-3 py-2">
+                  <p className="text-[oklch(0.55_0_0)]">Skill 覆盖分</p>
+                  <p className="font-medium text-[oklch(0.2_0_0)]">
+                    {typeof detail.report.summary.skill_coverage_score === 'number'
+                      ? `${(detail.report.summary.skill_coverage_score * 100).toFixed(1)}%`
+                      : '-'}
+                  </p>
+                </div>
+                <div className="rounded-md bg-white border border-[oklch(0.9_0_0)] px-3 py-2">
+                  <p className="text-[oklch(0.55_0_0)]">原点 Skill 新增</p>
+                  <p className="font-medium text-[oklch(0.2_0_0)]">{detail.report.summary.origin_skills_added ?? '-'}</p>
+                </div>
+                <div className="rounded-md bg-white border border-[oklch(0.9_0_0)] px-3 py-2">
+                  <p className="text-[oklch(0.55_0_0)]">扩展 Skill 新增</p>
+                  <p className="font-medium text-[oklch(0.2_0_0)]">{detail.report.summary.expanded_skills_added ?? '-'}</p>
+                </div>
+                <div className="rounded-md bg-white border border-[oklch(0.9_0_0)] px-3 py-2">
+                  <p className="text-[oklch(0.55_0_0)]">缺口聚焦题占比</p>
+                  <p className="font-medium text-[oklch(0.2_0_0)]">
+                    {typeof detail.report.summary.gap_focused_questions_ratio === 'number'
+                      ? `${(detail.report.summary.gap_focused_questions_ratio * 100).toFixed(1)}%`
+                      : '-'}
+                  </p>
+                </div>
+              </div>
+            )}
             <p className="text-[13px] font-medium text-[oklch(0.28_0_0)] mb-2">继续培养</p>
             <div className="flex items-center gap-2 flex-wrap">
               <button
@@ -595,7 +681,8 @@ export default function TrainingPage() {
                 <th className="py-2 pr-3">新增</th>
                 <th className="py-2 pr-3">强化</th>
                 <th className="py-2 pr-3">高价值</th>
-                <th className="py-2">隔离</th>
+                <th className="py-2 pr-3">隔离</th>
+                <th className="py-2">缺口聚焦</th>
               </tr>
             </thead>
             <tbody>
@@ -610,7 +697,12 @@ export default function TrainingPage() {
                   <td className="py-2 pr-3">{r.nodes_written}</td>
                   <td className="py-2 pr-3">{r.nodes_reinforced}</td>
                   <td className="py-2 pr-3">{r.new_high_value_memories}</td>
-                  <td className="py-2">{r.quarantined_memories}</td>
+                  <td className="py-2 pr-3">{r.quarantined_memories}</td>
+                  <td className="py-2">
+                    {typeof r.gap_focused_questions === 'number' && typeof r.total_questions === 'number' && r.total_questions > 0
+                      ? `${r.gap_focused_questions}/${r.total_questions} (${((r.gap_focused_questions / r.total_questions) * 100).toFixed(0)}%)`
+                      : '-'}
+                  </td>
                 </tr>
               ))}
             </tbody>

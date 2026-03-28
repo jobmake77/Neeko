@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { resolveCliEntry } from '@/lib/cli-entry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,12 +57,12 @@ export async function POST(
 
   // Call CLI chat-once command via child process
   const { spawn } = await import('child_process');
-  const repoRoot = `${process.cwd()}/..`;
+  const { repoRoot, cliEntry } = resolveCliEntry(process.cwd());
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
-      const child = spawn(process.execPath, ['dist/index.js', 'chat-once', slug,
+      const child = spawn(process.execPath, [cliEntry, 'chat-once', slug,
         '--message', message,
         '--history', JSON.stringify(history),
       ], { env, cwd: repoRoot });

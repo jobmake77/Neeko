@@ -8,16 +8,16 @@ import { ArticleAdapter } from '../../core/pipeline/ingestion/article.js';
 import { DataCleaner, SemanticChunker } from '../../core/pipeline/cleaner.js';
 import { SoulExtractor, SoulAggregator } from '../../core/soul/extractor.js';
 import { MemoryStore } from '../../core/memory/store.js';
-import { TrainingLoop } from '../../core/training/loop.js';
+import { TrainingLoop, TrainingProgress } from '../../core/training/loop.js';
 import { DataSourceRecommender } from '../../core/recommender/sources.js';
 import { settings } from '../../config/settings.js';
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import yaml from 'js-yaml';
 import { Soul } from '../../core/models/soul.js';
 import { Persona } from '../../core/models/persona.js';
 import { TrainingProfile } from '../../core/training/types.js';
-import { buildTrainingRunReport } from '../../core/training/report.js';
+import { buildTrainingRunReport, buildTrainingRunReportFromRounds, TrainingRoundSnapshot } from '../../core/training/report.js';
 import {
   buildSkillLibraryFromSources,
   loadSkillLibrary,
@@ -40,6 +40,18 @@ function saveTrainingReport(
   const dir = settings.getPersonaDir(slug);
   mkdirSync(dir, { recursive: true });
   const report = buildTrainingRunReport(profile, history, skillMetrics);
+  writeFileSync(join(dir, 'training-report.json'), JSON.stringify(report, null, 2), 'utf-8');
+}
+
+function saveTrainingReportFromRounds(
+  slug: string,
+  profile: TrainingProfile,
+  rounds: TrainingRoundSnapshot[],
+  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
+): void {
+  const dir = settings.getPersonaDir(slug);
+  mkdirSync(dir, { recursive: true });
+  const report = buildTrainingRunReportFromRounds(profile, rounds, skillMetrics);
   writeFileSync(join(dir, 'training-report.json'), JSON.stringify(report, null, 2), 'utf-8');
 }
 
@@ -274,6 +286,29 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
 
     spin.start('Running cultivation loop...');
     const loop = new TrainingLoop(currentSoul, persona, store);
+    const contextPath = join(personaDir, 'training-context.json');
+    const originSkillsAdded = skillLibrary.origin_skills.length;
+    const expandedSkillsAdded = skillLibrary.expanded_skills.length;
+    const covered = skillLibrary.origin_skills.filter(
+      (o) => skillLibrary.expanded_skills.some((e) => e.origin_id === o.id)
+    ).length;
+    const skillCoverageScore =
+      skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length;
+    const skillMetrics = {
+      originSkillsAdded,
+      expandedSkillsAdded,
+      skillCoverageScore,
+    };
+    const snapshots: TrainingRoundSnapshot[] = [];
+    writeTrainingContext(contextPath, {
+      state: 'running',
+      slug: persona.slug,
+      profile,
+      requested_rounds: maxRounds,
+      completed_rounds: 0,
+      updated_at: new Date().toISOString(),
+      report_path: join(personaDir, 'training-report.json'),
+    });
     const result = await loop.run({
       maxRounds,
       profile,
@@ -282,23 +317,56 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
           `Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten} nodes, quality ${(progress.avgQualityScore * 100).toFixed(0)}%, ` +
           `dup ${(progress.observability.duplicationRate * 100).toFixed(0)}%, contra ${(progress.observability.contradictionRate * 100).toFixed(0)}%`
         );
+        const snapshot = toRoundSnapshot(progress, 0);
+        upsertRoundSnapshot(snapshots, snapshot);
+        saveTrainingReportFromRounds(persona.slug, profile, snapshots, skillMetrics);
+        persona.status = 'training';
+        persona.training_rounds = snapshot.round;
+        persona.last_trained_at = new Date().toISOString();
+        persona.updated_at = new Date().toISOString();
+        currentSoul.training_rounds_completed = snapshot.round;
+        currentSoul.updated_at = new Date().toISOString();
+        savePersona(persona, currentSoul);
+        writeTrainingContext(contextPath, {
+          state: 'running',
+          slug: persona.slug,
+          profile,
+          requested_rounds: maxRounds,
+          completed_rounds: snapshot.round,
+          updated_at: new Date().toISOString(),
+          report_path: join(personaDir, 'training-report.json'),
+        });
       },
+    }).catch((error) => {
+      writeTrainingContext(contextPath, {
+        state: 'interrupted',
+        slug: persona.slug,
+        profile,
+        requested_rounds: maxRounds,
+        completed_rounds: Math.max(0, ...snapshots.map((item) => item.round)),
+        updated_at: new Date().toISOString(),
+        report_path: join(personaDir, 'training-report.json'),
+        last_error: String(error),
+      });
+      throw error;
     });
     currentSoul = result.soul;
     persona.training_rounds = result.totalRounds;
     persona.last_trained_at = new Date().toISOString();
     persona.updated_at = new Date().toISOString();
-    const originSkillsAdded = skillLibrary.origin_skills.length;
-    const expandedSkillsAdded = skillLibrary.expanded_skills.length;
-    const covered = skillLibrary.origin_skills.filter(
-      (o) => skillLibrary.expanded_skills.some((e) => e.origin_id === o.id)
-    ).length;
-    const skillCoverageScore =
-      skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length;
     saveTrainingReport(persona.slug, profile, result.history, {
-      originSkillsAdded,
-      expandedSkillsAdded,
-      skillCoverageScore,
+      originSkillsAdded: skillMetrics.originSkillsAdded,
+      expandedSkillsAdded: skillMetrics.expandedSkillsAdded,
+      skillCoverageScore: skillMetrics.skillCoverageScore,
+    });
+    writeTrainingContext(contextPath, {
+      state: 'completed',
+      slug: persona.slug,
+      profile,
+      requested_rounds: maxRounds,
+      completed_rounds: result.totalRounds,
+      updated_at: new Date().toISOString(),
+      report_path: join(personaDir, 'training-report.json'),
     });
     spin.stop(`Training complete — ${result.totalRounds} rounds, confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
   }
@@ -324,4 +392,41 @@ function normalizeTrainingProfile(raw?: string): TrainingProfile {
     return value;
   }
   return 'full';
+}
+
+function toRoundSnapshot(progress: TrainingProgress, roundOffset: number): TrainingRoundSnapshot {
+  return {
+    round: roundOffset + progress.round,
+    status: progress.status,
+    avg_quality_score: progress.avgQualityScore,
+    nodes_written: progress.nodesWritten,
+    nodes_reinforced: progress.nodesReinforced,
+    contradiction_rate: progress.observability.contradictionRate,
+    duplication_rate: progress.observability.duplicationRate,
+    low_confidence_coverage: progress.observability.lowConfidenceCoverage,
+    new_high_value_memories: progress.observability.newHighValueMemories,
+    quarantined_memories: progress.observability.quarantinedMemories,
+    gap_focused_questions: progress.observability.gapFocusedQuestions,
+    total_questions: progress.observability.totalQuestions,
+    score_distribution: progress.observability.scoreDistribution,
+  };
+}
+
+function upsertRoundSnapshot(rounds: TrainingRoundSnapshot[], next: TrainingRoundSnapshot): void {
+  const idx = rounds.findIndex((item) => item.round === next.round);
+  if (idx >= 0) {
+    rounds[idx] = next;
+    return;
+  }
+  rounds.push(next);
+  rounds.sort((a, b) => a.round - b.round);
+}
+
+function writeTrainingContext(path: string, payload: Record<string, unknown>): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(payload, null, 2), 'utf-8');
+  } catch {
+    // best effort
+  }
 }

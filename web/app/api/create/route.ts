@@ -8,6 +8,7 @@ import {
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { resolveCliEntry } from '@/lib/cli-entry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -148,8 +149,8 @@ export async function GET(req: Request) {
       }
 
       // Build CLI args
-      const repoRoot = `${process.cwd()}/..`;
-      const args = ['dist/index.js', 'create'];
+      const { repoRoot, cliEntry } = resolveCliEntry(process.cwd());
+      const args = [cliEntry, 'create'];
 
       if (mode === 'single' && handle) {
         args.push(`@${handle}`, '--yes');

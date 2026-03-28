@@ -4,18 +4,26 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { isPidAlive, readRuntimeProgress, readRuntimeTaskState } from '@/lib/runtime-progress';
 import { maybeAutoRecoverTraining } from '@/lib/auto-recover';
+import { readLockHolder } from '@/lib/train-queue';
 
 function getDataDir() {
   return join(homedir(), '.neeko', 'personas');
 }
 
 function isStalled(
+  slug: string,
   status: string | undefined,
   runtimeUpdatedAt?: string,
   taskState?: { state: string; pid: number | null; updatedAt: string } | null
 ): boolean {
   if (status !== 'training') return false;
-  if (taskState?.state === 'queued') return false;
+  if (taskState?.state === 'queued') {
+    const lockHolder = readLockHolder(slug);
+    if (lockHolder) return false;
+    const queuedTs = new Date(taskState.updatedAt || runtimeUpdatedAt || 0).getTime();
+    if (Number.isFinite(queuedTs) && Date.now() - queuedTs > 90 * 1000) return true;
+    return false;
+  }
   if (taskState?.state === 'failed') return true;
   if (taskState?.state === 'running') {
     const alive = isPidAlive(taskState.pid);
@@ -115,7 +123,7 @@ export async function GET() {
         };
       const runtimeProgress = readRuntimeProgress(slug);
       const taskState = readRuntimeTaskState(slug);
-      const stalled = isStalled(persona.status, runtimeProgress?.updatedAt, taskState);
+      const stalled = isStalled(slug, persona.status, runtimeProgress?.updatedAt, taskState);
       const recovering = stalled && maybeAutoRecoverTraining(slug, taskState, runtimeProgress);
       return {
         ...persona,

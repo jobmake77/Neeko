@@ -39,17 +39,47 @@ const ChunkExtractionSchema = z.object({
 
 type ChunkExtraction = z.infer<typeof ChunkExtractionSchema>;
 
+const EMPTY_EXTRACTION: ChunkExtraction = {
+  language_style: {},
+  values: {},
+  thinking_patterns: {},
+  behavioral_traits: {},
+  knowledge_domains: {},
+};
+
 // ─── Soul Extractor ──────────────────────────────────────────────────────────
 
 export class SoulExtractor {
+  private async withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    let timer: NodeJS.Timeout | null = null;
+    try {
+      return await Promise.race([
+        task,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async extractFromChunk(
     chunk: SemanticChunk,
-    targetName: string
+    targetName: string,
+    options?: { timeoutMs?: number; retries?: number }
   ): Promise<ChunkExtraction> {
-    const { object } = await generateObject({
-      model: resolveModel(),
-      schema: ChunkExtractionSchema,
-      prompt: `You are analyzing a piece of content written by or attributed to "${targetName}".
+    const timeoutMs = options?.timeoutMs ?? 45_000;
+    const retries = Math.max(0, options?.retries ?? 1);
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const { object } = await this.withTimeout(
+          generateObject({
+            model: resolveModel(),
+            schema: ChunkExtractionSchema,
+            prompt: `You are analyzing a piece of content written by or attributed to "${targetName}".
 Extract structured personality/soul information from this content.
 Only extract what is clearly evidenced — do NOT hallucinate traits.
 Assign confidence scores (0-1) based on how clearly the evidence supports each observation.
@@ -61,22 +91,41 @@ ${chunk.content}
 
 Source type: ${chunk.source_type}
 Author: ${chunk.author}`,
-    });
+          }),
+          timeoutMs,
+          'soul extraction'
+        );
 
-    return object;
+        return object;
+      } catch (error) {
+        lastError = error;
+        if (attempt < retries) {
+          await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   async extractBatch(
     chunks: SemanticChunk[],
     targetName: string,
-    concurrency = 5
+    concurrency = 5,
+    options?: { timeoutMs?: number; retries?: number }
   ): Promise<ChunkExtraction[]> {
     const results: ChunkExtraction[] = [];
 
     for (let i = 0; i < chunks.length; i += concurrency) {
       const batch = chunks.slice(i, i + concurrency);
       const batchResults = await Promise.all(
-        batch.map((c) => this.extractFromChunk(c, targetName))
+        batch.map(async (c) => {
+          try {
+            return await this.extractFromChunk(c, targetName, options);
+          } catch (error) {
+            console.warn(`[SoulExtractor] chunk extraction failed: ${String(error)}`);
+            return EMPTY_EXTRACTION;
+          }
+        })
       );
       results.push(...batchResults);
     }

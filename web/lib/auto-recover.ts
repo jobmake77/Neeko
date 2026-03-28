@@ -45,10 +45,33 @@ export function maybeAutoRecoverTraining(
   const child = spawn(process.execPath, args, {
     cwd: repoRoot,
     env: { ...process.env },
-    detached: true,
     stdio: 'ignore',
   });
-  child.unref();
+  child.on('close', (code) => {
+    if (code === 0) {
+      patchRuntimeTaskState(slug, {
+        state: 'done',
+        pid: child.pid ?? null,
+        finishedAt: new Date().toISOString(),
+        lastError: undefined,
+      });
+    } else {
+      patchRuntimeTaskState(slug, {
+        state: 'failed',
+        pid: child.pid ?? null,
+        finishedAt: new Date().toISOString(),
+        lastError: `exit code ${code}`,
+      });
+    }
+  });
+  child.on('error', (error) => {
+    patchRuntimeTaskState(slug, {
+      state: 'failed',
+      pid: child.pid ?? null,
+      finishedAt: new Date().toISOString(),
+      lastError: error.message,
+    });
+  });
 
   recoverCooldown.set(slug, now + 30 * 1000);
   patchRuntimeTaskState(slug, {
@@ -64,4 +87,3 @@ export function maybeAutoRecoverTraining(
   });
   return true;
 }
-

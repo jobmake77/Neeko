@@ -15,7 +15,13 @@ function isStalled(
   taskState?: { state: string; pid: number | null; updatedAt: string } | null
 ): boolean {
   if (status !== 'training') return false;
-  if (taskState?.state === 'running' && isPidAlive(taskState.pid)) return false;
+  if (taskState?.state === 'failed') return true;
+  if (taskState?.state === 'running') {
+    const alive = isPidAlive(taskState.pid);
+    if (alive) return false;
+    const lastBeat = new Date(taskState.updatedAt || runtimeUpdatedAt || 0).getTime();
+    if (Number.isFinite(lastBeat) && Date.now() - lastBeat > 90 * 1000) return true;
+  }
   if (!runtimeUpdatedAt) return true;
   const ts = new Date(runtimeUpdatedAt).getTime();
   if (!Number.isFinite(ts)) return true;

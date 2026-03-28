@@ -12,6 +12,40 @@ import {
   TrainingQuestion,
 } from '../training/types.js';
 
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: { retries?: number; timeoutMs?: number; label: string }
+): Promise<T> {
+  const retries = Math.max(0, options.retries ?? 1);
+  const timeoutMs = options.timeoutMs ?? 45_000;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await withTimeout(fn(), timeoutMs, options.label);
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 // ─── Persona Agent ────────────────────────────────────────────────────────────
 // Plays the role of the target person using Soul+Memory RAG
 
@@ -40,16 +74,20 @@ export class PersonaAgent {
     const systemPrompt = this.renderer.render(this.soul) +
       (memoryContext ? `\n\n${memoryContext}` : '');
 
-    const { text } = await generateText({
-      model: this.model,
-      system: systemPrompt,
-      messages: [
-        ...conversationHistory,
-        { role: 'user', content: userMessage },
-      ],
-      maxTokens: 1024,
-      temperature: 0.7,
-    });
+    const { text } = await withRetry(
+      () =>
+        generateText({
+          model: this.model,
+          system: systemPrompt,
+          messages: [
+            ...conversationHistory,
+            { role: 'user', content: userMessage },
+          ],
+          maxTokens: 1024,
+          temperature: 0.7,
+        }),
+      { label: 'persona respond', timeoutMs: 45_000, retries: 1 }
+    );
 
     return text;
   }
@@ -96,10 +134,12 @@ export class TrainerAgent {
       .map((s) => `${s.strategy}: ${s.count}`)
       .join(', ');
 
-    const { object } = await generateObject({
-      model: this.model,
-      schema: QuestionSetSchema,
-      prompt: `You are designing training questions to evaluate and improve a Persona Agent simulating "${soul.target_name}".
+    const { object } = await withRetry(
+      () =>
+        generateObject({
+          model: this.model,
+          schema: QuestionSetSchema,
+          prompt: `You are designing training questions to evaluate and improve a Persona Agent simulating "${soul.target_name}".
 
 Round: ${round}
 Dimensions with low confidence: ${lowConfidence.join(', ') || 'none'}
@@ -118,7 +158,9 @@ Question strategy definitions:
 4. **scenario**: Practical problem-solving in their domain of expertise
 
 Return exactly ${questionCount} questions spanning different target dimensions, with strict strategy counts.`,
-    });
+        }),
+      { label: 'trainer generate questions', timeoutMs: 45_000, retries: 1 }
+    );
 
     return object.questions;
   }
@@ -218,10 +260,12 @@ export class EvaluatorAgent {
       ).join('\n\n')
       : 'Calibration examples disabled.';
 
-    const { object } = await generateObject({
-      model: this.model,
-      schema: EvaluationSchema,
-      prompt: `You are an independent quality evaluator for a persona simulation of "${personaName}".
+    const { object } = await withRetry(
+      () =>
+        generateObject({
+          model: this.model,
+          schema: EvaluationSchema,
+          prompt: `You are an independent quality evaluator for a persona simulation of "${personaName}".
 You do NOT have access to their internal Soul configuration — evaluate purely based on response quality.
 Reviewer role: ${options.reviewerRole}
 
@@ -249,7 +293,9 @@ Verdict:
 - "flag_contradiction": Response contradicts known ${personaName} positions
 
 Extract any new memory candidates (insights about their beliefs, style, knowledge).`,
-    });
+        }),
+      { label: 'evaluator score response', timeoutMs: 45_000, retries: 1 }
+    );
 
     return object;
   }
@@ -287,10 +333,12 @@ export class DirectorAgent {
       observability?: RoundObservability;
     }
   ): Promise<DirectorDecision> {
-    const { object } = await generateObject({
-      model: this.model,
-      schema: DirectorDecisionSchema,
-      prompt: `You are the Director overseeing training of a Persona Agent for "${soul.target_name}".
+    const { object } = await withRetry(
+      () =>
+        generateObject({
+          model: this.model,
+          schema: DirectorDecisionSchema,
+          prompt: `You are the Director overseeing training of a Persona Agent for "${soul.target_name}".
 
 Training Round ${roundSummary.round} Summary:
 - Questions asked: ${roundSummary.questions_asked}
@@ -322,7 +370,9 @@ Observability signals:
 
 Decide whether to continue training, suggest soul updates, and estimate coverage.
 Coverage score reflects how well we've explored ${soul.target_name}'s worldview (0-1).`,
-    });
+        }),
+      { label: 'director review round', timeoutMs: 45_000, retries: 1 }
+    );
 
     return object;
   }

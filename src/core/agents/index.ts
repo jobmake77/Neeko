@@ -6,7 +6,7 @@ import { SoulRenderer } from '../soul/renderer.js';
 import { MemoryRetriever } from '../memory/retriever.js';
 import { CALIBRATION_SET, EVALUATION_RUBRIC } from '../training/evaluation.js';
 import { PersonaSkillLibrary } from '../skills/types.js';
-import { buildSkillContextForQuery } from '../skills/library.js';
+import { selectTriggeredSkillsForQuery, TriggeredSkillMatch } from '../skills/library.js';
 import {
   QuestionStrategy,
   RoundObservability,
@@ -67,14 +67,25 @@ export class PersonaAgent {
     userMessage: string,
     conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
   ): Promise<string> {
+    const result = await this.respondWithMeta(userMessage, conversationHistory);
+    return result.text;
+  }
+
+  async respondWithMeta(
+    userMessage: string,
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  ): Promise<{ text: string; triggeredSkills: TriggeredSkillMatch[]; normalizedQuery: string }> {
+    const skillSelection = selectTriggeredSkillsForQuery(this.skillLibrary, userMessage, 2);
+    const query = skillSelection.cleanQuery;
+
     // RAG: retrieve relevant memories
-    const memories = await this.retriever.retrieve(this.collection, userMessage, {
+    const memories = await this.retriever.retrieve(this.collection, query, {
       limit: 8,
       minConfidence: 0.35,
     });
 
     const memoryContext = this.retriever.formatContext(memories);
-    const skillContext = buildSkillContextForQuery(this.skillLibrary, userMessage, 4);
+    const skillContext = skillSelection.context;
     const systemPrompt = this.renderer.render(this.soul) +
       (memoryContext ? `\n\n${memoryContext}` : '') +
       (skillContext ? `\n\n${skillContext}` : '');
@@ -86,7 +97,7 @@ export class PersonaAgent {
           system: systemPrompt,
           messages: [
             ...conversationHistory,
-            { role: 'user', content: userMessage },
+            { role: 'user', content: query },
           ],
           maxTokens: 1024,
           temperature: 0.7,
@@ -94,7 +105,11 @@ export class PersonaAgent {
       { label: 'persona respond', timeoutMs: 45_000, retries: 1 }
     );
 
-    return text;
+    return {
+      text,
+      triggeredSkills: skillSelection.triggered,
+      normalizedQuery: query,
+    };
   }
 }
 

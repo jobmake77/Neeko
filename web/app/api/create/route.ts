@@ -132,11 +132,11 @@ export async function GET(req: Request) {
           return;
         }
         if (line.includes('[SKILL_STAGE] skill_expand')) {
-          emitProgress({ stage: 'skill_expand', stageLabel: 'Skill 相似扩展', percent: 64 });
+          emitProgress({ stage: 'skill_expand', stageLabel: 'Skill 证据融合', percent: 64 });
           return;
         }
         if (line.includes('[SKILL_STAGE] skill_merge')) {
-          emitProgress({ stage: 'skill_merge', stageLabel: 'Skill 融合入库', percent: 70 });
+          emitProgress({ stage: 'skill_merge', stageLabel: 'Skill 蒸馏入库', percent: 70 });
           return;
         }
         if (line.includes('Running cultivation loop')) {

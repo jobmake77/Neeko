@@ -169,7 +169,8 @@ score = confidence
 
 - 模型：按 `activeProvider` 动态解析（Claude/OpenAI/Kimi/Gemini/DeepSeek）
 - 每次对话触发 RAG 检索（top-8 相关记忆节点）
-- 将记忆上下文拼入 System Prompt
+- 追加 Skill 上下文（distilled skill，top-2）
+- 支持 `/skill <name>` 手动触发，优先级高于自动触发
 
 #### TrainerAgent
 
@@ -232,6 +233,23 @@ IDLE
 - 风险指标：`contradiction_rate`、`duplication_rate`
 - 记忆质量：`new_high_value_memories`、`quarantined_memories`
 - 记忆增长：`memory_growth_by_type`
+- Skill 指标：`skill_trigger_precision`、`skill_method_adherence`、`skill_boundary_violation_rate`、`skill_transfer_success_rate`
+
+---
+
+### Skill 库（v2）
+
+`skills.json` 升级为 v2，关键字段：
+- `origin_skills`：中间态原点（可追溯）
+- `distilled_skills`：最终可用 skill（动态 3-6）
+- `candidate_skill_pool`：未达标候选
+
+Skill 质量门控（入库需同时满足）：
+- `evidence_count >= 4`
+- `source_diversity >= 2`
+- `confidence >= 0.65`
+- `contradiction_risk <= 0.15`
+- `method_completeness >= 0.7`
 
 ---
 

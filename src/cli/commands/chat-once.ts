@@ -49,6 +49,10 @@ export async function cmdChatOnce(
   const skillLibrary = loadSkillLibrary(dir, slug);
   const agent = new PersonaAgent(soul, retriever, persona.memory_collection, skillLibrary);
 
-  const reply = await agent.respond(options.message, history);
-  process.stdout.write(reply);
+  const result = await agent.respondWithMeta(options.message, history);
+  process.stdout.write(JSON.stringify({
+    reply: result.text,
+    triggered_skills: result.triggeredSkills,
+    normalized_query: result.normalizedQuery,
+  }));
 }

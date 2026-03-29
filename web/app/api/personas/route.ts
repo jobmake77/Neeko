@@ -59,7 +59,7 @@ export async function GET() {
           try {
             const parsed = JSON.parse(readFileSync(skillsPath, 'utf-8')) as {
               origin_skills?: unknown[];
-              expanded_skills?: unknown[];
+              distilled_skills?: unknown[];
               updated_at?: string;
             };
             const report = existsSync(reportPath)
@@ -90,7 +90,7 @@ export async function GET() {
                 : null;
             return {
               origin_count: Array.isArray(parsed.origin_skills) ? parsed.origin_skills.length : 0,
-              expanded_count: Array.isArray(parsed.expanded_skills) ? parsed.expanded_skills.length : 0,
+              distilled_count: Array.isArray(parsed.distilled_skills) ? parsed.distilled_skills.length : 0,
               updated_at: parsed.updated_at ?? null,
               coverage_score:
                 typeof report?.summary?.skill_coverage_score === 'number'
@@ -105,7 +105,7 @@ export async function GET() {
           } catch {
             return {
               origin_count: 0,
-              expanded_count: 0,
+              distilled_count: 0,
               updated_at: null,
               coverage_score: null,
               gap_focused_questions_ratio: null,
@@ -115,7 +115,7 @@ export async function GET() {
         })()
         : {
           origin_count: 0,
-          expanded_count: 0,
+          distilled_count: 0,
           updated_at: null,
           coverage_score: null,
           gap_focused_questions_ratio: null,

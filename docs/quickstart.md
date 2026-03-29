@@ -179,6 +179,12 @@ node dist/cli/index.js train elonmusk --mode quick
 node dist/cli/index.js train elonmusk --mode full
 ```
 
+刷新 Skill 库（蒸馏 3-6 个高质量 Skill）：
+```bash
+node dist/cli/index.js skills-refresh elonmusk --mode quick
+node dist/cli/index.js skills-refresh elonmusk --mode full
+```
+
 ---
 
 ## 与 Persona 对话
@@ -197,6 +203,12 @@ node dist/cli/index.js train elonmusk --mode full
 
 ```bash
 node dist/cli/index.js chat elonmusk
+```
+
+手动触发某个 Skill：
+```text
+/skill 谈判框架
+请你帮我拆解这次商务谈判的步骤
 ```
 
 输入 `exit` 退出对话。

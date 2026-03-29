@@ -20,9 +20,14 @@ interface TrainingReportSummary {
     total_high_value_memories: number;
     total_quarantined_memories: number;
     origin_skills_added?: number;
-    expanded_skills_added?: number;
+    distilled_skills_added?: number;
     skill_coverage_score?: number;
     gap_focused_questions_ratio?: number;
+    skill_trigger_precision?: number;
+    skill_method_adherence?: number;
+    skill_boundary_violation_rate?: number;
+    skill_transfer_success_rate?: number;
+    skill_set_stability?: number;
   };
   rounds?: Array<{
     gap_focused_questions?: number;

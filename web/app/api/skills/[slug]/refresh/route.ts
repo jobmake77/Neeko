@@ -2,14 +2,14 @@ import { NextResponse } from 'next/server';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { enqueueSkillRefreshJob, isTrainQueuedOrRunning } from '@/lib/train-queue';
+import { enqueueSkillRefreshJobWithMode, isTrainQueuedOrRunning } from '@/lib/train-queue';
 
 function getPersonaDir(slug: string): string {
   return join(homedir(), '.neeko', 'personas', slug);
 }
 
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ slug: string }> }
 ) {
   const { slug } = await params;
@@ -27,7 +27,9 @@ export async function POST(
     });
   }
 
-  const enqueued = enqueueSkillRefreshJob(slug);
+  const body = await req.json().catch(() => ({})) as { mode?: string };
+  const mode = body.mode === 'full' ? 'full' : 'quick';
+  const enqueued = enqueueSkillRefreshJobWithMode(slug, mode);
   if (!enqueued.accepted) {
     return NextResponse.json({
       ok: false,

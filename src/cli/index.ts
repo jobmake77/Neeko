@@ -136,8 +136,9 @@ program
 program
   .command('skills-refresh <slug>')
   .description('Rebuild persona skill library from latest signals')
-  .action(async (slug: string) => {
-    await cmdSkillsRefresh(slug);
+  .option('--mode <mode>', 'Refresh mode: quick | full', 'quick')
+  .action(async (slug: string, options: { mode?: string }) => {
+    await cmdSkillsRefresh(slug, options);
   });
 
 program.parseAsync(process.argv).catch((err: Error) => {

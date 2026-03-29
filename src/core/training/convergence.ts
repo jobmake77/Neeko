@@ -5,6 +5,8 @@ export interface ConvergenceState {
   coverageScore: number;
   contradictionRate: number;
   newHighValueMemories: number;
+  skillCoverageScore?: number;
+  skillSetChangeRate?: number;
 }
 
 const CONVERGENCE_RULES = {
@@ -19,6 +21,9 @@ const CONVERGENCE_RULES = {
   maxContradictionRate: 0.15,
   /** Recent trend in high-value memory growth should stabilize */
   maxRecentHighValueAvg: 1.5,
+  /** Skill library should be stable before converge */
+  maxSkillSetChangeRate: 0.2,
+  minSkillCoverageScore: 0.75,
 };
 
 /**
@@ -38,6 +43,10 @@ export function checkConvergence(history: ConvergenceState[]): boolean {
   if (latest.overallConfidence < CONVERGENCE_RULES.minConfidence) return false;
   if (latest.coverageScore < CONVERGENCE_RULES.minCoverage) return false;
   if (latest.contradictionRate > CONVERGENCE_RULES.maxContradictionRate) return false;
+  if (
+    typeof latest.skillCoverageScore === 'number' &&
+    latest.skillCoverageScore < CONVERGENCE_RULES.minSkillCoverageScore
+  ) return false;
 
   // Check that the last N rounds were all "quiet"
   const recentRounds = history.slice(-CONVERGENCE_RULES.consecutiveQuietRounds);
@@ -46,8 +55,11 @@ export function checkConvergence(history: ConvergenceState[]): boolean {
   );
   const avgHighValue =
     recentRounds.reduce((sum, r) => sum + r.newHighValueMemories, 0) / recentRounds.length;
+  const stableSkills = recentRounds.every(
+    (r) => (r.skillSetChangeRate ?? 0) <= CONVERGENCE_RULES.maxSkillSetChangeRate
+  );
 
-  return allQuiet && avgHighValue <= CONVERGENCE_RULES.maxRecentHighValueAvg;
+  return allQuiet && avgHighValue <= CONVERGENCE_RULES.maxRecentHighValueAvg && stableSkills;
 }
 
 /** Returns a human-readable convergence status for display */
@@ -72,6 +84,14 @@ export function convergenceStatus(history: ConvergenceState[]): string {
       `contradiction rate ${(latest.contradictionRate * 100).toFixed(0)}% > ${CONVERGENCE_RULES.maxContradictionRate * 100}%`
     );
   }
+  if (
+    typeof latest.skillCoverageScore === 'number' &&
+    latest.skillCoverageScore < CONVERGENCE_RULES.minSkillCoverageScore
+  ) {
+    issues.push(
+      `skill coverage ${(latest.skillCoverageScore * 100).toFixed(0)}% < ${CONVERGENCE_RULES.minSkillCoverageScore * 100}%`
+    );
+  }
 
   if (history.length >= CONVERGENCE_RULES.consecutiveQuietRounds) {
     const recentRounds = history.slice(-CONVERGENCE_RULES.consecutiveQuietRounds);
@@ -88,6 +108,12 @@ export function convergenceStatus(history: ConvergenceState[]): string {
       recentRounds.reduce((sum, r) => sum + r.newHighValueMemories, 0) / recentRounds.length;
     if (avgHighValue > CONVERGENCE_RULES.maxRecentHighValueAvg) {
       issues.push(`high-value memory growth avg ${avgHighValue.toFixed(1)} still high`);
+    }
+    const unstable = recentRounds.some(
+      (r) => (r.skillSetChangeRate ?? 0) > CONVERGENCE_RULES.maxSkillSetChangeRate
+    );
+    if (unstable) {
+      issues.push('skill set still changing too fast');
     }
   } else {
     issues.push(

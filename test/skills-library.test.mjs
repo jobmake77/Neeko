@@ -6,8 +6,10 @@ const {
   similarityByTokenOverlap,
   dedupeOrigins,
   mergeOrigins,
-  mergeExpandedSkills,
   computeCoverageByOrigin,
+  gateCandidateSkill,
+  selectFinalDistilledSkills,
+  clusterOrigins,
 } = __skillLibraryTestables;
 
 function origin(id, name, confidence = 0.7, evidenceCount = 2) {
@@ -19,21 +21,34 @@ function origin(id, name, confidence = 0.7, evidenceCount = 2) {
     confidence,
     evidence: Array.from({ length: evidenceCount }, (_, i) => ({
       quote: `${name} quote ${i + 1}`,
-      source: 'tweet',
+      source: i % 2 === 0 ? 'tweet' : 'blog',
     })),
   };
 }
 
-function expanded(id, originId, name, confidence = 0.7, similarity = 0.7, sourceRef = '') {
+function distilled(id, name, score = 0.8) {
   return {
     id,
-    origin_id: originId,
     name,
-    similarity,
-    source_platform: 'twitter',
-    source_ref: sourceRef || `@${name.toLowerCase().replace(/\s+/g, '')}`,
-    transferable_summary: `${name} summary`,
-    confidence,
+    central_thesis: `${name} thesis`,
+    why: `${name} why`,
+    how_steps: ['step 1', 'step 2'],
+    boundaries: ['only when context fits'],
+    trigger_signals: ['signal 1'],
+    anti_patterns: [],
+    evidence_refs: [
+      { source: '@a', source_platform: 'twitter', snippet: 's1', similarity: 0.8 },
+      { source: 'https://x.com', source_platform: 'blog', snippet: 's2', similarity: 0.7 },
+      { source: '@b', source_platform: 'twitter', snippet: 's3', similarity: 0.6 },
+      { source: 'https://y.com', source_platform: 'blog', snippet: 's4', similarity: 0.6 },
+    ],
+    confidence: 0.8,
+    contradiction_risk: 0.1,
+    method_completeness: 0.9,
+    coverage_tags: [name],
+    quality_score: score,
+    source_origin_ids: ['o1'],
+    last_validated_at: null,
   };
 }
 
@@ -63,33 +78,52 @@ test('mergeOrigins preserves existing and upgrades confidence/evidence', () => {
   assert.ok(storytelling.evidence.length >= 3);
 });
 
-test('mergeExpandedSkills enforces max 3 expansions per origin with best scores', () => {
-  const origins = [origin('o1', 'Negotiation', 0.8)];
-  const prev = [
-    expanded('e1', 'o1', 'Anchoring', 0.6, 0.6, '@a1'),
-    expanded('e2', 'o1', 'Framing', 0.6, 0.6, '@f1'),
+test('gateCandidateSkill rejects low-evidence skill', () => {
+  const lowEvidence = {
+    ...distilled('d1', 'Weak Skill', 0.5),
+    evidence_refs: [{ source: '@a', source_platform: 'twitter', snippet: 'x', similarity: 0.5 }],
+  };
+  const result = gateCandidateSkill(lowEvidence);
+  assert.equal(result.accepted, false);
+  assert.ok(result.reasons.some((r) => r.includes('evidence_count')));
+});
+
+test('selectFinalDistilledSkills keeps dynamic 3-6 with quality priority', () => {
+  const accepted = [
+    distilled('d1', 'A', 0.95),
+    distilled('d2', 'B', 0.9),
+    distilled('d3', 'C', 0.85),
+    distilled('d4', 'D', 0.8),
+    distilled('d5', 'E', 0.75),
+    distilled('d6', 'F', 0.7),
+    distilled('d7', 'G', 0.65),
   ];
-  const incoming = [
-    expanded('e3', 'o1', 'BATNA', 0.92, 0.8, '@b1'),
-    expanded('e4', 'o1', 'Concession Strategy', 0.85, 0.79, '@c1'),
-    expanded('e5', 'o1', 'Decision Tree', 0.83, 0.78, '@d1'),
-  ];
-  const merged = mergeExpandedSkills(prev, incoming, origins);
-  assert.equal(merged.length, 3);
-  const names = merged.map((x) => x.name);
-  assert.ok(names.includes('BATNA'));
-  assert.ok(names.includes('Concession Strategy'));
+  const selected = selectFinalDistilledSkills(accepted, []);
+  assert.equal(selected.distilled.length, 6);
+  assert.equal(selected.distilled[0].name, 'A');
+});
+
+test('clusterOrigins merges semantically similar origins', () => {
+  const clusters = clusterOrigins([
+    origin('o1', 'Negotiation Strategy', 0.8),
+    origin('o2', 'Negotiation Strategies', 0.7),
+    origin('o3', 'Story Design', 0.7),
+  ]);
+  assert.ok(clusters.length <= 2);
 });
 
 test('computeCoverageByOrigin ranks lower coverage first', () => {
   const library = {
     origin_skills: [origin('o1', 'Negotiation'), origin('o2', 'Storytelling')],
-    expanded_skills: [expanded('e1', 'o2', 'Narrative Arc'), expanded('e2', 'o2', 'Audience Design')],
+    distilled_skills: [
+      { ...distilled('d1', 'Narrative Arc'), source_origin_ids: ['o2'] },
+      { ...distilled('d2', 'Audience Design'), source_origin_ids: ['o2'] },
+    ],
   };
   const result = computeCoverageByOrigin(library);
   assert.equal(result.length, 2);
   assert.equal(result[0].origin_id, 'o1');
-  assert.equal(result[0].missing_slots, 3);
+  assert.equal(result[0].missing_slots, 1);
   assert.equal(result[1].origin_id, 'o2');
-  assert.equal(result[1].missing_slots, 1);
+  assert.equal(result[1].missing_slots, 0);
 });

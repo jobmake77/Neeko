@@ -19,6 +19,7 @@ interface TrainJob extends BaseJob {
 
 interface SkillRefreshJob extends BaseJob {
   kind: 'skills_refresh';
+  mode: 'quick' | 'full';
 }
 
 type QueueJob = TrainJob | SkillRefreshJob;
@@ -224,11 +225,11 @@ function updateTrainProgressByLine(lock: LeaseHandle, job: TrainJob, line: strin
     percent = 14;
   } else if (line.includes('[SKILL_STAGE] skill_expand')) {
     stage = 'skill_expand';
-    stageLabel = 'Skill 相似扩展';
+    stageLabel = 'Skill 证据融合';
     percent = 22;
   } else if (line.includes('[SKILL_STAGE] skill_merge')) {
     stage = 'skill_merge';
-    stageLabel = 'Skill 融合入库';
+    stageLabel = 'Skill 蒸馏入库';
     percent = 30;
   } else if (roundMatch) {
     currentRound = parseInt(roundMatch[1], 10);
@@ -413,7 +414,7 @@ async function runSkillRefreshJob(job: SkillRefreshJob): Promise<void> {
 
   try {
     const { repoRoot, cliEntry } = resolveCliEntry(process.cwd());
-    const child = spawn(process.execPath, [cliEntry, 'skills-refresh', job.slug], {
+    const child = spawn(process.execPath, [cliEntry, 'skills-refresh', job.slug, '--mode', job.mode], {
       cwd: repoRoot,
       env: { ...process.env },
     });
@@ -455,7 +456,7 @@ async function runSkillRefreshJob(job: SkillRefreshJob): Promise<void> {
         } else if (line.includes('[SKILL_STAGE] skill_expand')) {
           safeWriteRuntimeProgress(lock, job.slug, {
             stage: 'skill_expand',
-            stageLabel: 'Skill 相似扩展',
+            stageLabel: 'Skill 证据融合',
             percent: 62,
             currentRound: 0,
             totalRounds: 0,
@@ -466,7 +467,7 @@ async function runSkillRefreshJob(job: SkillRefreshJob): Promise<void> {
         } else if (line.includes('[SKILL_STAGE] skill_merge')) {
           safeWriteRuntimeProgress(lock, job.slug, {
             stage: 'skill_merge',
-            stageLabel: 'Skill 融合入库',
+            stageLabel: 'Skill 蒸馏入库',
             percent: 88,
             currentRound: 0,
             totalRounds: 0,
@@ -590,7 +591,36 @@ export function enqueueSkillRefreshJob(slug: string): EnqueueResult {
     etaMin: 2,
     etaMax: 8,
   });
-  queue.push({ kind: 'skills_refresh', slug, source: 'api' });
+  queue.push({ kind: 'skills_refresh', slug, source: 'api', mode: 'quick' });
+  void ensureWorker();
+  return { accepted: true, queuedAhead };
+}
+
+export function enqueueSkillRefreshJobWithMode(slug: string, mode: 'quick' | 'full'): EnqueueResult {
+  if (pendingSlugs.has(slug)) return { accepted: false, reason: 'already_queued_or_running' };
+  const queuedAhead = queue.length + (workerRunning ? 1 : 0);
+  pendingSlugs.add(slug);
+  patchRuntimeTaskState(slug, {
+    state: 'queued',
+    taskType: 'train',
+    rounds: 0,
+    profile: 'full',
+    retries: 0,
+    startedAt: new Date().toISOString(),
+    lastError: '',
+    pid: null,
+  });
+  writeRuntimeProgress(slug, {
+    stage: 'queued',
+    stageLabel: `Skill 刷新排队中 (${mode})`,
+    percent: 2,
+    currentRound: 0,
+    totalRounds: 0,
+    elapsedSec: 0,
+    etaMin: mode === 'quick' ? 2 : 6,
+    etaMax: mode === 'quick' ? 8 : 20,
+  });
+  queue.push({ kind: 'skills_refresh', slug, source: 'api', mode });
   void ensureWorker();
   return { accepted: true, queuedAhead };
 }

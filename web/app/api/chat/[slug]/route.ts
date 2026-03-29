@@ -22,6 +22,7 @@ interface ChatLogItem {
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  triggered_skills?: Array<{ id: string; name: string; reason: 'manual' | 'automatic'; trigger_score: number }>;
 }
 
 function getChatLogPath(slug: string): string {
@@ -126,15 +127,30 @@ export async function POST(
       child.stderr.on('data', (chunk: Buffer) => { stderrOutput += chunk.toString(); });
 
       child.on('close', (code) => {
-        const result = code === 0
-          ? stdoutOutput.trim()
-          : `[错误] 模型调用失败（code ${code}）${stderrOutput ? `\n${stderrOutput.trim()}` : ''}`;
+        let result = stdoutOutput.trim();
+        let triggeredSkills: Array<{ id: string; name: string; reason: 'manual' | 'automatic'; trigger_score: number }> = [];
+        if (code === 0) {
+          try {
+            const parsed = JSON.parse(stdoutOutput.trim()) as {
+              reply?: string;
+              triggered_skills?: Array<{ id: string; name: string; reason: 'manual' | 'automatic'; trigger_score: number }>;
+            };
+            result = String(parsed.reply ?? '').trim();
+            triggeredSkills = Array.isArray(parsed.triggered_skills) ? parsed.triggered_skills : [];
+          } catch {
+            // Backward-compatible plain text output.
+            result = stdoutOutput.trim();
+          }
+        } else {
+          result = `[错误] 模型调用失败（code ${code}）${stderrOutput ? `\n${stderrOutput.trim()}` : ''}`;
+        }
+        if (!result) result = '[无回复]';
         const now = new Date().toISOString();
         appendChatLog(slug, [
           { role: 'user', content: message, created_at: now },
-          { role: 'assistant', content: result, created_at: now },
+          { role: 'assistant', content: result, created_at: now, triggered_skills: triggeredSkills },
         ]);
-        controller.enqueue(encoder.encode(JSON.stringify({ reply: result })));
+        controller.enqueue(encoder.encode(JSON.stringify({ reply: result, triggered_skills: triggeredSkills })));
         controller.close();
       });
 

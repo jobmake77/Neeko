@@ -27,7 +27,7 @@ interface PersonaCardProps {
     } | null;
     skill_summary?: {
       origin_count: number;
-      expanded_count: number;
+      distilled_count: number;
       updated_at: string | null;
       coverage_score: number | null;
       gap_focused_questions_ratio: number | null;
@@ -92,7 +92,7 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
 
   const skillSummary = persona.skill_summary ?? {
     origin_count: 0,
-    expanded_count: 0,
+    distilled_count: 0,
     updated_at: null,
     coverage_score: null,
     gap_focused_questions_ratio: null,
@@ -166,7 +166,7 @@ export function PersonaCard({ persona, onDelete }: PersonaCardProps) {
           </Link>
         </div>
         <p className="mt-1 text-[11.5px] text-[oklch(0.55_0_0)]">
-          原点 {skillSummary.origin_count} · 扩展 {skillSummary.expanded_count}
+          原点 {skillSummary.origin_count} · 蒸馏 {skillSummary.distilled_count}
         </p>
         <p className="mt-0.5 text-[11px] text-[oklch(0.58_0_0)]">
           覆盖分：{typeof skillSummary.coverage_score === 'number' ? `${(skillSummary.coverage_score * 100).toFixed(1)}%` : '未计算'}

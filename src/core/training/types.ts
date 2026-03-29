@@ -50,6 +50,11 @@ export interface RoundObservability {
   };
   gapFocusedQuestions: number;
   totalQuestions: number;
+  skillTriggerPrecision: number;
+  skillMethodAdherence: number;
+  skillBoundaryViolationRate: number;
+  skillTransferSuccessRate: number;
+  skillSetChangeRate: number;
 }
 
 export interface MemoryCandidateForGovernance {

@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  triggered_skills?: Array<{ id: string; name: string; reason: 'manual' | 'automatic'; trigger_score: number }>;
 }
 
 interface PersonaInfo {
@@ -68,7 +69,11 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
             setMessages(
               data.messages
                 .filter((m: { role?: string; content?: string }) => m?.role === 'user' || m?.role === 'assistant')
-                .map((m: { role: 'user' | 'assistant'; content: string }) => ({ role: m.role, content: m.content }))
+                .map((m: {
+                  role: 'user' | 'assistant';
+                  content: string;
+                  triggered_skills?: Array<{ id: string; name: string; reason: 'manual' | 'automatic'; trigger_score: number }>;
+                }) => ({ role: m.role, content: m.content, triggered_skills: m.triggered_skills }))
             );
           }
         })
@@ -94,7 +99,11 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
         body: JSON.stringify({ message: userMsg, history: messages }),
       });
       const data = await res.json();
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply ?? '[无回复]' }]);
+      setMessages((prev) => [...prev, {
+        role: 'assistant',
+        content: data.reply ?? '[无回复]',
+        triggered_skills: Array.isArray(data.triggered_skills) ? data.triggered_skills : [],
+      }]);
     } catch (err) {
       setMessages((prev) => [...prev, { role: 'assistant', content: `[错误] ${String(err)}` }]);
     } finally {
@@ -183,6 +192,19 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
                 )}
               >
                 {msg.content}
+                {msg.role === 'assistant' && Array.isArray(msg.triggered_skills) && msg.triggered_skills.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {msg.triggered_skills.slice(0, 2).map((item) => (
+                      <span
+                        key={`${i}-${item.id}`}
+                        className="inline-flex items-center gap-1 rounded-full bg-[oklch(0.94_0.06_142)] px-2 py-0.5 text-[10.5px] text-[oklch(0.28_0.12_142)]"
+                        title={`${item.reason} trigger · score ${(item.trigger_score * 100).toFixed(0)}%`}
+                      >
+                        {item.reason === 'manual' ? '手动' : '自动'} · {item.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}

@@ -232,6 +232,7 @@ export class TrainingLoop {
         memoryGrowthByType,
         gapFocusedQuestions,
         totalQuestions: questionSet.length,
+        previousRound: previousRoundObservability,
       });
 
       const directorDecision = await this.directorAgent.review(this.soul, {
@@ -265,6 +266,8 @@ export class TrainingLoop {
         coverageScore: this.soul.coverage_score,
         contradictionRate: observability.contradictionRate,
         newHighValueMemories: observability.newHighValueMemories,
+        skillCoverageScore: this.skillCoverageScore(),
+        skillSetChangeRate: observability.skillSetChangeRate,
       };
       convergenceHistory.push(convergenceState);
       previousRoundObservability = observability;
@@ -315,6 +318,7 @@ export class TrainingLoop {
     };
     gapFocusedQuestions: number;
     totalQuestions: number;
+    previousRound?: RoundObservability;
   }): RoundObservability {
     const scores = input.evaluations.map((e) => e.overall_score).sort((a, b) => a - b);
     const byIndex = (p: number) => {
@@ -323,6 +327,19 @@ export class TrainingLoop {
     };
     const denominator = Math.max(1, input.evaluations.length);
     const writes = input.evaluations.filter((e) => e.verdict === 'write').length;
+    const reinforces = input.evaluations.filter((e) => e.verdict === 'reinforce').length;
+    const avgDepth = input.evaluations.reduce((sum, e) => sum + e.depth_score, 0) / denominator;
+    const avgConsistency = input.evaluations.reduce((sum, e) => sum + e.consistency_score, 0) / denominator;
+    const skillTriggerPrecision = input.gapFocusedQuestions / Math.max(1, input.totalQuestions);
+    const skillMethodAdherence = (avgDepth * 0.6) + (avgConsistency * 0.4);
+    const skillBoundaryViolationRate = input.contradictionsThisRound / denominator;
+    const skillTransferSuccessRate = (writes + reinforces) / denominator;
+    const prevMethod = input.previousRound?.skillMethodAdherence ?? skillMethodAdherence;
+    const prevTrigger = input.previousRound?.skillTriggerPrecision ?? skillTriggerPrecision;
+    const skillSetChangeRate = Math.max(
+      Math.abs(skillMethodAdherence - prevMethod),
+      Math.abs(skillTriggerPrecision - prevTrigger)
+    );
     return {
       round: input.round,
       scoreDistribution: {
@@ -339,6 +356,11 @@ export class TrainingLoop {
       memoryGrowthByType: input.memoryGrowthByType,
       gapFocusedQuestions: input.gapFocusedQuestions,
       totalQuestions: input.totalQuestions,
+      skillTriggerPrecision,
+      skillMethodAdherence,
+      skillBoundaryViolationRate,
+      skillTransferSuccessRate,
+      skillSetChangeRate,
     };
   }
 
@@ -364,10 +386,10 @@ export class TrainingLoop {
           : `[GAP:${item.missing_slots}] ${item.origin_name}`;
       });
     const origins = this.skillLibrary.origin_skills.map((s) => `${s.name}: ${s.how}`).slice(0, 8);
-    const expanded = this.skillLibrary.expanded_skills
-      .map((s) => `${s.name}: ${s.transferable_summary}`)
+    const distilled = this.skillLibrary.distilled_skills
+      .map((s) => `${s.name}: ${s.central_thesis}; how=${s.how_steps.slice(0, 2).join(' -> ')}`)
       .slice(0, 8);
-    return [...gapOrigins, ...origins, ...expanded];
+    return [...gapOrigins, ...origins, ...distilled];
   }
 
   private skillGapHints(): string[] {
@@ -377,8 +399,10 @@ export class TrainingLoop {
       .slice(0, 6)
       .map((item) => {
         const origin = this.skillLibrary?.origin_skills.find((s) => s.id === item.origin_id);
+        const linked = this.skillLibrary?.distilled_skills.find((s) => s.source_origin_ids.includes(item.origin_id));
         const how = origin?.how ?? '';
-        return `${item.origin_name} (missing ${item.missing_slots}/3)${how ? ` -> ${how}` : ''}`;
+        const boundaries = linked?.boundaries.slice(0, 1).join('; ') ?? '';
+        return `${item.origin_name} (missing ${item.missing_slots}/1)${how ? ` -> ${how}` : ''}${boundaries ? ` | boundary: ${boundaries}` : ''}`;
       });
   }
 
@@ -388,7 +412,7 @@ export class TrainingLoop {
     if (coverage.length === 0) return 0;
     const focused = coverage.slice(0, Math.min(4, coverage.length));
     const avgMissingRatio =
-      focused.reduce((sum, item) => sum + item.missing_slots / 3, 0) / focused.length;
+      focused.reduce((sum, item) => sum + item.missing_slots / 1, 0) / focused.length;
     return Math.max(0, Math.min(1, avgMissingRatio));
   }
 
@@ -403,5 +427,12 @@ export class TrainingLoop {
       if (keys.some((k) => k && lower.includes(k))) hit++;
     }
     return hit;
+  }
+
+  private skillCoverageScore(): number {
+    if (!this.skillLibrary || this.skillLibrary.origin_skills.length === 0) return 0;
+    const coverage = computeCoverageByOrigin(this.skillLibrary);
+    if (coverage.length === 0) return 0;
+    return coverage.reduce((sum, item) => sum + item.coverage_score, 0) / coverage.length;
   }
 }

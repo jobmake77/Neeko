@@ -35,7 +35,7 @@ function saveTrainingReport(
   slug: string,
   profile: TrainingProfile,
   history: Awaited<ReturnType<TrainingLoop['run']>>['history'],
-  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
+  skillMetrics?: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number }
 ): void {
   const dir = settings.getPersonaDir(slug);
   mkdirSync(dir, { recursive: true });
@@ -47,7 +47,7 @@ function saveTrainingReportFromRounds(
   slug: string,
   profile: TrainingProfile,
   rounds: TrainingRoundSnapshot[],
-  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
+  skillMetrics?: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number }
 ): void {
   const dir = settings.getPersonaDir(slug);
   mkdirSync(dir, { recursive: true });
@@ -246,7 +246,7 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   saveSkillLibrary(personaDir, skillLibrary);
   console.log('[SKILL_STAGE] skill_merge');
   spin.stop(
-    `Skill library updated — origins ${skillLibrary.origin_skills.length}, expanded ${skillLibrary.expanded_skills.length}`
+    `Skill library updated — origins ${skillLibrary.origin_skills.length}, distilled ${skillLibrary.distilled_skills.length}`
   );
 
   // ── Ask about training ────────────────────────────────────────────────────
@@ -288,15 +288,15 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     const loop = new TrainingLoop(currentSoul, persona, store);
     const contextPath = join(personaDir, 'training-context.json');
     const originSkillsAdded = skillLibrary.origin_skills.length;
-    const expandedSkillsAdded = skillLibrary.expanded_skills.length;
+    const distilledSkillsAdded = skillLibrary.distilled_skills.length;
     const covered = skillLibrary.origin_skills.filter(
-      (o) => skillLibrary.expanded_skills.some((e) => e.origin_id === o.id)
+      (o) => skillLibrary.distilled_skills.some((e) => e.source_origin_ids.includes(o.id))
     ).length;
     const skillCoverageScore =
       skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length;
     const skillMetrics = {
       originSkillsAdded,
-      expandedSkillsAdded,
+      distilledSkillsAdded,
       skillCoverageScore,
     };
     const snapshots: TrainingRoundSnapshot[] = [];
@@ -356,7 +356,7 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     persona.updated_at = new Date().toISOString();
     saveTrainingReport(persona.slug, profile, result.history, {
       originSkillsAdded: skillMetrics.originSkillsAdded,
-      expandedSkillsAdded: skillMetrics.expandedSkillsAdded,
+      distilledSkillsAdded: skillMetrics.distilledSkillsAdded,
       skillCoverageScore: skillMetrics.skillCoverageScore,
     });
     writeTrainingContext(contextPath, {
@@ -408,6 +408,11 @@ function toRoundSnapshot(progress: TrainingProgress, roundOffset: number): Train
     quarantined_memories: progress.observability.quarantinedMemories,
     gap_focused_questions: progress.observability.gapFocusedQuestions,
     total_questions: progress.observability.totalQuestions,
+    skill_trigger_precision: progress.observability.skillTriggerPrecision,
+    skill_method_adherence: progress.observability.skillMethodAdherence,
+    skill_boundary_violation_rate: progress.observability.skillBoundaryViolationRate,
+    skill_transfer_success_rate: progress.observability.skillTransferSuccessRate,
+    skill_set_change_rate: progress.observability.skillSetChangeRate,
     score_distribution: progress.observability.scoreDistribution,
   };
 }

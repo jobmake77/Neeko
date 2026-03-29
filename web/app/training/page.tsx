@@ -20,9 +20,14 @@ interface TrainingCardItem {
       total_nodes_written: number;
       total_high_value_memories: number;
       origin_skills_added?: number;
-      expanded_skills_added?: number;
+      distilled_skills_added?: number;
       skill_coverage_score?: number;
       gap_focused_questions_ratio?: number;
+      skill_trigger_precision?: number;
+      skill_method_adherence?: number;
+      skill_boundary_violation_rate?: number;
+      skill_transfer_success_rate?: number;
+      skill_set_stability?: number;
     };
   } | null;
   runtime_progress?: StreamProgress | null;
@@ -57,9 +62,14 @@ interface TrainingDetailResponse {
       total_high_value_memories?: number;
       total_quarantined_memories?: number;
       origin_skills_added?: number;
-      expanded_skills_added?: number;
+      distilled_skills_added?: number;
       skill_coverage_score?: number;
       gap_focused_questions_ratio?: number;
+      skill_trigger_precision?: number;
+      skill_method_adherence?: number;
+      skill_boundary_violation_rate?: number;
+      skill_transfer_success_rate?: number;
+      skill_set_stability?: number;
     };
     rounds: TrainingRoundDetail[];
   };
@@ -99,8 +109,8 @@ const TRAIN_STAGE_ORDER = ['init', 'skill_origin_extract', 'skill_expand', 'skil
 const TRAIN_STAGE_LABEL: Record<string, string> = {
   init: '初始化任务',
   skill_origin_extract: 'Skill 原点提炼',
-  skill_expand: 'Skill 相似扩展',
-  skill_merge: 'Skill 融合入库',
+  skill_expand: 'Skill 证据融合',
+  skill_merge: 'Skill 蒸馏入库',
   training: '培养循环',
   finalize: '收尾与保存',
   done: '培养完成',
@@ -464,7 +474,7 @@ export default function TrainingPage() {
                   <p className="mt-1 font-semibold text-[oklch(0.25_0_0)]">
                     {item.report
                       ? (typeof item.report.summary.origin_skills_added === 'number'
-                        ? `${item.report.summary.origin_skills_added ?? 0}/${item.report.summary.expanded_skills_added ?? 0}`
+                        ? `${item.report.summary.origin_skills_added ?? 0}/${item.report.summary.distilled_skills_added ?? 0}`
                         : item.report.summary.total_high_value_memories)
                       : formatDuration(item.runtime_progress?.elapsedSec ?? 0)}
                   </p>
@@ -565,8 +575,8 @@ export default function TrainingPage() {
                   <p className="font-medium text-[oklch(0.2_0_0)]">{detail.report.summary.origin_skills_added ?? '-'}</p>
                 </div>
                 <div className="rounded-md bg-white border border-[oklch(0.9_0_0)] px-3 py-2">
-                  <p className="text-[oklch(0.55_0_0)]">扩展 Skill 新增</p>
-                  <p className="font-medium text-[oklch(0.2_0_0)]">{detail.report.summary.expanded_skills_added ?? '-'}</p>
+                  <p className="text-[oklch(0.55_0_0)]">蒸馏 Skill 新增</p>
+                  <p className="font-medium text-[oklch(0.2_0_0)]">{detail.report.summary.distilled_skills_added ?? '-'}</p>
                 </div>
                 <div className="rounded-md bg-white border border-[oklch(0.9_0_0)] px-3 py-2">
                   <p className="text-[oklch(0.55_0_0)]">缺口聚焦题占比</p>

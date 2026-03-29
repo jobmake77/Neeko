@@ -16,9 +16,14 @@ export interface TrainingRunReport {
     total_high_value_memories: number;
     total_quarantined_memories: number;
     origin_skills_added: number;
-    expanded_skills_added: number;
+    distilled_skills_added: number;
     skill_coverage_score: number;
     gap_focused_questions_ratio: number;
+    skill_trigger_precision: number;
+    skill_method_adherence: number;
+    skill_boundary_violation_rate: number;
+    skill_transfer_success_rate: number;
+    skill_set_stability: number;
   };
   rounds: Array<{
     round: number;
@@ -33,6 +38,11 @@ export interface TrainingRunReport {
     quarantined_memories: number;
     gap_focused_questions: number;
     total_questions: number;
+    skill_trigger_precision: number;
+    skill_method_adherence: number;
+    skill_boundary_violation_rate: number;
+    skill_transfer_success_rate: number;
+    skill_set_change_rate: number;
     score_distribution: TrainingProgress['observability']['scoreDistribution'];
   }>;
 }
@@ -42,7 +52,7 @@ export type TrainingRoundSnapshot = TrainingRunReport['rounds'][number];
 export function buildTrainingRunReport(
   profile: TrainingProfile,
   history: TrainingProgress[],
-  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
+  skillMetrics?: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number }
 ): TrainingRunReport {
   const rounds = history.map((item) => ({
     round: item.round,
@@ -57,6 +67,11 @@ export function buildTrainingRunReport(
     quarantined_memories: item.observability.quarantinedMemories,
     gap_focused_questions: item.observability.gapFocusedQuestions,
     total_questions: item.observability.totalQuestions,
+    skill_trigger_precision: item.observability.skillTriggerPrecision,
+    skill_method_adherence: item.observability.skillMethodAdherence,
+    skill_boundary_violation_rate: item.observability.skillBoundaryViolationRate,
+    skill_transfer_success_rate: item.observability.skillTransferSuccessRate,
+    skill_set_change_rate: item.observability.skillSetChangeRate,
     score_distribution: item.observability.scoreDistribution,
   }));
 
@@ -66,7 +81,7 @@ export function buildTrainingRunReport(
 export function buildTrainingRunReportFromRounds(
   profile: TrainingProfile,
   rounds: TrainingRoundSnapshot[],
-  skillMetrics?: { originSkillsAdded: number; expandedSkillsAdded: number; skillCoverageScore: number }
+  skillMetrics?: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number }
 ): TrainingRunReport {
   const normalizedRounds = [...rounds].sort((a, b) => a.round - b.round);
 
@@ -77,6 +92,13 @@ export function buildTrainingRunReportFromRounds(
   const totalQuarantinedMemories = normalizedRounds.reduce((sum, r) => sum + r.quarantined_memories, 0);
   const totalGapFocusedQuestions = normalizedRounds.reduce((sum, r) => sum + (r.gap_focused_questions ?? 0), 0);
   const totalQuestions = normalizedRounds.reduce((sum, r) => sum + (r.total_questions ?? 0), 0);
+  const avgSkillTriggerPrecision = normalizedRounds.reduce((sum, r) => sum + (r.skill_trigger_precision ?? 0), 0) / count;
+  const avgSkillMethodAdherence = normalizedRounds.reduce((sum, r) => sum + (r.skill_method_adherence ?? 0), 0) / count;
+  const avgSkillBoundaryViolationRate =
+    normalizedRounds.reduce((sum, r) => sum + (r.skill_boundary_violation_rate ?? 0), 0) / count;
+  const avgSkillTransferSuccessRate =
+    normalizedRounds.reduce((sum, r) => sum + (r.skill_transfer_success_rate ?? 0), 0) / count;
+  const avgSkillSetChangeRate = normalizedRounds.reduce((sum, r) => sum + (r.skill_set_change_rate ?? 0), 0) / count;
 
   return {
     schema_version: 1,
@@ -93,9 +115,14 @@ export function buildTrainingRunReportFromRounds(
       total_high_value_memories: totalHighValueMemories,
       total_quarantined_memories: totalQuarantinedMemories,
       origin_skills_added: skillMetrics?.originSkillsAdded ?? 0,
-      expanded_skills_added: skillMetrics?.expandedSkillsAdded ?? 0,
+      distilled_skills_added: skillMetrics?.distilledSkillsAdded ?? 0,
       skill_coverage_score: skillMetrics?.skillCoverageScore ?? 0,
       gap_focused_questions_ratio: totalQuestions > 0 ? totalGapFocusedQuestions / totalQuestions : 0,
+      skill_trigger_precision: avgSkillTriggerPrecision,
+      skill_method_adherence: avgSkillMethodAdherence,
+      skill_boundary_violation_rate: avgSkillBoundaryViolationRate,
+      skill_transfer_success_rate: avgSkillTransferSuccessRate,
+      skill_set_stability: 1 - Math.max(0, Math.min(1, avgSkillSetChangeRate)),
     },
     rounds: normalizedRounds,
   };

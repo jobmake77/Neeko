@@ -122,6 +122,19 @@ export class TrainingPolicy {
         target.count += 1;
       }
     }
+    if (advancedProfile && total >= 5) {
+      const weakMethod = weights.some((w) => w.strategy === 'scenario');
+      if (weakMethod) {
+        const scenario = base.find((b) => b.strategy === 'scenario');
+        const from = base
+          .filter((b) => b.strategy !== 'scenario' && b.count > 1)
+          .sort((a, b) => b.count - a.count)[0];
+        if (scenario && from && scenario.count < 3) {
+          from.count -= 1;
+          scenario.count += 1;
+        }
+      }
+    }
     return base.filter((b) => b.count > 0);
   }
 

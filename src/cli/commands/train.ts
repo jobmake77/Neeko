@@ -73,11 +73,11 @@ export async function cmdTrain(
   const existingRounds = readExistingRounds(reportPath);
   const roundOffset = existingRounds.length;
   const covered = skillLibrary.origin_skills.filter((o) =>
-    skillLibrary.expanded_skills.some((e) => e.origin_id === o.id)
+    skillLibrary.distilled_skills.some((e) => e.source_origin_ids.includes(o.id))
   ).length;
   const skillMetrics = {
     originSkillsAdded: skillLibrary.origin_skills.length,
-    expandedSkillsAdded: skillLibrary.expanded_skills.length,
+    distilledSkillsAdded: skillLibrary.distilled_skills.length,
     skillCoverageScore:
       skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length,
   };
@@ -161,6 +161,11 @@ export async function cmdTrain(
     quarantined_memories: item.observability.quarantinedMemories,
     gap_focused_questions: item.observability.gapFocusedQuestions,
     total_questions: item.observability.totalQuestions,
+    skill_trigger_precision: item.observability.skillTriggerPrecision,
+    skill_method_adherence: item.observability.skillMethodAdherence,
+    skill_boundary_violation_rate: item.observability.skillBoundaryViolationRate,
+    skill_transfer_success_rate: item.observability.skillTransferSuccessRate,
+    skill_set_change_rate: item.observability.skillSetChangeRate,
     score_distribution: item.observability.scoreDistribution,
   }));
 
@@ -280,6 +285,11 @@ function toRoundSnapshot(progress: TrainingProgress, roundOffset: number): Train
     quarantined_memories: progress.observability.quarantinedMemories,
     gap_focused_questions: progress.observability.gapFocusedQuestions,
     total_questions: progress.observability.totalQuestions,
+    skill_trigger_precision: progress.observability.skillTriggerPrecision,
+    skill_method_adherence: progress.observability.skillMethodAdherence,
+    skill_boundary_violation_rate: progress.observability.skillBoundaryViolationRate,
+    skill_transfer_success_rate: progress.observability.skillTransferSuccessRate,
+    skill_set_change_rate: progress.observability.skillSetChangeRate,
     score_distribution: progress.observability.scoreDistribution,
   };
 }

@@ -10,11 +10,13 @@ import { DataSourceRecommender } from '../recommender/sources.js';
 import { TwitterAdapter } from '../pipeline/ingestion/twitter.js';
 import { ArticleAdapter } from '../pipeline/ingestion/article.js';
 import {
+  CandidateSkill,
   createEmptySkillLibrary,
+  DistilledSkill,
   OriginSkill,
   PersonaSkillLibrary,
-  PersonaSkillLibrarySchema,
-  ExpandedSkill,
+  PersonaSkillLibraryV2Schema,
+  SkillEvidenceRef,
 } from './types.js';
 
 export interface SkillCoverageByOrigin {
@@ -23,6 +25,13 @@ export interface SkillCoverageByOrigin {
   expanded_count: number;
   coverage_score: number;
   missing_slots: number;
+}
+
+export interface TriggeredSkillMatch {
+  id: string;
+  name: string;
+  reason: 'manual' | 'automatic';
+  trigger_score: number;
 }
 
 const OriginExtractionSchema = z.object({
@@ -49,9 +58,28 @@ const SkillExpandSchema = z.object({
   ),
 });
 
-const TransferableSummarySchema = z.object({
-  summary: z.string(),
+const DistillSkillSchema = z.object({
+  skill: z.object({
+    name: z.string(),
+    central_thesis: z.string(),
+    why: z.string(),
+    how_steps: z.array(z.string()).min(1),
+    boundaries: z.array(z.string()).min(1),
+    trigger_signals: z.array(z.string()).min(1),
+    anti_patterns: z.array(z.string()).default([]),
+    contradiction_risk: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1),
+    coverage_tags: z.array(z.string()).default([]),
+  }),
 });
+
+const QUALITY_GATE = {
+  minEvidenceCount: 4,
+  minSourceDiversity: 2,
+  minConfidence: 0.65,
+  maxContradictionRisk: 0.15,
+  minMethodCompleteness: 0.7,
+};
 
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
@@ -78,6 +106,14 @@ function similarityByTokenOverlap(a: string, b: string): number {
   let hit = 0;
   for (const token of aa) if (bb.has(token)) hit++;
   return hit / Math.max(aa.size, bb.size);
+}
+
+function mergeUniqueEvidence(existing: SkillEvidenceRef[], incoming: SkillEvidenceRef[]): SkillEvidenceRef[] {
+  return Array.from(
+    new Map(
+      [...existing, ...incoming].map((item) => [`${item.source_platform}:${item.source}:${item.snippet}`, item])
+    ).values()
+  ).slice(0, 20);
 }
 
 function dedupeOrigins(origins: OriginSkill[]): OriginSkill[] {
@@ -117,92 +153,163 @@ function mergeOrigins(previous: OriginSkill[], incoming: OriginSkill[]): OriginS
   return merged;
 }
 
-function mergeExpandedSkills(
-  previous: ExpandedSkill[],
-  incoming: ExpandedSkill[],
-  origins: OriginSkill[]
-): ExpandedSkill[] {
-  const merged: ExpandedSkill[] = [...previous];
+function methodCompletenessScore(skill: {
+  why: string;
+  how_steps: string[];
+  boundaries: string[];
+  trigger_signals: string[];
+}): number {
+  let score = 0;
+  if (skill.why.trim().length >= 12) score += 0.25;
+  if (skill.how_steps.length >= 2) score += 0.3;
+  if (skill.boundaries.length >= 1) score += 0.25;
+  if (skill.trigger_signals.length >= 1) score += 0.2;
+  return Math.max(0, Math.min(1, score));
+}
+
+function qualityScore(skill: {
+  confidence: number;
+  contradiction_risk: number;
+  method_completeness: number;
+  evidence_count: number;
+  source_diversity: number;
+}): number {
+  const evidenceScore = Math.min(1, skill.evidence_count / 8);
+  const diversityScore = Math.min(1, skill.source_diversity / 3);
+  const contradictionScore = 1 - skill.contradiction_risk;
+  return Math.max(
+    0,
+    Math.min(
+      1,
+      skill.confidence * 0.3 + skill.method_completeness * 0.3 + evidenceScore * 0.2 + diversityScore * 0.1 + contradictionScore * 0.1
+    )
+  );
+}
+
+function gateCandidateSkill(
+  draft: Omit<DistilledSkill, 'quality_score' | 'id' | 'last_validated_at'>
+): { accepted: boolean; reasons: string[]; skill: DistilledSkill } {
+  const evidenceCount = draft.evidence_refs.length;
+  const sourceDiversity = new Set(draft.evidence_refs.map((item) => item.source_platform)).size;
+  const methodCompleteness = draft.method_completeness;
+  const reasons: string[] = [];
+
+  if (evidenceCount < QUALITY_GATE.minEvidenceCount) reasons.push(`evidence_count<${QUALITY_GATE.minEvidenceCount}`);
+  if (sourceDiversity < QUALITY_GATE.minSourceDiversity) reasons.push(`source_diversity<${QUALITY_GATE.minSourceDiversity}`);
+  if (draft.confidence < QUALITY_GATE.minConfidence) reasons.push(`confidence<${QUALITY_GATE.minConfidence}`);
+  if (draft.contradiction_risk > QUALITY_GATE.maxContradictionRisk) {
+    reasons.push(`contradiction_risk>${QUALITY_GATE.maxContradictionRisk}`);
+  }
+  if (methodCompleteness < QUALITY_GATE.minMethodCompleteness) {
+    reasons.push(`method_completeness<${QUALITY_GATE.minMethodCompleteness}`);
+  }
+
+  const scored: DistilledSkill = {
+    ...draft,
+    id: crypto.randomUUID(),
+    quality_score: qualityScore({
+      confidence: draft.confidence,
+      contradiction_risk: draft.contradiction_risk,
+      method_completeness: draft.method_completeness,
+      evidence_count: evidenceCount,
+      source_diversity: sourceDiversity,
+    }),
+    last_validated_at: null,
+  };
+
+  return {
+    accepted: reasons.length === 0,
+    reasons,
+    skill: scored,
+  };
+}
+
+function mergeDistilledSkills(previous: DistilledSkill[], incoming: DistilledSkill[]): DistilledSkill[] {
+  const merged: DistilledSkill[] = [...previous];
   for (const next of incoming) {
-    const dupIdx = merged.findIndex(
-      (item) =>
-        item.origin_id === next.origin_id &&
-        (similarityByTokenOverlap(item.name, next.name) >= 0.8 ||
-          (item.source_ref && next.source_ref && item.source_ref === next.source_ref))
-    );
-    if (dupIdx < 0) {
+    const idx = merged.findIndex((item) => similarityByTokenOverlap(item.name, next.name) >= 0.75);
+    if (idx < 0) {
       merged.push(next);
       continue;
     }
-    if (next.confidence > merged[dupIdx].confidence) {
-      merged[dupIdx] = next;
-    }
+    const prev = merged[idx];
+    const better = next.quality_score >= prev.quality_score ? next : prev;
+    merged[idx] = {
+      ...better,
+      evidence_refs: mergeUniqueEvidence(prev.evidence_refs, next.evidence_refs),
+      source_origin_ids: Array.from(new Set([...prev.source_origin_ids, ...next.source_origin_ids])),
+      coverage_tags: Array.from(new Set([...prev.coverage_tags, ...next.coverage_tags])).slice(0, 12),
+      last_validated_at: new Date().toISOString(),
+    };
   }
 
-  const byOrigin = new Map<string, ExpandedSkill[]>();
-  for (const item of merged) {
-    const list = byOrigin.get(item.origin_id) ?? [];
-    list.push(item);
-    byOrigin.set(item.origin_id, list);
-  }
-
-  const out: ExpandedSkill[] = [];
-  for (const origin of origins) {
-    const list = (byOrigin.get(origin.id) ?? [])
-      .sort((a, b) => b.confidence + b.similarity - (a.confidence + a.similarity))
-      .slice(0, 3);
-    out.push(...list);
-  }
-  return out;
+  return merged
+    .sort((a, b) => b.quality_score - a.quality_score)
+    .slice(0, 6);
 }
 
-export const __skillLibraryTestables = {
-  normalizeName,
-  similarityByTokenOverlap,
-  dedupeOrigins,
-  mergeOrigins,
-  mergeExpandedSkills,
-  computeCoverageByOrigin,
-};
+function selectFinalDistilledSkills(
+  accepted: DistilledSkill[],
+  candidates: CandidateSkill[]
+): { distilled: DistilledSkill[]; candidatePool: CandidateSkill[] } {
+  const sortedAccepted = [...accepted].sort((a, b) => b.quality_score - a.quality_score);
+  const distilled = sortedAccepted.slice(0, 6);
 
-async function summarizeTransferableCapability(
-  origin: OriginSkill,
-  expandedName: string,
-  docs: RawDocument[]
-): Promise<string> {
-  const excerpt = docs
-    .slice(0, 8)
-    .map((d, i) => `[${i + 1}] ${d.content.slice(0, 240)}`)
-    .join('\n');
-  if (!excerpt) {
-    return `${expandedName}: transferable capability inferred from origin skill "${origin.name}"`;
+  if (distilled.length >= 3) {
+    return { distilled, candidatePool: candidates };
   }
-  const { object } = await withTimeout(
-    generateObject({
-      model: resolveModel(),
-      schema: TransferableSummarySchema,
-      prompt: `You are building a transferable skill note.
-Origin skill: ${origin.name}
-Expanded skill: ${expandedName}
-Origin WHY: ${origin.why}
-Origin HOW: ${origin.how}
 
-Source excerpts:
-${excerpt}
+  const promoted = [...candidates]
+    .sort((a, b) => b.quality_score - a.quality_score)
+    .slice(0, Math.max(0, 3 - distilled.length))
+    .map((item) => ({
+      ...item,
+      reject_reasons: [...item.reject_reasons, 'promoted_for_minimum_skill_set'],
+    }));
 
-Return a concise summary with method steps and boundaries.`,
-    }),
-    35_000,
-    'skill transferable summary'
-  );
-  return object.summary;
+  const promotedIds = new Set(promoted.map((item) => item.id));
+  return {
+    distilled: [...distilled, ...promoted],
+    candidatePool: candidates.filter((item) => !promotedIds.has(item.id)),
+  };
+}
+
+function buildClusterKey(origin: OriginSkill): string {
+  return `${origin.name} ${origin.why} ${origin.how}`;
+}
+
+function clusterOrigins(origins: OriginSkill[]): Array<{ id: string; thesis: string; origins: OriginSkill[] }> {
+  const out: Array<{ id: string; thesis: string; origins: OriginSkill[] }> = [];
+  for (const origin of origins) {
+    const key = buildClusterKey(origin);
+    const cluster = out.find((item) =>
+      item.origins.some((existing) => similarityByTokenOverlap(key, buildClusterKey(existing)) >= 0.5)
+    );
+    if (cluster) {
+      cluster.origins.push(origin);
+      continue;
+    }
+    out.push({
+      id: crypto.randomUUID(),
+      thesis: origin.name,
+      origins: [origin],
+    });
+  }
+
+  for (const cluster of out) {
+    cluster.thesis = cluster.origins
+      .map((item) => item.name)
+      .sort((a, b) => b.length - a.length)[0] ?? cluster.thesis;
+  }
+
+  return out.slice(0, 8);
 }
 
 async function fetchEvidenceDocs(sourcePlatform: string, sourceRef: string): Promise<RawDocument[]> {
   try {
     if (sourcePlatform === 'twitter') {
       const adapter = new TwitterAdapter();
-      return await adapter.fetch(sourceRef.replace(/^@/, ''), { limit: 50 });
+      return await adapter.fetch(sourceRef.replace(/^@/, ''), { limit: 30 });
     }
     if (/^https?:\/\//.test(sourceRef)) {
       const adapter = new ArticleAdapter();
@@ -214,6 +321,215 @@ async function fetchEvidenceDocs(sourcePlatform: string, sourceRef: string): Pro
   return [];
 }
 
+function docsToEvidenceRefs(
+  docs: RawDocument[],
+  sourcePlatform: string,
+  sourceRef: string,
+  similarity: number
+): SkillEvidenceRef[] {
+  return docs.slice(0, 4).map((doc) => ({
+    source: sourceRef,
+    source_platform: sourcePlatform,
+    snippet: doc.content.slice(0, 220),
+    similarity,
+  }));
+}
+
+async function collectEvidenceForOrigin(origin: OriginSkill): Promise<SkillEvidenceRef[]> {
+  const recommender = new DataSourceRecommender();
+  const refs: SkillEvidenceRef[] = origin.evidence.map((item) => ({
+    source: item.source,
+    source_platform: item.source,
+    snippet: item.quote,
+    similarity: 1,
+  }));
+
+  const { object } = await withTimeout(
+    generateObject({
+      model: resolveModel(),
+      schema: SkillExpandSchema,
+      prompt: `Find related evidence sources for this skill origin.
+Origin: ${origin.name}
+WHY: ${origin.why}
+HOW: ${origin.how}
+Return 3 candidate sources.`,
+    }),
+    35_000,
+    'skill evidence expansion'
+  );
+
+  const candidates = object.expanded
+    .filter((item) => item.similarity >= 0.35 && item.confidence >= 0.4)
+    .slice(0, 4);
+
+  for (const candidate of candidates) {
+    let sourceRef = candidate.source_ref;
+    let sourcePlatform: string = candidate.source_platform;
+    if (!sourceRef || sourceRef === 'unknown') {
+      try {
+        const recommendation = await recommender.recommend(candidate.name);
+        const best = recommendation.dimensions[0]?.candidates[0];
+        if (best) {
+          sourceRef = best.handle_or_url;
+          sourcePlatform = best.platform;
+        }
+      } catch {
+        // keep candidate source
+      }
+    }
+
+    if (!sourceRef || sourceRef === 'unknown') continue;
+    const docs = await fetchEvidenceDocs(sourcePlatform, sourceRef);
+    refs.push(...docsToEvidenceRefs(docs, sourcePlatform, sourceRef, candidate.similarity));
+  }
+
+  return mergeUniqueEvidence([], refs);
+}
+
+async function distillSkillFromCluster(
+  cluster: { id: string; thesis: string; origins: OriginSkill[] },
+  evidenceRefs: SkillEvidenceRef[]
+): Promise<Omit<DistilledSkill, 'quality_score' | 'id' | 'last_validated_at'>> {
+  const originText = cluster.origins
+    .map((item, idx) => `Origin ${idx + 1}\nName: ${item.name}\nWHY: ${item.why}\nHOW: ${item.how}`)
+    .join('\n\n');
+  const evidenceText = evidenceRefs.slice(0, 12).map((item, idx) => `[${idx + 1}] ${item.snippet}`).join('\n');
+
+  const { object } = await withTimeout(
+    generateObject({
+      model: resolveModel(),
+      schema: DistillSkillSchema,
+      prompt: `Distill one high-value transferable skill from clustered persona origins.
+Output should be method-oriented and compact.
+
+Cluster thesis: ${cluster.thesis}
+
+Origins:
+${originText}
+
+Evidence snippets:
+${evidenceText || 'none'}
+
+Rules:
+- skill must be actionable
+- include clear boundaries and anti-patterns
+- trigger_signals should be short cues from user intent
+- avoid generic skill names`,
+    }),
+    40_000,
+    'skill distill'
+  );
+
+  const methodCompleteness = methodCompletenessScore(object.skill);
+
+  return {
+    name: object.skill.name,
+    central_thesis: object.skill.central_thesis,
+    why: object.skill.why,
+    how_steps: object.skill.how_steps.slice(0, 6),
+    boundaries: object.skill.boundaries.slice(0, 5),
+    trigger_signals: object.skill.trigger_signals.slice(0, 6),
+    anti_patterns: object.skill.anti_patterns.slice(0, 5),
+    evidence_refs: evidenceRefs.slice(0, 16),
+    confidence: object.skill.confidence,
+    contradiction_risk: object.skill.contradiction_risk,
+    method_completeness: methodCompleteness,
+    coverage_tags: Array.from(new Set(object.skill.coverage_tags)).slice(0, 10),
+    source_origin_ids: cluster.origins.map((item) => item.id),
+  };
+}
+
+function migrateToV2(raw: unknown, slug: string): PersonaSkillLibrary {
+  if (!raw || typeof raw !== 'object') return createEmptySkillLibrary(slug);
+  const candidate = raw as {
+    schema_version?: number;
+    persona_slug?: string;
+    version?: number;
+    updated_at?: string;
+    source_trace?: string[];
+    origin_skills?: OriginSkill[];
+    expanded_skills?: Array<{
+      name?: string;
+      source_platform?: string;
+      source_ref?: string;
+      transferable_summary?: string;
+      confidence?: number;
+      similarity?: number;
+      origin_id?: string;
+    }>;
+    clusters?: Array<{ origin_id?: string; expanded_ids?: string[] }>;
+    pending_candidates?: OriginSkill[];
+  };
+
+  const base = createEmptySkillLibrary(slug);
+  const origins = Array.isArray(candidate.origin_skills) ? candidate.origin_skills : [];
+  const distilledFromLegacy: DistilledSkill[] = origins.slice(0, 6).map((origin) => {
+    const legacyEvidence = (Array.isArray(candidate.expanded_skills) ? candidate.expanded_skills : [])
+      .filter((item) => item.origin_id === origin.id)
+      .slice(0, 4)
+      .map((item) => ({
+        source: item.source_ref ?? 'legacy',
+        source_platform: item.source_platform ?? 'unknown',
+        snippet: item.transferable_summary ?? item.name ?? origin.how,
+        similarity: item.similarity ?? 0.5,
+      }));
+    const draft = {
+      name: origin.name,
+      central_thesis: origin.why,
+      why: origin.why,
+      how_steps: [origin.how],
+      boundaries: ['Use only when user intent aligns with this skill context.'],
+      trigger_signals: [origin.name],
+      anti_patterns: [],
+      evidence_refs: [...legacyEvidence, ...origin.evidence.map((item) => ({
+        source: item.source,
+        source_platform: item.source,
+        snippet: item.quote,
+        similarity: 1,
+      }))],
+      confidence: origin.confidence,
+      contradiction_risk: 0.18,
+      method_completeness: 0.75,
+      coverage_tags: [origin.name],
+      source_origin_ids: [origin.id],
+    };
+    return gateCandidateSkill(draft).skill;
+  });
+
+  return {
+    ...base,
+    schema_version: 2,
+    persona_slug: candidate.persona_slug ?? slug,
+    version: Math.max(1, Number(candidate.version ?? 1)),
+    updated_at: typeof candidate.updated_at === 'string' ? candidate.updated_at : new Date().toISOString(),
+    source_trace: Array.isArray(candidate.source_trace) ? candidate.source_trace : [],
+    origin_skills: origins,
+    distilled_skills: distilledFromLegacy,
+    candidate_skill_pool: [],
+    clusters: Array.isArray(candidate.clusters)
+      ? candidate.clusters.map((item) => ({
+        id: crypto.randomUUID(),
+        thesis: origins.find((origin) => origin.id === item.origin_id)?.name ?? 'legacy cluster',
+        origin_ids: item.origin_id ? [item.origin_id] : [],
+        distilled_skill_id: null,
+      }))
+      : [],
+    expanded_skills: Array.isArray(candidate.expanded_skills) ? candidate.expanded_skills as PersonaSkillLibrary['expanded_skills'] : [],
+    pending_candidates: Array.isArray(candidate.pending_candidates) ? candidate.pending_candidates : [],
+  };
+}
+
+export const __skillLibraryTestables = {
+  normalizeName,
+  similarityByTokenOverlap,
+  dedupeOrigins,
+  mergeOrigins,
+  computeCoverageByOrigin,
+  gateCandidateSkill,
+  selectFinalDistilledSkills,
+  clusterOrigins,
+};
+
 export function getSkillLibraryPath(personaDir: string): string {
   return join(personaDir, 'skills.json');
 }
@@ -223,7 +539,10 @@ export function loadSkillLibrary(personaDir: string, slug: string): PersonaSkill
   if (!existsSync(path)) return createEmptySkillLibrary(slug);
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8'));
-    return PersonaSkillLibrarySchema.parse(parsed);
+    if (parsed?.schema_version === 2) {
+      return PersonaSkillLibraryV2Schema.parse(parsed);
+    }
+    return migrateToV2(parsed, slug);
   } catch {
     return createEmptySkillLibrary(slug);
   }
@@ -234,31 +553,101 @@ export function saveSkillLibrary(personaDir: string, library: PersonaSkillLibrar
   writeFileSync(getSkillLibraryPath(personaDir), JSON.stringify(library, null, 2), 'utf-8');
 }
 
+function parseManualSkillHint(query: string): { cleanQuery: string; manualTarget: string | null } {
+  const match = query.match(/^\s*\/skill\s+([^\n]+)\n?/i);
+  if (!match) return { cleanQuery: query, manualTarget: null };
+  const target = match[1].trim();
+  const clean = query.replace(match[0], '').trim();
+  return {
+    cleanQuery: clean.length > 0 ? clean : target,
+    manualTarget: target,
+  };
+}
+
+function scoreSkillForQuery(skill: DistilledSkill, query: string): number {
+  const q = normalizeName(query);
+  if (!q) return 0;
+  const semanticScore = Math.max(
+    similarityByTokenOverlap(q, skill.name),
+    similarityByTokenOverlap(q, skill.central_thesis),
+    similarityByTokenOverlap(q, skill.why)
+  );
+  const intentScore = Math.max(
+    ...skill.trigger_signals.map((item) => similarityByTokenOverlap(q, item)),
+    0
+  );
+  const boundaryPenalty = Math.max(
+    ...skill.anti_patterns.map((item) => similarityByTokenOverlap(q, item)),
+    0
+  );
+
+  return Math.max(0, semanticScore * 0.55 + intentScore * 0.45 - boundaryPenalty * 0.25);
+}
+
+export function selectTriggeredSkillsForQuery(
+  library: PersonaSkillLibrary | null,
+  query: string,
+  maxItems = 2
+): { cleanQuery: string; triggered: TriggeredSkillMatch[]; context: string } {
+  if (!library || library.distilled_skills.length === 0) {
+    return { cleanQuery: query, triggered: [], context: '' };
+  }
+
+  const { cleanQuery, manualTarget } = parseManualSkillHint(query);
+
+  let ranked: Array<{ skill: DistilledSkill; score: number; reason: 'manual' | 'automatic' }> = [];
+  if (manualTarget) {
+    const manual = [...library.distilled_skills]
+      .map((skill) => ({
+        skill,
+        score: Math.max(
+          similarityByTokenOverlap(manualTarget, skill.name),
+          similarityByTokenOverlap(manualTarget, skill.central_thesis)
+        ),
+        reason: 'manual' as const,
+      }))
+      .filter((item) => item.score >= 0.15)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxItems);
+    ranked = manual;
+  } else {
+    ranked = [...library.distilled_skills]
+      .map((skill) => ({ skill, score: scoreSkillForQuery(skill, cleanQuery), reason: 'automatic' as const }))
+      .filter((item) => item.score >= 0.18)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxItems);
+  }
+
+  const triggered: TriggeredSkillMatch[] = ranked.map((item) => ({
+    id: item.skill.id,
+    name: item.skill.name,
+    reason: item.reason,
+    trigger_score: item.score,
+  }));
+
+  if (ranked.length === 0) {
+    return { cleanQuery, triggered: [], context: '' };
+  }
+
+  const lines = ranked.map((item, idx) => {
+    const steps = item.skill.how_steps.slice(0, 4).map((step, i) => `${i + 1}) ${step}`).join(' ; ');
+    const boundaries = item.skill.boundaries.slice(0, 3).join(' | ');
+    return `${idx + 1}. ${item.skill.name}\nthesis: ${item.skill.central_thesis}\nsteps: ${steps}\nboundaries: ${boundaries}`;
+  });
+
+  return {
+    cleanQuery,
+    triggered,
+    context: `Skill context (triggered):\n${lines.join('\n\n')}`,
+  };
+}
+
 export function buildSkillContextForQuery(
   library: PersonaSkillLibrary | null,
   query: string,
-  maxItems = 4
+  maxItems = 2
 ): string {
-  if (!library) return '';
-  const q = normalizeName(query);
-  const scoredOrigins = library.origin_skills.map((s) => ({
-    kind: 'origin' as const,
-    score: similarityByTokenOverlap(q, s.name) + similarityByTokenOverlap(q, s.why) * 0.4,
-    text: `${s.name} | WHY: ${s.why} | HOW: ${s.how}`,
-  }));
-  const scoredExpanded = library.expanded_skills.map((s) => ({
-    kind: 'expanded' as const,
-    score: similarityByTokenOverlap(q, s.name) + similarityByTokenOverlap(q, s.transferable_summary) * 0.4,
-    text: `${s.name} | transferable: ${s.transferable_summary}`,
-  }));
-  const merged = [...scoredOrigins, ...scoredExpanded]
-    .filter((v) => v.score > 0.05)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxItems);
-
-  if (merged.length === 0) return '';
-  const lines = merged.map((v, i) => `${i + 1}. [${v.kind}] ${v.text}`);
-  return `Skill context:\n${lines.join('\n')}`;
+  return selectTriggeredSkillsForQuery(library, query, maxItems).context;
 }
 
 export function computeCoverageByOrigin(
@@ -267,14 +656,14 @@ export function computeCoverageByOrigin(
   if (!library) return [];
   return library.origin_skills
     .map((origin) => {
-      const expandedCount = library.expanded_skills.filter((item) => item.origin_id === origin.id).length;
-      const coverageScore = Math.min(1, expandedCount / 3);
+      const linked = library.distilled_skills.filter((item) => item.source_origin_ids.includes(origin.id));
+      const covered = linked.length > 0 ? 1 : 0;
       return {
         origin_id: origin.id,
         origin_name: origin.name,
-        expanded_count: expandedCount,
-        coverage_score: coverageScore,
-        missing_slots: Math.max(0, 3 - expandedCount),
+        expanded_count: linked.length,
+        coverage_score: covered,
+        missing_slots: covered === 1 ? 0 : 1,
       };
     })
     .sort((a, b) => a.coverage_score - b.coverage_score);
@@ -282,27 +671,24 @@ export function computeCoverageByOrigin(
 
 export async function buildSkillLibraryFromSources(
   persona: Persona,
-  soul: Soul,
+  _soul: Soul,
   chunks: SemanticChunk[],
   docs: RawDocument[],
   previous?: PersonaSkillLibrary
 ): Promise<PersonaSkillLibrary> {
-  const seedText = chunks.slice(0, 50).map((c, i) => `[${i + 1}] ${c.content.slice(0, 280)}`).join('\n');
+  const seedText = chunks.slice(0, 70).map((c, i) => `[${i + 1}] ${c.content.slice(0, 280)}`).join('\n');
   const { object } = await withTimeout(
     generateObject({
       model: resolveModel(),
       schema: OriginExtractionSchema,
-      prompt: `Extract core skill origins from this persona's content.
-Persona: ${soul.target_name}
-Goal: identify "idea -> skill origin (why/how)".
-
+      prompt: `Extract core idea-origin skills from this persona content.
+Persona: ${persona.name}
 Rules:
-- Max 8 origins.
-- Keep only clearly evidenced skills.
-- each origin includes why/how + quotes.
+- focus on center ideas and reusable methods
+- avoid generic topics
+- max 12 origins
 
-Content:
-${seedText || 'No content'}`,
+Content:\n${seedText || 'No content'}`,
     }),
     45_000,
     'skill origin extraction'
@@ -314,93 +700,66 @@ ${seedText || 'No content'}`,
     why: item.why,
     how: item.how,
     confidence: item.confidence,
-    evidence: item.evidence_quotes.slice(0, 5).map((q) => ({ quote: q, source: 'tweet' })),
+    evidence: item.evidence_quotes.slice(0, 6).map((q) => ({ quote: q, source: 'tweet' })),
   }));
 
   const deduped = dedupeOrigins(rawOrigins);
-  const accepted = deduped.filter((v) => v.evidence.length >= 2 && v.confidence >= 0.5);
-  const pending = deduped.filter((v) => !accepted.includes(v));
+  const acceptedOrigins = deduped.filter((item) => item.evidence.length >= 2 && item.confidence >= 0.5);
+  const pendingOrigins = deduped.filter((item) => !acceptedOrigins.includes(item));
 
-  const recommender = new DataSourceRecommender();
-  const expandedSkills: ExpandedSkill[] = [];
-  for (const origin of accepted) {
-    const { object: expandedObject } = await withTimeout(
-      generateObject({
-        model: resolveModel(),
-        schema: SkillExpandSchema,
-        prompt: `Given origin skill "${origin.name}" with why/how:
-WHY: ${origin.why}
-HOW: ${origin.how}
+  const clusters = clusterOrigins(acceptedOrigins);
+  const acceptedDistilled: DistilledSkill[] = [];
+  const candidatePool: CandidateSkill[] = [];
 
-Return 3 similar skills with likely source platform+reference (handle or url).`,
-      }),
-      35_000,
-      'skill expand generation'
-    );
+  for (const cluster of clusters) {
+    const clusterEvidence: SkillEvidenceRef[] = [];
+    for (const origin of cluster.origins) {
+      const refs = await collectEvidenceForOrigin(origin);
+      clusterEvidence.push(...refs);
+    }
 
-    const expanded = expandedObject.expanded
-      .filter((item) => item.similarity >= 0.35 && item.confidence >= 0.4)
-      .slice(0, 6);
-    const sourceSeen = new Set<string>();
-    let used = 0;
-    for (const candidate of expanded) {
-      if (used >= 3) break;
-      let sourceRef = candidate.source_ref;
-      let sourcePlatform = candidate.source_platform;
-      if (!sourceRef || sourceRef === 'unknown') {
-        try {
-          const recommendation = await recommender.recommend(candidate.name);
-          const best = recommendation.dimensions[0]?.candidates[0];
-          if (best) {
-            sourceRef = best.handle_or_url;
-            sourcePlatform = best.platform;
-          }
-        } catch {
-          // keep fallback values
-        }
-      }
-      const sourceKey = `${sourcePlatform}:${sourceRef}`;
-      if (!sourceRef || sourceRef === 'unknown' || sourceSeen.has(sourceKey)) {
-        continue;
-      }
-      sourceSeen.add(sourceKey);
-
-      const evidenceDocs = await fetchEvidenceDocs(sourcePlatform, sourceRef);
-      const transferableSummary = await summarizeTransferableCapability(origin, candidate.name, evidenceDocs);
-      expandedSkills.push({
-        id: crypto.randomUUID(),
-        origin_id: origin.id,
-        name: candidate.name,
-        similarity: candidate.similarity,
-        source_platform: sourcePlatform,
-        source_ref: sourceRef,
-        transferable_summary: transferableSummary,
-        confidence: candidate.confidence,
+    const draft = await distillSkillFromCluster(cluster, mergeUniqueEvidence([], clusterEvidence));
+    const gated = gateCandidateSkill(draft);
+    if (gated.accepted) {
+      acceptedDistilled.push(gated.skill);
+    } else {
+      candidatePool.push({
+        ...gated.skill,
+        reject_reasons: gated.reasons,
       });
-      used++;
     }
   }
 
   const base = previous ?? createEmptySkillLibrary(persona.slug);
-  const mergedOrigins = mergeOrigins(base.origin_skills, accepted);
-  const mergedExpanded = mergeExpandedSkills(base.expanded_skills, expandedSkills, mergedOrigins)
-    .filter((s) => s.similarity >= 0.35 && s.confidence >= 0.4);
-  const clusters = mergedOrigins.map((origin) => ({
-    origin_id: origin.id,
-    expanded_ids: mergedExpanded.filter((s) => s.origin_id === origin.id).map((s) => s.id),
-  }));
+  const mergedOrigins = mergeOrigins(base.origin_skills, acceptedOrigins);
+  const mergedDistilled = mergeDistilledSkills(base.distilled_skills, acceptedDistilled);
+  const selected = selectFinalDistilledSkills(mergedDistilled, [...base.candidate_skill_pool, ...candidatePool]);
+
+  const clusterOut = clusters.map((cluster) => {
+    const linked = selected.distilled.find((item) =>
+      item.source_origin_ids.some((originId) => cluster.origins.some((origin) => origin.id === originId))
+    );
+    return {
+      id: cluster.id,
+      thesis: cluster.thesis,
+      origin_ids: cluster.origins.map((item) => item.id),
+      distilled_skill_id: linked?.id ?? null,
+    };
+  });
 
   return {
     ...base,
-    schema_version: 1,
+    schema_version: 2,
     persona_slug: persona.slug,
     version: base.version + 1,
     updated_at: new Date().toISOString(),
-    source_trace: Array.from(new Set([...base.source_trace, ...docs.slice(0, 20).map((d) => d.source_url ?? d.author)])),
+    source_trace: Array.from(new Set([...base.source_trace, ...docs.slice(0, 30).map((d) => d.source_url ?? d.author)])),
     origin_skills: mergedOrigins,
-    expanded_skills: mergedExpanded,
-    clusters,
-    pending_candidates: mergeOrigins(base.pending_candidates, pending),
+    distilled_skills: selected.distilled,
+    candidate_skill_pool: selected.candidatePool.slice(0, 20),
+    clusters: clusterOut,
+    pending_candidates: mergeOrigins(base.pending_candidates, pendingOrigins),
+    expanded_skills: [],
   };
 }
 
@@ -410,7 +769,7 @@ export async function refreshSkillLibraryFromSignals(
   signals: string[],
   previous?: PersonaSkillLibrary
 ): Promise<PersonaSkillLibrary> {
-  const fakeDocs: RawDocument[] = signals.slice(0, 50).map((content) => ({
+  const fakeDocs: RawDocument[] = signals.slice(0, 70).map((content) => ({
     id: crypto.randomUUID(),
     source_type: 'custom',
     content,

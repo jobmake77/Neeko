@@ -105,6 +105,44 @@ export async function GET() {
             : null;
         const runtimeProgress = readRuntimeProgress(slug);
         const taskState = readRuntimeTaskState(slug);
+        const manifestPath = join(root, slug, 'run_manifest.json');
+        const checkpointPath = join(root, slug, 'checkpoint_index.json');
+        const errorLedgerPath = join(root, slug, 'error_ledger.json');
+        const manifest = existsSync(manifestPath)
+          ? (() => {
+              try {
+                return JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+                  tracks?: Array<{ track: string; status: string; acceptance?: Record<string, unknown> }>;
+                  orchestration?: { track?: string; mode?: string };
+                };
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+        const latestCheckpoint = existsSync(checkpointPath)
+          ? (() => {
+              try {
+                const parsed = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+                  checkpoints?: Array<{ id: string; created_at: string; track: string; round: number; stage: string }>;
+                };
+                const list = Array.isArray(parsed.checkpoints) ? parsed.checkpoints : [];
+                return list.length > 0 ? list[list.length - 1] : null;
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+        const errorCount = existsSync(errorLedgerPath)
+          ? (() => {
+              try {
+                const parsed = JSON.parse(readFileSync(errorLedgerPath, 'utf-8')) as unknown[];
+                return Array.isArray(parsed) ? parsed.length : 0;
+              } catch {
+                return 0;
+              }
+            })()
+          : 0;
         if (!report && !runtimeProgress) return null;
         const stalled = isStalled(slug, persona.status, runtimeProgress?.updatedAt, taskState);
         const recovering = stalled && maybeAutoRecoverTraining(slug, taskState, runtimeProgress);
@@ -116,6 +154,9 @@ export async function GET() {
           gap_focused_trend_delta: gapFocusedTrendDelta,
           runtime_progress: runtimeProgress,
           runtime_task: taskState,
+          run_manifest: manifest,
+          latest_checkpoint: latestCheckpoint,
+          error_count: errorCount,
         };
       } catch {
         return null;

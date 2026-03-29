@@ -1,7 +1,8 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
 import { Dumbbell, Circle, TrendingUp, ShieldAlert, ChevronRight, Download } from 'lucide-react';
 
 interface TrainingCardItem {
@@ -105,12 +106,24 @@ interface StreamProgress {
   etaMax: number;
 }
 
-const TRAIN_STAGE_ORDER = ['init', 'skill_origin_extract', 'skill_expand', 'skill_merge', 'training', 'finalize', 'done'] as const;
+const TRAIN_STAGE_ORDER = [
+  'init',
+  'track_persona_extract',
+  'skill_origin_extract',
+  'skill_expand',
+  'skill_merge',
+  'track_work_execute',
+  'training',
+  'finalize',
+  'done',
+] as const;
 const TRAIN_STAGE_LABEL: Record<string, string> = {
   init: '初始化任务',
+  track_persona_extract: 'Track-A 人物能力提取',
   skill_origin_extract: 'Skill 原点提炼',
   skill_expand: 'Skill 证据融合',
   skill_merge: 'Skill 蒸馏入库',
+  track_work_execute: 'Track-B 工程执行训练',
   training: '培养循环',
   finalize: '收尾与保存',
   done: '培养完成',
@@ -124,7 +137,6 @@ function formatDuration(sec: number): string {
 }
 
 export default function TrainingPage() {
-  const searchParams = useSearchParams();
   const [items, setItems] = useState<TrainingCardItem[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string>('');
   const [detail, setDetail] = useState<TrainingDetailResponse | null>(null);
@@ -152,7 +164,10 @@ export default function TrainingPage() {
       .then((r) => (r.ok ? r.json() : []))
       .then((data: TrainingCardItem[]) => {
         setItems(data);
-        const slugFromUrl = searchParams.get('slug');
+        const slugFromUrl =
+          typeof window !== 'undefined'
+            ? new URLSearchParams(window.location.search).get('slug')
+            : null;
         if (slugFromUrl && data.some((item) => item.slug === slugFromUrl)) {
           setSelectedSlug(slugFromUrl);
           return;
@@ -160,7 +175,7 @@ export default function TrainingPage() {
         if (data.length > 0) setSelectedSlug((prev) => prev || data[0].slug);
       })
       .catch(() => setItems([]));
-  }, [searchParams]);
+  }, []);
 
   useEffect(() => {
     fetch('/api/settings', { cache: 'no-store' })
@@ -230,6 +245,8 @@ export default function TrainingPage() {
       slug: selectedSlug,
       rounds: mode === 'quick' ? '3' : '10',
       trainingProfile: defaultTrainingProfile,
+      track: 'full_serial',
+      mode,
     });
 
     const es = new EventSource(`/api/train?${params}`);

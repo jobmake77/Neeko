@@ -149,7 +149,7 @@ export async function GET(req: Request) {
       }
 
       // Build CLI args
-      const { repoRoot, cliEntry } = resolveCliEntry(process.cwd());
+      const { repoRoot, cliEntry } = resolveCliEntry();
       const args = [cliEntry, 'create'];
 
       if (mode === 'single' && handle) {

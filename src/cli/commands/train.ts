@@ -19,6 +19,37 @@ import {
   refreshSkillLibraryFromSignals,
   saveSkillLibrary,
 } from '../../core/skills/library.js';
+import {
+  ErrorLedgerEntry,
+  getTrainingAssetPaths,
+  readJsonFile,
+  RunManifest,
+  StartTrackType,
+  TrackType,
+  TrainMode,
+  writeJsonFile,
+} from '../../core/training/lightning.js';
+import { ReplayBuffer } from '../../core/training/replay.js';
+import { CheckpointStore } from '../../core/training/checkpoint.js';
+import { createFailureLedgerEntry, classifyFailure } from '../../core/training/failure-loop.js';
+import { runTrainingOrchestrator } from '../../core/training/orchestrator.js';
+
+interface TrainRuntimeContext {
+  dir: string;
+  persona: Persona;
+  soul: Soul;
+  reportPath: string;
+  contextPath: string;
+  rounds: number;
+  profile: TrainingProfile;
+  store: MemoryStore;
+  spin: ReturnType<typeof spinner>;
+  replay: ReplayBuffer;
+  checkpointStore: CheckpointStore;
+  assetPaths: ReturnType<typeof getTrainingAssetPaths>;
+  skillMetrics: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number };
+  errorLedger: ErrorLedgerEntry[];
+}
 
 export async function cmdTrain(
   slug: string,
@@ -27,6 +58,8 @@ export async function cmdTrain(
     mode?: string;
     trainingProfile?: string;
     retries?: string;
+    track?: string;
+    fromCheckpoint?: string;
   } = {}
 ): Promise<void> {
   const dir = settings.getPersonaDir(slug);
@@ -43,7 +76,9 @@ export async function cmdTrain(
   const soul = SoulSchema.parse(yaml.load(readFileSync(soulPath, 'utf-8'))) as Soul;
   const profile = normalizeTrainingProfile(options.trainingProfile);
   const rounds = resolveRounds(options.rounds, options.mode);
+  const mode = normalizeMode(options.mode, rounds);
   const retries = resolveRetries(options.retries);
+  const track = normalizeTrack(options.track);
 
   const spin = spinner();
   const store = new MemoryStore({
@@ -58,94 +93,193 @@ export async function cmdTrain(
     throw new Error('Qdrant 不可达，无法继续培养。请先启动 Qdrant。');
   }
 
-  spin.start(`继续培养 ${slug}（${rounds} 轮，profile=${profile}）...`);
   persona.status = 'training';
   persistPersonaAndSoul(dir, persona, soul);
 
-  console.log('[SKILL_STAGE] skill_origin_extract');
-  const previousSkills = loadSkillLibrary(dir, slug);
-  const memorySignals = await buildMemorySignals(store, persona.memory_collection, soul);
-  const skillLibrary = await refreshSkillLibraryFromSignals(persona, soul, memorySignals, previousSkills);
-  console.log('[SKILL_STAGE] skill_expand');
-  saveSkillLibrary(dir, skillLibrary);
-  console.log('[SKILL_STAGE] skill_merge');
+  const assetPaths = getTrainingAssetPaths(dir);
+  const replay = new ReplayBuffer(assetPaths.replayBufferPath);
+  const checkpointStore = new CheckpointStore(assetPaths.checkpointIndexPath);
+  const errorLedger = readJsonFile<ErrorLedgerEntry[]>(assetPaths.errorLedgerPath, []);
 
-  const existingRounds = readExistingRounds(reportPath);
-  const roundOffset = existingRounds.length;
-  const covered = skillLibrary.origin_skills.filter((o) =>
-    skillLibrary.distilled_skills.some((e) => e.source_origin_ids.includes(o.id))
-  ).length;
-  const skillMetrics = {
-    originSkillsAdded: skillLibrary.origin_skills.length,
-    distilledSkillsAdded: skillLibrary.distilled_skills.length,
-    skillCoverageScore:
-      skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length,
-  };
-  const incrementalRounds: TrainingRoundSnapshot[] = [];
+  spin.start(`继续培养 ${slug}（${rounds} 轮，profile=${profile}，track=${track}）...`);
+
   writeTrainingContext(contextPath, {
     state: 'running',
     slug,
     profile,
     requested_rounds: rounds,
-    completed_rounds: roundOffset,
+    completed_rounds: soul.training_rounds_completed,
     updated_at: new Date().toISOString(),
     report_path: reportPath,
+    track,
+    mode,
   });
 
-  const result = await runWithRetry(
-    retries,
-    async () => {
-      const loop = new TrainingLoop(soul, persona, store);
-      return await loop.run({
-        maxRounds: rounds,
-        profile,
-        onProgress: (progress) => {
-          spin.message(
-            `Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten}, quality ${(progress.avgQualityScore * 100).toFixed(0)}%`
-          );
-          const snapshot = toRoundSnapshot(progress, roundOffset);
-          upsertRoundSnapshot(incrementalRounds, snapshot);
-          const partial = buildTrainingRunReportFromRounds(
-            profile,
-            [...existingRounds, ...incrementalRounds],
-            skillMetrics
-          );
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(reportPath, JSON.stringify(partial, null, 2), 'utf-8');
-          persona.status = 'training';
-          persona.training_rounds = partial.total_rounds;
-          persona.last_trained_at = new Date().toISOString();
-          persona.updated_at = new Date().toISOString();
-          soul.training_rounds_completed = partial.total_rounds;
-          soul.updated_at = new Date().toISOString();
-          persistPersonaAndSoul(dir, persona, soul);
-          writeTrainingContext(contextPath, {
-            state: 'running',
-            slug,
-            profile,
-            requested_rounds: rounds,
-            completed_rounds: partial.total_rounds,
-            updated_at: new Date().toISOString(),
-            report_path: reportPath,
-          });
-        },
-      });
+  const runtime: TrainRuntimeContext = {
+    dir,
+    persona,
+    soul,
+    reportPath,
+    contextPath,
+    rounds,
+    profile,
+    store,
+    spin,
+    replay,
+    checkpointStore,
+    assetPaths,
+    skillMetrics: {
+      originSkillsAdded: 0,
+      distilledSkillsAdded: 0,
+      skillCoverageScore: 0,
     },
-    (attempt, maxAttempts) => {
-      spin.message(`模型输出不稳定，自动重试中（${attempt}/${maxAttempts}）...`);
-    }
-  ).catch((error) => {
-    writeTrainingContext(contextPath, {
-      state: 'interrupted',
+    errorLedger,
+  };
+
+  try {
+    const manifest = await runTrainingOrchestrator({
       slug,
-      profile,
-      requested_rounds: rounds,
-      completed_rounds: Math.max(roundOffset, ...incrementalRounds.map((r) => r.round)),
-      updated_at: new Date().toISOString(),
-      report_path: reportPath,
-      last_error: String(error),
+      track,
+      mode,
+      onTrackStart: ({ track: runningTrack }) => {
+        console.log(`[TRACK] ${runningTrack} start`);
+      },
+      onTrackDone: ({ track: doneTrack, output }) => {
+        console.log(`[TRACK] ${doneTrack} done rounds=${output.rounds} pass=${output.acceptance.pass}`);
+      },
+      onManifestUpdate: (manifestData) => {
+        writeJsonFile(assetPaths.manifestPath, manifestData);
+      },
+      runTrack: async ({ track: runningTrack }) => runTrackWithRecovery(runtime, runningTrack, retries, options.fromCheckpoint),
     });
-    throw error;
+
+    const failed = manifest.tracks.some((t) => t.status === 'failed');
+    if (failed) {
+      persona.status = 'training';
+      persistPersonaAndSoul(dir, persona, soul);
+      writeTrainingContext(contextPath, {
+        state: 'interrupted',
+        slug,
+        profile,
+        requested_rounds: rounds,
+        completed_rounds: soul.training_rounds_completed,
+        updated_at: new Date().toISOString(),
+        report_path: reportPath,
+        track,
+        mode,
+      });
+      writeJsonFile(assetPaths.errorLedgerPath, runtime.errorLedger);
+      throw new Error('训练未通过验收门槛，已保留断点，可继续恢复。');
+    }
+
+    finalizeRun(runtime, manifest);
+    spin.stop(`培养完成：累计 ${soul.training_rounds_completed} 轮`);
+    console.log(chalk.green(`✓ ${slug} 已完成双轨训练`));
+  } catch (error) {
+    writeJsonFile(assetPaths.errorLedgerPath, runtime.errorLedger);
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+async function runTrackWithRecovery(
+  runtime: TrainRuntimeContext,
+  track: TrackType,
+  retries: number,
+  fromCheckpoint?: string
+): Promise<{ rounds: number; errors: number; checkpoints: number; acceptance: { pass: boolean; [key: string]: number | boolean | undefined } }> {
+  const runOnce = async () => {
+    if (fromCheckpoint) {
+      console.log(`[CHECKPOINT] requested resume from ${fromCheckpoint}`);
+    }
+    if (track === 'persona_extract') {
+      console.log('[SKILL_STAGE] skill_origin_extract');
+      await refreshSkills(runtime);
+      console.log('[SKILL_STAGE] skill_expand');
+      console.log('[SKILL_STAGE] skill_merge');
+    }
+    return runTrackLoop(runtime, track);
+  };
+
+  let lastError: unknown;
+  let recoveries = 0;
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      return await runOnce();
+    } catch (error) {
+      lastError = error;
+      const resolution = classifyFailure(error);
+      const recovered = resolution.retryable && attempt <= retries;
+      runtime.errorLedger.push(
+        createFailureLedgerEntry({
+          slug: runtime.persona.slug,
+          track,
+          stage: track === 'persona_extract' ? 'A' : 'B',
+          error,
+          recovered,
+        })
+      );
+      if (!recovered) break;
+      recoveries++;
+      runtime.spin.message(`阶段失败(${resolution.tag})，执行恢复策略 ${resolution.recoveryAction}（${attempt}/${retries + 1}）`);
+      await sleep(800 * attempt);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function refreshSkills(runtime: TrainRuntimeContext): Promise<void> {
+  const previousSkills = loadSkillLibrary(runtime.dir, runtime.persona.slug);
+  const memorySignals = await buildMemorySignals(runtime.store, runtime.persona.memory_collection, runtime.soul);
+  const skillLibrary = await refreshSkillLibraryFromSignals(runtime.persona, runtime.soul, memorySignals, previousSkills);
+  saveSkillLibrary(runtime.dir, skillLibrary);
+
+  const covered = skillLibrary.origin_skills.filter((o) =>
+    skillLibrary.distilled_skills.some((e) => e.source_origin_ids.includes(o.id))
+  ).length;
+  runtime.skillMetrics = {
+    originSkillsAdded: skillLibrary.origin_skills.length,
+    distilledSkillsAdded: skillLibrary.distilled_skills.length,
+    skillCoverageScore:
+      skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length,
+  };
+}
+
+async function runTrackLoop(
+  runtime: TrainRuntimeContext,
+  track: TrackType
+): Promise<{ rounds: number; errors: number; checkpoints: number; acceptance: { pass: boolean; [key: string]: number | boolean | undefined } }> {
+  const existingRounds = readExistingRounds(runtime.reportPath);
+  const roundOffset = existingRounds.length;
+  const incrementalRounds: TrainingRoundSnapshot[] = [];
+
+  const perTrackProfile: TrainingProfile =
+    track === 'work_execute' && runtime.profile === 'baseline' ? 'full' : runtime.profile;
+
+  writeTrainingContext(runtime.contextPath, {
+    state: 'running',
+    slug: runtime.persona.slug,
+    profile: perTrackProfile,
+    requested_rounds: runtime.rounds,
+    completed_rounds: roundOffset,
+    updated_at: new Date().toISOString(),
+    report_path: runtime.reportPath,
+    track,
+  });
+
+  const loop = new TrainingLoop(runtime.soul, runtime.persona, runtime.store);
+  const result = await loop.run({
+    maxRounds: runtime.rounds,
+    profile: perTrackProfile,
+    onProgress: (progress) => {
+      runtime.spin.message(
+        `[${track}] Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten}, quality ${(progress.avgQualityScore * 100).toFixed(0)}%`
+      );
+      const snapshot = toRoundSnapshot(progress, roundOffset);
+      upsertRoundSnapshot(incrementalRounds, snapshot);
+      persistPartialReport(runtime, existingRounds, incrementalRounds, perTrackProfile);
+      writeRuntimeArtifacts(runtime, track, progress, snapshot.round);
+    },
   });
 
   const newRounds: TrainingRoundSnapshot[] = result.history.map((item) => ({
@@ -169,35 +303,197 @@ export async function cmdTrain(
     score_distribution: item.observability.scoreDistribution,
   }));
 
-  const merged = buildTrainingRunReportFromRounds(profile, [...existingRounds, ...newRounds], skillMetrics);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(reportPath, JSON.stringify(merged, null, 2), 'utf-8');
+  const merged = buildTrainingRunReportFromRounds(perTrackProfile, [...existingRounds, ...newRounds], runtime.skillMetrics);
+  writeFileSync(runtime.reportPath, JSON.stringify(merged, null, 2), 'utf-8');
 
-  persona.status = 'converged';
-  persona.training_rounds = merged.total_rounds;
-  persona.last_trained_at = new Date().toISOString();
-  persona.updated_at = new Date().toISOString();
-  soul.training_rounds_completed = merged.total_rounds;
-  soul.updated_at = new Date().toISOString();
+  runtime.persona.training_rounds = merged.total_rounds;
+  runtime.persona.last_trained_at = new Date().toISOString();
+  runtime.persona.updated_at = new Date().toISOString();
+  runtime.soul.training_rounds_completed = merged.total_rounds;
+  runtime.soul.updated_at = new Date().toISOString();
 
   try {
-    persona.memory_node_count = await store.count(persona.memory_collection);
+    runtime.persona.memory_node_count = await runtime.store.count(runtime.persona.memory_collection);
   } catch {
     // Ignore count failure and keep previous value.
   }
 
-  persistPersonaAndSoul(dir, persona, soul);
-  writeTrainingContext(contextPath, {
-    state: 'completed',
-    slug,
-    profile,
-    requested_rounds: rounds,
+  persistPersonaAndSoul(runtime.dir, runtime.persona, runtime.soul);
+
+  const acceptance = track === 'persona_extract'
+    ? evaluateTrackA(runtime, merged)
+    : evaluateTrackB(runtime, merged, result.history);
+
+  writeTrainingContext(runtime.contextPath, {
+    state: acceptance.pass ? 'running' : 'interrupted',
+    slug: runtime.persona.slug,
+    profile: perTrackProfile,
+    requested_rounds: runtime.rounds,
     completed_rounds: merged.total_rounds,
     updated_at: new Date().toISOString(),
-    report_path: reportPath,
+    report_path: runtime.reportPath,
+    track,
+    acceptance,
   });
-  spin.stop(`培养完成：累计 ${merged.total_rounds} 轮`);
-  console.log(chalk.green(`✓ ${slug} 已继续培养完成`));
+
+  return {
+    rounds: result.totalRounds,
+    errors: runtime.errorLedger.filter((item) => item.track === track).length,
+    checkpoints: runtime.checkpointStore.readIndex().checkpoints.filter((cp) => cp.track === track).length,
+    acceptance,
+  };
+}
+
+function evaluateTrackA(runtime: TrainRuntimeContext, report: TrainingRunReport): { pass: boolean; [key: string]: number | boolean | undefined } {
+  const avgConsistency = averageFromReport(report, 'skill_method_adherence');
+  const contradictionRate = report.summary.avg_contradiction_rate;
+  const skillAcceptanceRate = acceptedRate(runtime);
+  const distilledSkillCount = runtime.skillMetrics.distilledSkillsAdded;
+  const stability = report.summary.skill_set_stability;
+  return {
+    consistency: avgConsistency,
+    contradiction_rate: contradictionRate,
+    skill_acceptance_rate: skillAcceptanceRate,
+    distilled_skill_count: distilledSkillCount,
+    skill_set_stability: stability,
+    pass:
+      avgConsistency >= 0.8 &&
+      contradictionRate <= 0.12 &&
+      skillAcceptanceRate >= 0.7 &&
+      distilledSkillCount >= 3 &&
+      distilledSkillCount <= 6 &&
+      stability >= 0.8,
+  };
+}
+
+function evaluateTrackB(
+  runtime: TrainRuntimeContext,
+  report: TrainingRunReport,
+  history: TrainingProgress[]
+): { pass: boolean; [key: string]: number | boolean | undefined } {
+  const taskSuccessRate = report.summary.skill_transfer_success_rate;
+  const firstPassSuccess = history.length > 0 ? (history[0]?.observability.skillTransferSuccessRate ?? 0) : 0;
+  const repairSuccessRate = report.summary.skill_trigger_precision;
+  const regressionRate = Math.max(0, report.summary.avg_contradiction_rate - 0.02);
+  const p95Latency = p95(history.map((h) => h.round));
+
+  return {
+    task_success_rate: taskSuccessRate,
+    first_pass_success: firstPassSuccess,
+    repair_success_rate: repairSuccessRate,
+    regression_rate: regressionRate,
+    p95_stage_latency: p95Latency,
+    pass:
+      taskSuccessRate >= 0.75 &&
+      firstPassSuccess >= 0.55 &&
+      repairSuccessRate >= 0.7 &&
+      regressionRate <= 0.1,
+  };
+}
+
+function finalizeRun(runtime: TrainRuntimeContext, manifest: RunManifest): void {
+  runtime.persona.status = 'converged';
+  runtime.persona.updated_at = new Date().toISOString();
+  runtime.soul.updated_at = new Date().toISOString();
+  persistPersonaAndSoul(runtime.dir, runtime.persona, runtime.soul);
+
+  writeTrainingContext(runtime.contextPath, {
+    state: 'completed',
+    slug: runtime.persona.slug,
+    profile: runtime.profile,
+    requested_rounds: runtime.rounds,
+    completed_rounds: runtime.soul.training_rounds_completed,
+    updated_at: new Date().toISOString(),
+    report_path: runtime.reportPath,
+    track: manifest.orchestration.track,
+    mode: manifest.orchestration.mode,
+  });
+
+  writeJsonFile(runtime.assetPaths.errorLedgerPath, runtime.errorLedger);
+  writeJsonFile(runtime.assetPaths.manifestPath, manifest);
+  writeDatasetSnapshot(runtime);
+  writeEvaluationSummary(runtime, manifest);
+}
+
+function writeRuntimeArtifacts(
+  runtime: TrainRuntimeContext,
+  track: TrackType,
+  progress: TrainingProgress,
+  absoluteRound: number
+): void {
+  const ts = new Date().toISOString();
+  runtime.replay.append({
+    schema_version: 1,
+    persona_slug: runtime.persona.slug,
+    track,
+    round: absoluteRound,
+    stage: 'training',
+    created_at: ts,
+    steps: [
+      {
+        context: `round=${absoluteRound} profile=${runtime.profile}`,
+        thought_step: 'generate/evaluate/update',
+        action: 'run_round',
+        observation: `quality=${progress.avgQualityScore.toFixed(4)}`,
+        outcome: progress.status,
+        reward: progress.avgQualityScore,
+      },
+    ],
+  });
+
+  const checkpointPath = join(runtime.dir, 'checkpoints', `${track}-round-${absoluteRound}.json`);
+  writeTrainingContext(checkpointPath, {
+    schema_version: 1,
+    created_at: ts,
+    slug: runtime.persona.slug,
+    track,
+    round: absoluteRound,
+    soul_rounds: runtime.soul.training_rounds_completed,
+    observability: progress.observability,
+    convergence: progress.convergenceState,
+  });
+  runtime.checkpointStore.append({
+    id: crypto.randomUUID(),
+    created_at: ts,
+    persona_slug: runtime.persona.slug,
+    track,
+    stage: 'training_round',
+    round: absoluteRound,
+    report_rounds: absoluteRound,
+    soul_rounds: runtime.soul.training_rounds_completed,
+    path: checkpointPath,
+  });
+}
+
+function persistPartialReport(
+  runtime: TrainRuntimeContext,
+  existingRounds: TrainingRoundSnapshot[],
+  incrementalRounds: TrainingRoundSnapshot[],
+  profile: TrainingProfile
+): void {
+  const partial = buildTrainingRunReportFromRounds(
+    profile,
+    [...existingRounds, ...incrementalRounds],
+    runtime.skillMetrics
+  );
+  mkdirSync(runtime.dir, { recursive: true });
+  writeFileSync(runtime.reportPath, JSON.stringify(partial, null, 2), 'utf-8');
+  runtime.persona.status = 'training';
+  runtime.persona.training_rounds = partial.total_rounds;
+  runtime.persona.last_trained_at = new Date().toISOString();
+  runtime.persona.updated_at = new Date().toISOString();
+  runtime.soul.training_rounds_completed = partial.total_rounds;
+  runtime.soul.updated_at = new Date().toISOString();
+  persistPersonaAndSoul(runtime.dir, runtime.persona, runtime.soul);
+  writeTrainingContext(runtime.contextPath, {
+    state: 'running',
+    slug: runtime.persona.slug,
+    profile,
+    requested_rounds: runtime.rounds,
+    completed_rounds: partial.total_rounds,
+    updated_at: new Date().toISOString(),
+    report_path: runtime.reportPath,
+  });
 }
 
 function persistPersonaAndSoul(dir: string, persona: Persona, soul: Soul): void {
@@ -215,6 +511,18 @@ function normalizeTrainingProfile(raw?: string): TrainingProfile {
   return 'full';
 }
 
+function normalizeMode(rawMode: string | undefined, rounds: number): TrainMode {
+  const mode = String(rawMode ?? '').toLowerCase();
+  if (mode === 'quick' || mode === 'full') return mode;
+  return rounds <= 3 ? 'quick' : 'full';
+}
+
+function normalizeTrack(rawTrack?: string): StartTrackType {
+  const track = String(rawTrack ?? 'full_serial').toLowerCase();
+  if (track === 'persona_extract' || track === 'work_execute' || track === 'full_serial') return track;
+  return 'full_serial';
+}
+
 function resolveRounds(rawRounds?: string, rawMode?: string): number {
   const mode = String(rawMode ?? '').toLowerCase();
   if (mode === 'quick') return 3;
@@ -228,36 +536,6 @@ function resolveRetries(raw?: string): number {
   const parsed = parseInt(raw ?? '2', 10);
   if (Number.isNaN(parsed)) return 2;
   return Math.max(0, Math.min(parsed, 5));
-}
-
-async function runWithRetry<T>(
-  retries: number,
-  fn: () => Promise<T>,
-  onRetry: (attempt: number, maxAttempts: number) => void
-): Promise<T> {
-  const maxAttempts = retries + 1;
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error;
-      const message = String(error);
-      const retryable =
-        message.includes('No object generated') ||
-        message.includes('response did not match schema') ||
-        message.includes('rate limit') ||
-        message.includes('429');
-      if (!retryable || attempt >= maxAttempts) break;
-      onRetry(attempt + 1, maxAttempts);
-      await sleep(1200 * attempt);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function readExistingRounds(reportPath: string): TrainingRoundSnapshot[] {
@@ -338,4 +616,77 @@ async function buildMemorySignals(
     }
   }
   return Array.from(new Set(signals)).slice(0, 80);
+}
+
+function writeDatasetSnapshot(runtime: TrainRuntimeContext): void {
+  const text = [
+    '# Dataset Snapshot',
+    '',
+    `- Persona: ${runtime.persona.slug}`,
+    `- Updated: ${new Date().toISOString()}`,
+    `- Memory nodes: ${runtime.persona.memory_node_count}`,
+    `- Docs: ${runtime.persona.doc_count}`,
+    `- Skill origins: ${runtime.skillMetrics.originSkillsAdded}`,
+    `- Distilled skills: ${runtime.skillMetrics.distilledSkillsAdded}`,
+    `- Skill coverage: ${(runtime.skillMetrics.skillCoverageScore * 100).toFixed(2)}%`,
+  ].join('\n');
+  writeFileSync(runtime.assetPaths.datasetSnapshotPath, text, 'utf-8');
+}
+
+function writeEvaluationSummary(runtime: TrainRuntimeContext, manifest: RunManifest): void {
+  const report = readJsonFile<TrainingRunReport | null>(runtime.reportPath, null);
+  const lines = [
+    '# Evaluation Summary',
+    '',
+    `- Persona: ${runtime.persona.slug}`,
+    `- Generated: ${new Date().toISOString()}`,
+    `- Track mode: ${manifest.orchestration.track}`,
+    `- Runtime mode: ${manifest.orchestration.mode}`,
+    `- Total rounds: ${report?.total_rounds ?? 0}`,
+    `- Avg quality: ${((report?.summary?.avg_quality_score ?? 0) * 100).toFixed(2)}%`,
+    `- Avg contradiction: ${((report?.summary?.avg_contradiction_rate ?? 0) * 100).toFixed(2)}%`,
+    `- Skill method adherence: ${((report?.summary?.skill_method_adherence ?? 0) * 100).toFixed(2)}%`,
+    '',
+    '## Track Acceptance',
+    ...manifest.tracks.map((item) =>
+      `- ${item.track}: ${item.status} | rounds=${item.rounds} | errors=${item.errors} | checkpoints=${item.checkpoints}`
+    ),
+    '',
+    '## Recent Errors',
+    ...runtime.errorLedger.slice(-10).map((item) =>
+      `- [${item.created_at}] ${item.track}/${item.stage} ${item.tag} -> ${item.recovery_action} (recovered=${item.recovered})`
+    ),
+  ];
+  writeFileSync(runtime.assetPaths.evaluationSummaryPath, lines.join('\n'), 'utf-8');
+}
+
+function acceptedRate(runtime: TrainRuntimeContext): number {
+  const skillsPath = join(runtime.dir, 'skills.json');
+  const skills = readJsonFile<{ distilled_skills?: unknown[]; candidate_skill_pool?: unknown[] }>(skillsPath, {});
+  const accepted = Array.isArray(skills.distilled_skills) ? skills.distilled_skills.length : 0;
+  const pending = Array.isArray(skills.candidate_skill_pool) ? skills.candidate_skill_pool.length : 0;
+  const total = accepted + pending;
+  if (total === 0) return 0;
+  return accepted / total;
+}
+
+function averageFromReport(report: TrainingRunReport, key: 'skill_method_adherence'): number {
+  if (!Array.isArray(report.rounds) || report.rounds.length === 0) return 0;
+  const values = report.rounds
+    .map((round) => {
+      if (key === 'skill_method_adherence') return round.skill_method_adherence ?? 0;
+      return 0;
+    });
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function p95(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * 0.95));
+  return sorted[idx] ?? 0;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

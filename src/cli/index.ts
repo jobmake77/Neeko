@@ -121,13 +121,17 @@ program
   .description('Continue cultivation for an existing persona')
   .option('--mode <mode>', 'Training mode: quick | full')
   .option('--rounds <n>', 'Training rounds (overrides mode)')
+  .option('--track <track>', 'Track: persona_extract | work_execute | full_serial', 'full_serial')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
   .option('--retries <n>', 'Retry count for transient model format errors', '2')
+  .option('--from-checkpoint <id>', 'Resume from checkpoint id (or latest)')
   .action(async (slug: string, options: {
     mode?: string;
     rounds?: string;
+    track?: string;
     trainingProfile?: string;
     retries?: string;
+    fromCheckpoint?: string;
   }) => {
     await cmdTrain(slug, options);
   });

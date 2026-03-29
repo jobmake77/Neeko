@@ -15,6 +15,9 @@ interface TrainJob extends BaseJob {
   rounds: number;
   profile: string;
   retries: number;
+  track: 'persona_extract' | 'work_execute' | 'full_serial';
+  mode: 'quick' | 'full';
+  resumeFrom?: string;
 }
 
 interface SkillRefreshJob extends BaseJob {
@@ -231,6 +234,14 @@ function updateTrainProgressByLine(lock: LeaseHandle, job: TrainJob, line: strin
     stage = 'skill_merge';
     stageLabel = 'Skill 蒸馏入库';
     percent = 30;
+  } else if (line.includes('[TRACK] persona_extract start')) {
+    stage = 'track_persona_extract';
+    stageLabel = 'Track-A 人物能力提取';
+    percent = 12;
+  } else if (line.includes('[TRACK] work_execute start')) {
+    stage = 'track_work_execute';
+    stageLabel = 'Track-B 工程执行训练';
+    percent = 64;
   } else if (roundMatch) {
     currentRound = parseInt(roundMatch[1], 10);
     totalRounds = Math.max(1, parseInt(roundMatch[2], 10));
@@ -293,7 +304,7 @@ async function runTrainJob(job: TrainJob): Promise<void> {
   });
 
   try {
-    const { repoRoot, cliEntry } = resolveCliEntry(process.cwd());
+    const { repoRoot, cliEntry } = resolveCliEntry();
     const args = [
       cliEntry,
       'train',
@@ -304,7 +315,14 @@ async function runTrainJob(job: TrainJob): Promise<void> {
       job.profile,
       '--retries',
       String(job.retries),
+      '--track',
+      job.track,
+      '--mode',
+      job.mode,
     ];
+    if (job.resumeFrom) {
+      args.push('--from-checkpoint', job.resumeFrom);
+    }
     const child = spawn(process.execPath, args, { cwd: repoRoot, env: { ...process.env } });
     safePatchRuntimeTaskState(lock, job.slug, { pid: child.pid ?? null, state: 'running' });
 
@@ -413,7 +431,7 @@ async function runSkillRefreshJob(job: SkillRefreshJob): Promise<void> {
   });
 
   try {
-    const { repoRoot, cliEntry } = resolveCliEntry(process.cwd());
+    const { repoRoot, cliEntry } = resolveCliEntry();
     const child = spawn(process.execPath, [cliEntry, 'skills-refresh', job.slug, '--mode', job.mode], {
       cwd: repoRoot,
       env: { ...process.env },

@@ -343,6 +343,10 @@ async function collectEvidenceForOrigin(origin: OriginSkill): Promise<SkillEvide
     snippet: item.quote,
     similarity: 1,
   }));
+  const allowExternalFetch = process.env.NEEKO_ENABLE_EXTERNAL_SKILL_FETCH === '1';
+  if (!allowExternalFetch) {
+    return refs;
+  }
 
   const { object } = await withTimeout(
     generateObject({
@@ -360,9 +364,11 @@ Return 3 candidate sources.`,
 
   const candidates = object.expanded
     .filter((item) => item.similarity >= 0.35 && item.confidence >= 0.4)
-    .slice(0, 4);
+    .slice(0, 2);
 
+  const startTs = Date.now();
   for (const candidate of candidates) {
+    if (Date.now() - startTs > 12_000) break;
     let sourceRef = candidate.source_ref;
     let sourcePlatform: string = candidate.source_platform;
     if (!sourceRef || sourceRef === 'unknown') {
@@ -379,7 +385,11 @@ Return 3 candidate sources.`,
     }
 
     if (!sourceRef || sourceRef === 'unknown') continue;
-    const docs = await fetchEvidenceDocs(sourcePlatform, sourceRef);
+    const docs = await withTimeout(
+      fetchEvidenceDocs(sourcePlatform, sourceRef),
+      8_000,
+      'skill evidence fetch'
+    ).catch(() => []);
     refs.push(...docsToEvidenceRefs(docs, sourcePlatform, sourceRef, candidate.similarity));
   }
 
@@ -677,11 +687,13 @@ export async function buildSkillLibraryFromSources(
   previous?: PersonaSkillLibrary
 ): Promise<PersonaSkillLibrary> {
   const seedText = chunks.slice(0, 70).map((c, i) => `[${i + 1}] ${c.content.slice(0, 280)}`).join('\n');
-  const { object } = await withTimeout(
-    generateObject({
-      model: resolveModel(),
-      schema: OriginExtractionSchema,
-      prompt: `Extract core idea-origin skills from this persona content.
+  let extractedOrigins: z.infer<typeof OriginExtractionSchema>['origins'] = [];
+  try {
+    const { object } = await withTimeout(
+      generateObject({
+        model: resolveModel(),
+        schema: OriginExtractionSchema,
+        prompt: `Extract core idea-origin skills from this persona content.
 Persona: ${persona.name}
 Rules:
 - focus on center ideas and reusable methods
@@ -689,12 +701,16 @@ Rules:
 - max 12 origins
 
 Content:\n${seedText || 'No content'}`,
-    }),
-    45_000,
-    'skill origin extraction'
-  );
+      }),
+      90_000,
+      'skill origin extraction'
+    );
+    extractedOrigins = object.origins;
+  } catch (error) {
+    console.warn(`[SkillLibrary] origin extraction failed, fallback to previous skills: ${String(error)}`);
+  }
 
-  const rawOrigins: OriginSkill[] = object.origins.map((item) => ({
+  const rawOrigins: OriginSkill[] = extractedOrigins.map((item) => ({
     id: crypto.randomUUID(),
     name: item.name,
     why: item.why,

@@ -65,6 +65,8 @@ export function maybeAutoRecoverTraining(
     profile,
     retries: 3,
     source: 'recovery',
+    track: 'full_serial',
+    mode: remaining <= 3 ? 'quick' : 'full',
   });
   if (!enqueued.accepted) return false;
 

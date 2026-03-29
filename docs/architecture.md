@@ -226,6 +226,34 @@ IDLE
 5. 最近 3 轮 `new_high_value_memories` 平均值趋稳（默认 <= 1.5）
 6. 安全上限：最多 20 轮
 
+**双 Agent 串行编排（v1.5）**
+
+- `Track-A: persona_extract`（人物能力提取）
+  - 阶段：`skill_origin_extract -> skill_expand -> skill_merge -> training`
+  - 门槛：一致性、低矛盾率、Skill 达标率、3-6 蒸馏 Skill、稳定度
+- `Track-B: work_execute`（工程执行能力）
+  - 阶段：`training`（工作流题集 + 异常恢复评测）
+  - 门槛：任务成功率、首轮成功率、修复成功率、回归率
+- 编排规则：
+  - 默认 `full_serial`：Track-A 达标后自动进入 Track-B
+  - 同一 persona 维持单实例锁 + 队列串行
+  - 未达标不自动发布，保留 checkpoint 可恢复
+
+**轨迹/恢复资产**
+
+- `LightningTrajectoryV1`：`context / thought_step / action / observation / outcome / reward / failure_tag`
+- `replay_buffer.jsonl`：步骤级轨迹回放
+- `checkpoint_index.json`：checkpoint 索引
+- `error_ledger.json`：故障分类与恢复动作
+- `run_manifest.json`：双轨执行清单
+- `dataset_snapshot.md`、`evaluation_summary.md`：训练文档统计资产
+
+故障分类：
+- `provider_timeout / fetch_error / parse_drift / reward_instability / lock_stale / data_conflict`
+
+恢复动作：
+- `heartbeat_renew -> soft_retry -> stage_skip_with_flag -> resume_from_checkpoint`
+
 **可观测指标（每轮）**
 
 - 评分分布：`min / p50 / p90 / max`
@@ -271,6 +299,10 @@ web/app/
     training/route.ts          GET：训练报告列表
     training/[slug]/route.ts   GET：单个 Persona 训练轮次报告
     experiments/[slug]/route.ts GET：实验历史报告列表
+    train/[slug]/start/route.ts POST：按 track/mode 启动训练
+    train/[slug]/status/route.ts GET：读取阶段、ETA、checkpoint、失败/恢复状态
+    train/[slug]/resume/route.ts POST：从 checkpoint 断点续训
+    train/[slug]/report/route.ts GET：按 track 返回报告与验收结果
 ```
 
 ### 设计规范
@@ -294,6 +326,12 @@ web/app/
       runtime-progress.json  实时进度
       training-context.json  断点续训上下文
       training-report.json   训练轮次报告（增量落盘）
+      run_manifest.json      双轨运行清单
+      error_ledger.json      故障账本
+      checkpoint_index.json  checkpoint 索引
+      replay_buffer.jsonl    轨迹回放数据
+      dataset_snapshot.md    数据集快照
+      evaluation_summary.md  验收总结
 ```
 
 Qdrant 集合命名规范：`nico_{slug}`

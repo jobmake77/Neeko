@@ -111,7 +111,7 @@ export async function POST(
 
   // Call CLI chat-once command via child process
   const { spawn } = await import('child_process');
-  const { repoRoot, cliEntry } = resolveCliEntry(process.cwd());
+  const { repoRoot, cliEntry } = resolveCliEntry();
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -150,7 +150,16 @@ export async function POST(
           { role: 'user', content: message, created_at: now },
           { role: 'assistant', content: result, created_at: now, triggered_skills: triggeredSkills },
         ]);
-        controller.enqueue(encoder.encode(JSON.stringify({ reply: result, triggered_skills: triggeredSkills })));
+        controller.enqueue(encoder.encode(JSON.stringify({
+          reply: result,
+          triggered_skills: triggeredSkills,
+          skill_application_trace: triggeredSkills.map((item) => ({
+            skill_id: item.id,
+            skill_name: item.name,
+            reason: item.reason,
+            trigger_score: item.trigger_score,
+          })),
+        })));
         controller.close();
       });
 

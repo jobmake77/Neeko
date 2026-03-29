@@ -42,7 +42,7 @@ export async function GET(
   try {
     const skills = JSON.parse(readFileSync(skillsPath, 'utf-8')) as {
       origin_skills?: Array<{ id?: string; name?: string }>;
-      distilled_skills?: Array<{ source_origin_ids?: string[]; quality_score?: number }>;
+      distilled_skills?: Array<{ id?: string; name?: string; source_origin_ids?: string[]; quality_score?: number }>;
       candidate_skill_pool?: unknown[];
       [key: string]: unknown;
     };
@@ -67,6 +67,12 @@ export async function GET(
       accepted === 0
         ? 0
         : distilled.reduce((sum, item) => sum + (item.quality_score ?? 0), 0) / accepted;
+    const acceptanceGateResults = {
+      accepted_count: accepted,
+      candidate_count: Array.isArray(skills.candidate_skill_pool) ? skills.candidate_skill_pool.length : 0,
+      accepted_rate: total === 0 ? 0 : accepted / total,
+      avg_quality_score: avgQualityScore,
+    };
 
     return NextResponse.json({
       ...skills,
@@ -74,6 +80,13 @@ export async function GET(
       quality_summary: {
         accepted_rate: total === 0 ? 0 : accepted / total,
         avg_quality_score: avgQualityScore,
+      },
+      acceptance_gate_results: acceptanceGateResults,
+      recent_trigger_stats: {
+        sampled_at: new Date().toISOString(),
+        top_distilled: distilled
+          .slice(0, 3)
+          .map((item) => ({ id: item.id ?? '', name: item.name ?? '', quality_score: item.quality_score ?? 0 })),
       },
     });
   } catch {

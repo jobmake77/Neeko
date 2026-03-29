@@ -9,10 +9,23 @@ export async function GET(req: Request) {
   const slug = url.searchParams.get('slug');
   const roundsRaw = url.searchParams.get('rounds');
   const trainingProfileRaw = url.searchParams.get('trainingProfile');
+  const trackRaw = url.searchParams.get('track');
+  const modeRaw = url.searchParams.get('mode');
+  const resumeRaw = url.searchParams.get('resumeFrom');
   const rounds = roundsRaw && /^\d+$/.test(roundsRaw) ? Math.max(1, parseInt(roundsRaw, 10)) : 10;
   const trainingProfile = trainingProfileRaw && /^(baseline|a1|a2|a3|a4|full)$/i.test(trainingProfileRaw)
     ? trainingProfileRaw.toLowerCase()
     : 'full';
+  const track =
+    trackRaw && /^(persona_extract|work_execute|full_serial)$/i.test(trackRaw)
+      ? (trackRaw.toLowerCase() as 'persona_extract' | 'work_execute' | 'full_serial')
+      : 'full_serial';
+  const mode =
+    modeRaw && /^(quick|full)$/i.test(modeRaw)
+      ? (modeRaw.toLowerCase() as 'quick' | 'full')
+      : rounds <= 3
+      ? 'quick'
+      : 'full';
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -91,6 +104,9 @@ export async function GET(req: Request) {
         profile: trainingProfile,
         retries: 3,
         source: 'api',
+        track,
+        mode,
+        resumeFrom: resumeRaw ?? undefined,
       });
 
       if (!accepted.accepted && accepted.reason === 'already_queued_or_running') {
@@ -131,4 +147,3 @@ export async function GET(req: Request) {
     },
   });
 }
-

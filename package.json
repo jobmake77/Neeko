@@ -13,6 +13,7 @@
     "start": "node dist/cli/index.js",
     "lint": "tsc --noEmit",
     "test:skills": "npm run -s build && node --test test/skills-library.test.mjs",
+    "test:ab": "npm run -s build && node --test test/ab-report.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

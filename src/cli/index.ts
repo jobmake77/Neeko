@@ -7,6 +7,7 @@ import { cmdList } from './commands/list.js';
 import { cmdExport } from './commands/export.js';
 import { cmdConfig } from './commands/config.js';
 import { cmdExperiment } from './commands/experiment.js';
+import { cmdAbRegression } from './commands/ab-regression.js';
 import { cmdTrain } from './commands/train.js';
 import { cmdSkillsRefresh } from './commands/skills-refresh.js';
 
@@ -113,6 +114,33 @@ program
     maxDuplicationRise?: string;
   }) => {
     await cmdExperiment(slug, options);
+  });
+
+// ─── nico ab-regression ─────────────────────────────────────────────────────
+program
+  .command('ab-regression <slug>')
+  .description('Run A/B regression between two training profiles and output comparison report')
+  .option('--rounds <n>', 'Rounds per group', '10')
+  .option('--a <profile>', 'Group A profile (baseline | a1 | a2 | a3 | a4 | full)', 'baseline')
+  .option('--b <profile>', 'Group B profile (baseline | a1 | a2 | a3 | a4 | full)', 'full')
+  .option('--output-dir <dir>', 'Write reports to this directory')
+  .option('--format <fmt>', 'Output format: table | csv | json | md | all', 'all')
+  .option('--gate', 'Enable quality gate: compare B vs A and fail on regression')
+  .option('--max-quality-drop <n>', 'Allowed quality drop for B vs A', '0.02')
+  .option('--max-contradiction-rise <n>', 'Allowed contradiction rise for B vs A', '0.03')
+  .option('--max-duplication-rise <n>', 'Allowed duplication rise for B vs A', '0.05')
+  .action(async (slug: string, options: {
+    rounds?: string;
+    a?: string;
+    b?: string;
+    outputDir?: string;
+    format?: string;
+    gate?: boolean;
+    maxQualityDrop?: string;
+    maxContradictionRise?: string;
+    maxDuplicationRise?: string;
+  }) => {
+    await cmdAbRegression(slug, options);
   });
 
 // ─── nico train ─────────────────────────────────────────────────────────────

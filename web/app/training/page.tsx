@@ -74,6 +74,22 @@ interface TrainingDetailResponse {
     };
     rounds: TrainingRoundDetail[];
   };
+  checkpoint_index?: {
+    checkpoints?: Array<{
+      id: string;
+      created_at: string;
+      track: string;
+      round: number;
+      stage: string;
+    }>;
+  } | null;
+  latest_checkpoint?: {
+    id: string;
+    created_at: string;
+    track: string;
+    round: number;
+    stage: string;
+  } | null;
 }
 
 interface ExperimentSummaryRow {
@@ -147,6 +163,9 @@ export default function TrainingPage() {
   const [continueMode, setContinueMode] = useState<'quick' | 'full'>('quick');
   const [continueStatus, setContinueStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [continueLogs, setContinueLogs] = useState<string[]>([]);
+  const [resumeCheckpointId, setResumeCheckpointId] = useState<string>('latest');
+  const [resumeStatus, setResumeStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
+  const [resumeMessage, setResumeMessage] = useState<string>('');
   const [continueProgress, setContinueProgress] = useState<StreamProgress>({
     stage: 'init',
     stageLabel: TRAIN_STAGE_LABEL.init,
@@ -205,7 +224,12 @@ export default function TrainingPage() {
     if (!selectedSlug) return;
     fetch(`/api/training/${selectedSlug}`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data: TrainingDetailResponse | null) => setDetail(data))
+      .then((data: TrainingDetailResponse | null) => {
+        setDetail(data);
+        setResumeCheckpointId('latest');
+        setResumeStatus('idle');
+        setResumeMessage('');
+      })
       .catch(() => setDetail(null));
   }, [selectedSlug]);
 
@@ -324,6 +348,40 @@ export default function TrainingPage() {
       if (res.ok) setDefaultTrainingProfile(profile);
     } finally {
       setSavingProfile('');
+    }
+  }
+
+  async function resumeTraining() {
+    if (!selectedSlug) return;
+    setResumeStatus('running');
+    setResumeMessage('');
+    try {
+      const res = await fetch(`/api/train/${selectedSlug}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          checkpointId: resumeCheckpointId,
+          track: 'full_serial',
+        }),
+      });
+      const payload = await res.json().catch(() => ({})) as {
+        ok?: boolean;
+        status?: string;
+        error?: string;
+        resolvedCheckpoint?: string;
+      };
+      if (!res.ok || payload.ok === false) {
+        setResumeStatus('error');
+        setResumeMessage(payload.error ?? '恢复失败，请稍后重试');
+        return;
+      }
+      setResumeStatus('success');
+      const resolved = payload.resolvedCheckpoint ?? 'latest';
+      setResumeMessage(`已入队恢复训练（checkpoint=${resolved}）`);
+      reloadTrainingData(selectedSlug);
+    } catch {
+      setResumeStatus('error');
+      setResumeMessage('恢复请求失败，请检查服务状态');
     }
   }
 
@@ -632,6 +690,40 @@ export default function TrainingPage() {
               <span className="text-[12px] text-[oklch(0.58_0_0)]">
                 使用默认档位：{defaultTrainingProfile}
               </span>
+            </div>
+            <div className="mt-3 rounded-md border border-[oklch(0.9_0_0)] bg-white p-3">
+              <p className="text-[12.5px] font-medium text-[oklch(0.25_0_0)] mb-2">一键 Resume（选 checkpoint）</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={resumeCheckpointId}
+                  onChange={(e) => setResumeCheckpointId(e.target.value)}
+                  className="text-[12px] px-2.5 py-1.5 rounded-md border border-[oklch(0.9_0_0)] bg-white min-w-[280px]"
+                >
+                  <option value="latest">latest（自动使用最新 checkpoint）</option>
+                  {(detail.checkpoint_index?.checkpoints ?? []).map((cp) => (
+                    <option key={cp.id} value={cp.id}>
+                      {cp.track} / round {cp.round} / {cp.stage} / {new Date(cp.created_at).toLocaleString()}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={resumeTraining}
+                  disabled={resumeStatus === 'running'}
+                  className="text-[12px] px-3 py-1.5 rounded-md border border-[oklch(0.82_0.06_240)] bg-[oklch(0.95_0.03_240)] text-[oklch(0.35_0.1_240)] hover:bg-[oklch(0.93_0.03_240)] disabled:opacity-60"
+                >
+                  {resumeStatus === 'running' ? '恢复中...' : '恢复训练'}
+                </button>
+                {detail.latest_checkpoint && (
+                  <span className="text-[11.5px] text-[oklch(0.58_0_0)]">
+                    最新 checkpoint：{detail.latest_checkpoint.track} / round {detail.latest_checkpoint.round}
+                  </span>
+                )}
+              </div>
+              {resumeMessage && (
+                <p className={`mt-2 text-[12px] ${resumeStatus === 'error' ? 'text-[oklch(0.45_0.14_20)]' : 'text-[oklch(0.35_0.12_142)]'}`}>
+                  {resumeMessage}
+                </p>
+              )}
             </div>
             {continueStatus !== 'idle' && (
               <div className="mt-3 rounded-lg border border-[oklch(0.9_0_0)] bg-white p-3">

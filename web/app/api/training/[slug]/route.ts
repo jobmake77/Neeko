@@ -31,13 +31,24 @@ export async function GET(
       ? JSON.parse(readFileSync(manifestPath, 'utf-8'))
       : null;
     const checkpointIndex = existsSync(checkpointPath)
-      ? JSON.parse(readFileSync(checkpointPath, 'utf-8'))
+      ? JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+        checkpoints?: Array<{ id: string; created_at: string; track: string; round: number; stage: string }>;
+      }
       : null;
+    const sortedCheckpoints = (Array.isArray(checkpointIndex?.checkpoints) ? checkpointIndex.checkpoints : [])
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+    const latestCheckpoint = sortedCheckpoints.length > 0 ? sortedCheckpoints[sortedCheckpoints.length - 1] : null;
     return NextResponse.json({
       persona,
       report,
       manifest,
-      checkpoint_index: checkpointIndex,
+      checkpoint_index: checkpointIndex
+        ? {
+          ...checkpointIndex,
+          checkpoints: sortedCheckpoints,
+        }
+        : null,
+      latest_checkpoint: latestCheckpoint,
       assets: {
         evaluation_summary_exists: existsSync(evaluationSummaryPath),
         dataset_snapshot_exists: existsSync(datasetSnapshotPath),

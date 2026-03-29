@@ -166,6 +166,11 @@ node dist/cli/index.js experiment elonmusk --rounds 10
 node dist/cli/index.js experiment elonmusk --rounds 10 --output-dir ./reports
 ```
 
+运行 A/B 回归对比（默认 baseline vs full，输出表格+JSON/CSV/MD）：
+```bash
+node dist/cli/index.js ab-regression elonmusk --rounds 10 --gate
+```
+
 启用质量门禁（可用于 CI）：
 ```bash
 node dist/cli/index.js experiment elonmusk --rounds 6 --gate
@@ -198,6 +203,7 @@ node dist/cli/index.js skills-refresh elonmusk --mode full
 - 下载训练报告（JSON/CSV）
 - 查看实验历史，展开 profile 对比表
 - 一键将某个 profile 设为默认训练档位
+- 一键 Resume 训练，并可选择 checkpoint 恢复
 
 ### CLI
 

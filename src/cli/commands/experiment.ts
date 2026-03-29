@@ -7,62 +7,51 @@ import { Persona } from '../../core/models/persona.js';
 import { Soul } from '../../core/models/soul.js';
 import { MemoryStore } from '../../core/memory/store.js';
 import { TrainingLoop } from '../../core/training/loop.js';
+import { ExperimentSummaryRow, evaluateGate } from '../../core/training/ab-report.js';
 import { TrainingProfile } from '../../core/training/types.js';
 
-const PROFILES: TrainingProfile[] = ['baseline', 'a1', 'a2', 'a3', 'a4', 'full'];
+export const DEFAULT_EXPERIMENT_PROFILES: TrainingProfile[] = ['baseline', 'a1', 'a2', 'a3', 'a4', 'full'];
 
-export async function cmdExperiment(
+export interface ExperimentRoundHistoryItem {
+  round: number;
+  avgQualityScore: number;
+  contradictionRate: number;
+  duplicationRate: number;
+  nodesWritten: number;
+  nodesReinforced: number;
+}
+
+export interface ExperimentRunResult {
+  rows: ExperimentSummaryRow[];
+  roundHistories: Record<string, ExperimentRoundHistoryItem[]>;
+}
+
+export async function runExperimentProfiles(
   slug: string,
-  options: {
-    rounds?: string;
-    outputDir?: string;
-    gate?: boolean;
-    maxQualityDrop?: string;
-    maxContradictionRise?: string;
-    maxDuplicationRise?: string;
-  }
-): Promise<void> {
+  rounds: number,
+  profiles: TrainingProfile[]
+): Promise<ExperimentRunResult> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
   const soulPath = join(dir, 'soul.yaml');
 
   if (!existsSync(personaPath) || !existsSync(soulPath)) {
-    console.error(chalk.red(`✗ Persona "${slug}" not found.`));
-    process.exit(1);
+    throw new Error(`Persona "${slug}" not found.`);
   }
 
   const basePersona = JSON.parse(readFileSync(personaPath, 'utf-8')) as Persona;
   const baseSoul = yaml.load(readFileSync(soulPath, 'utf-8')) as Soul;
-  const rounds = Math.max(1, parseInt(options.rounds ?? '10', 10));
   const store = new MemoryStore({
     qdrantUrl: settings.get('qdrantUrl'),
     qdrantApiKey: settings.get('qdrantApiKey'),
     openaiApiKey: settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY,
   });
 
-  console.log(chalk.bold.cyan(`\n✦ Training Experiment (${slug})\n`));
-  console.log(chalk.dim(`Rounds per profile: ${rounds}`));
-  console.log(chalk.dim(`Profiles: ${PROFILES.join(', ')}\n`));
-
   const stamp = Date.now().toString(36);
-  const rows: Array<{
-    profile: TrainingProfile;
-    totalRounds: number;
-    avgQuality: number;
-    contradictionRate: number;
-    duplicationRate: number;
-    coverage: number;
-  }> = [];
-  const roundHistories: Record<string, Array<{
-    round: number;
-    avgQualityScore: number;
-    contradictionRate: number;
-    duplicationRate: number;
-    nodesWritten: number;
-    nodesReinforced: number;
-  }>> = {};
+  const rows: ExperimentSummaryRow[] = [];
+  const roundHistories: Record<string, ExperimentRoundHistoryItem[]> = {};
 
-  for (const profile of PROFILES) {
+  for (const profile of profiles) {
     const persona: Persona = {
       ...basePersona,
       id: crypto.randomUUID(),
@@ -86,15 +75,15 @@ export async function cmdExperiment(
       nodesWritten: h.nodesWritten,
       nodesReinforced: h.nodesReinforced,
     }));
-    const avgQuality = history.length === 0
-      ? 0
-      : history.reduce((sum, h) => sum + h.avgQualityScore, 0) / history.length;
+
+    const avgQuality = history.length === 0 ? 0 : history.reduce((sum, h) => sum + h.avgQualityScore, 0) / history.length;
     const contradictionRate = history.length === 0
       ? 0
       : history.reduce((sum, h) => sum + h.observability.contradictionRate, 0) / history.length;
     const duplicationRate = history.length === 0
       ? 0
       : history.reduce((sum, h) => sum + h.observability.duplicationRate, 0) / history.length;
+
     rows.push({
       profile,
       totalRounds: result.totalRounds,
@@ -113,15 +102,35 @@ export async function cmdExperiment(
     );
   }
 
+  return { rows, roundHistories };
+}
+
+export async function cmdExperiment(
+  slug: string,
+  options: {
+    rounds?: string;
+    outputDir?: string;
+    gate?: boolean;
+    maxQualityDrop?: string;
+    maxContradictionRise?: string;
+    maxDuplicationRise?: string;
+  }
+): Promise<void> {
+  const rounds = Math.max(1, parseInt(options.rounds ?? '10', 10));
+
+  console.log(chalk.bold.cyan(`\n✦ Training Experiment (${slug})\n`));
+  console.log(chalk.dim(`Rounds per profile: ${rounds}`));
+  console.log(chalk.dim(`Profiles: ${DEFAULT_EXPERIMENT_PROFILES.join(', ')}\n`));
+
+  const { rows, roundHistories } = await runExperimentProfiles(slug, rounds, DEFAULT_EXPERIMENT_PROFILES);
+
   const best = [...rows].sort((a, b) => {
     const scoreA = a.avgQuality - a.contradictionRate * 0.2 - a.duplicationRate * 0.1;
     const scoreB = b.avgQuality - b.contradictionRate * 0.2 - b.duplicationRate * 0.1;
     return scoreB - scoreA;
   })[0];
 
-  const outputDir = options.outputDir
-    ? options.outputDir
-    : join(settings.getPersonaDir(slug), 'experiments');
+  const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
   mkdirSync(outputDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const jsonPath = join(outputDir, `experiment-${slug}-${timestamp}.json`);
@@ -132,6 +141,8 @@ export async function cmdExperiment(
     maxQualityDrop: parseFloat(options.maxQualityDrop ?? '0.02'),
     maxContradictionRise: parseFloat(options.maxContradictionRise ?? '0.03'),
     maxDuplicationRise: parseFloat(options.maxDuplicationRise ?? '0.05'),
+    baselineProfile: 'baseline',
+    compareProfile: 'full',
   });
 
   const report = {
@@ -139,7 +150,7 @@ export async function cmdExperiment(
     generated_at: new Date().toISOString(),
     slug,
     rounds_per_profile: rounds,
-    profiles: PROFILES,
+    profiles: DEFAULT_EXPERIMENT_PROFILES,
     summary_rows: rows,
     best_profile: best.profile,
     round_histories: roundHistories,
@@ -175,76 +186,4 @@ export async function cmdExperiment(
   }
 
   console.log(chalk.green(`\nRecommended default profile: ${best.profile}\n`));
-}
-
-function evaluateGate(
-  rows: Array<{
-    profile: TrainingProfile;
-    avgQuality: number;
-    contradictionRate: number;
-    duplicationRate: number;
-  }>,
-  cfg: {
-    enabled: boolean;
-    maxQualityDrop: number;
-    maxContradictionRise: number;
-    maxDuplicationRise: number;
-  }
-): {
-  enabled: boolean;
-  passed: boolean;
-  reason: string;
-  deltas?: {
-    quality_drop: number;
-    contradiction_rise: number;
-    duplication_rise: number;
-  };
-  thresholds?: {
-    max_quality_drop: number;
-    max_contradiction_rise: number;
-    max_duplication_rise: number;
-  };
-} {
-  if (!cfg.enabled) {
-    return { enabled: false, passed: true, reason: 'gate disabled' };
-  }
-
-  const baseline = rows.find((r) => r.profile === 'baseline');
-  const full = rows.find((r) => r.profile === 'full');
-  if (!baseline || !full) {
-    return { enabled: true, passed: false, reason: 'baseline/full rows missing' };
-  }
-
-  const qualityDrop = baseline.avgQuality - full.avgQuality;
-  const contradictionRise = full.contradictionRate - baseline.contradictionRate;
-  const duplicationRise = full.duplicationRate - baseline.duplicationRate;
-
-  const qualityOk = qualityDrop <= cfg.maxQualityDrop;
-  const contradictionOk = contradictionRise <= cfg.maxContradictionRise;
-  const duplicationOk = duplicationRise <= cfg.maxDuplicationRise;
-  const passed = qualityOk && contradictionOk && duplicationOk;
-
-  const reason = passed
-    ? 'full profile is within regression thresholds vs baseline'
-    : [
-      !qualityOk ? `quality drop ${qualityDrop.toFixed(4)} > ${cfg.maxQualityDrop.toFixed(4)}` : null,
-      !contradictionOk ? `contradiction rise ${contradictionRise.toFixed(4)} > ${cfg.maxContradictionRise.toFixed(4)}` : null,
-      !duplicationOk ? `duplication rise ${duplicationRise.toFixed(4)} > ${cfg.maxDuplicationRise.toFixed(4)}` : null,
-    ].filter(Boolean).join('; ');
-
-  return {
-    enabled: true,
-    passed,
-    reason,
-    deltas: {
-      quality_drop: qualityDrop,
-      contradiction_rise: contradictionRise,
-      duplication_rise: duplicationRise,
-    },
-    thresholds: {
-      max_quality_drop: cfg.maxQualityDrop,
-      max_contradiction_rise: cfg.maxContradictionRise,
-      max_duplication_rise: cfg.maxDuplicationRise,
-    },
-  };
 }

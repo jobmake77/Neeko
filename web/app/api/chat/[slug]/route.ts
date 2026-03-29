@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { resolveCliEntry } from '@/lib/cli-entry';
@@ -16,6 +16,59 @@ function readConfig(): Record<string, unknown> {
 
 function getPersonaDir(slug: string) {
   return join(homedir(), '.neeko', 'personas', slug);
+}
+
+interface ChatLogItem {
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+function getChatLogPath(slug: string): string {
+  return join(getPersonaDir(slug), 'chat-log.json');
+}
+
+function readChatLog(slug: string): ChatLogItem[] {
+  const path = getChatLogPath(slug);
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as ChatLogItem[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && typeof item.content === 'string');
+  } catch {
+    return [];
+  }
+}
+
+function appendChatLog(slug: string, items: ChatLogItem[]): void {
+  try {
+    const current = readChatLog(slug);
+    const merged = [...current, ...items].slice(-400);
+    writeFileSync(getChatLogPath(slug), JSON.stringify(merged, null, 2), 'utf-8');
+  } catch {
+    // best effort
+  }
+}
+
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ slug: string }> }
+) {
+  const { slug } = await params;
+  const dir = getPersonaDir(slug);
+  const personaPath = join(dir, 'persona.json');
+  if (!existsSync(personaPath)) {
+    return NextResponse.json({ error: 'Persona not found' }, { status: 404 });
+  }
+  const url = new URL(req.url);
+  const limitRaw = url.searchParams.get('limit');
+  const limit = limitRaw && /^\d+$/.test(limitRaw) ? Math.max(1, Math.min(200, parseInt(limitRaw, 10))) : 80;
+  const log = readChatLog(slug);
+  return NextResponse.json({
+    slug,
+    total: log.length,
+    messages: log.slice(-limit),
+  });
 }
 
 export async function POST(
@@ -76,6 +129,11 @@ export async function POST(
         const result = code === 0
           ? stdoutOutput.trim()
           : `[错误] 模型调用失败（code ${code}）${stderrOutput ? `\n${stderrOutput.trim()}` : ''}`;
+        const now = new Date().toISOString();
+        appendChatLog(slug, [
+          { role: 'user', content: message, created_at: now },
+          { role: 'assistant', content: result, created_at: now },
+        ]);
         controller.enqueue(encoder.encode(JSON.stringify({ reply: result })));
         controller.close();
       });

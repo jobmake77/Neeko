@@ -60,6 +60,19 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
           }
         })
         .catch(() => null);
+      // Load recent chat history
+      fetch(`/api/chat/${p.slug}?limit=80`, { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (Array.isArray(data?.messages)) {
+            setMessages(
+              data.messages
+                .filter((m: { role?: string; content?: string }) => m?.role === 'user' || m?.role === 'assistant')
+                .map((m: { role: 'user' | 'assistant'; content: string }) => ({ role: m.role, content: m.content }))
+            );
+          }
+        })
+        .catch(() => null);
     });
   }, [params]);
 

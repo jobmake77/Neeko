@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import {
   Users,
   Plus,
@@ -23,6 +24,33 @@ const bottomItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [recentChats, setRecentChats] = useState<Array<{
+    slug: string;
+    name: string;
+    last_message: string;
+    last_at: string;
+    total_messages: number;
+  }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      fetch('/api/chats', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((data) => {
+          if (!cancelled) setRecentChats(Array.isArray(data) ? data : []);
+        })
+        .catch(() => {
+          if (!cancelled) setRecentChats([]);
+        });
+    };
+    load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   return (
     <aside className="w-[220px] flex-shrink-0 bg-white border-r border-[oklch(0.91_0.002_90)] flex flex-col h-full">
@@ -61,10 +89,33 @@ export function Sidebar() {
           </span>
         </div>
 
-        {/* Recent chat placeholder */}
-        <div className="text-[13px] text-[oklch(0.7_0_0)] px-3 py-2">
-          暂无对话记录
-        </div>
+        {recentChats.length === 0 ? (
+          <div className="text-[13px] text-[oklch(0.7_0_0)] px-3 py-2">
+            暂无对话记录
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {recentChats.slice(0, 8).map((item) => (
+              <Link
+                key={item.slug}
+                href={`/chat/${item.slug}`}
+                className={cn(
+                  'block px-3 py-2 rounded-lg transition-colors',
+                  pathname === `/chat/${item.slug}`
+                    ? 'bg-[oklch(0.94_0.01_142)]'
+                    : 'hover:bg-[oklch(0.97_0_0)]'
+                )}
+              >
+                <p className="text-[12.5px] font-medium text-[oklch(0.25_0_0)] truncate">
+                  {item.name}
+                </p>
+                <p className="text-[11.5px] text-[oklch(0.62_0_0)] truncate">
+                  {item.last_message || '...'}
+                </p>
+              </Link>
+            ))}
+          </div>
+        )}
       </nav>
 
       {/* Bottom */}

@@ -102,12 +102,35 @@ interface ExperimentSummaryRow {
 }
 
 interface ExperimentHistoryItem {
+  kind: 'experiment' | 'ab_regression';
   filename: string;
-  report: {
+  report:
+    | {
     generated_at: string;
     rounds_per_profile: number;
     best_profile: string;
     summary_rows: ExperimentSummaryRow[];
+  }
+    | {
+    generated_at: string;
+    report_quality?: 'complete' | 'timeout_limited';
+    group_a: string;
+    group_b: string;
+    execution?: {
+      elapsed_ms?: number;
+      fast_failures?: Array<{ profile: string; error: string }>;
+    };
+    deltas: {
+      avg_quality: number;
+      contradiction_rate: number;
+      duplication_rate: number;
+      coverage: number;
+    };
+    gate_result?: {
+      enabled: boolean;
+      passed: boolean;
+      reason: string;
+    };
   };
 }
 
@@ -150,6 +173,49 @@ function formatDuration(sec: number): string {
   const seconds = sec % 60;
   if (minutes <= 0) return `${seconds}s`;
   return `${minutes}m ${seconds}s`;
+}
+
+function isExperimentHistory(
+  item: ExperimentHistoryItem
+): item is ExperimentHistoryItem & {
+  kind: 'experiment';
+  report: {
+    generated_at: string;
+    rounds_per_profile: number;
+    best_profile: string;
+    summary_rows: ExperimentSummaryRow[];
+  };
+} {
+  return item.kind === 'experiment';
+}
+
+function isAbHistory(
+  item: ExperimentHistoryItem
+): item is ExperimentHistoryItem & {
+  kind: 'ab_regression';
+  report: {
+    generated_at: string;
+    report_quality?: 'complete' | 'timeout_limited';
+    group_a: string;
+    group_b: string;
+    execution?: {
+      elapsed_ms?: number;
+      fast_failures?: Array<{ profile: string; error: string }>;
+    };
+    deltas: {
+      avg_quality: number;
+      contradiction_rate: number;
+      duplication_rate: number;
+      coverage: number;
+    };
+    gate_result?: {
+      enabled: boolean;
+      passed: boolean;
+      reason: string;
+    };
+  };
+} {
+  return item.kind === 'ab_regression';
 }
 
 export default function TrainingPage() {
@@ -442,7 +508,15 @@ export default function TrainingPage() {
     URL.revokeObjectURL(url);
   }
 
-  function downloadExperimentJson(item: ExperimentHistoryItem) {
+  function downloadExperimentJson(item: ExperimentHistoryItem & {
+    kind: 'experiment';
+    report: {
+      generated_at: string;
+      rounds_per_profile: number;
+      best_profile: string;
+      summary_rows: ExperimentSummaryRow[];
+    };
+  }) {
     const blob = new Blob([JSON.stringify(item.report, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -452,7 +526,15 @@ export default function TrainingPage() {
     URL.revokeObjectURL(url);
   }
 
-  function downloadExperimentCsv(item: ExperimentHistoryItem) {
+  function downloadExperimentCsv(item: ExperimentHistoryItem & {
+    kind: 'experiment';
+    report: {
+      generated_at: string;
+      rounds_per_profile: number;
+      best_profile: string;
+      summary_rows: ExperimentSummaryRow[];
+    };
+  }) {
     const lines = [
       'profile,total_rounds,avg_quality,avg_contradiction_rate,avg_duplication_rate,coverage',
       ...item.report.summary_rows.map((r) =>
@@ -474,6 +556,77 @@ export default function TrainingPage() {
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  function downloadAbJson(item: ExperimentHistoryItem & {
+    kind: 'ab_regression';
+    report: {
+      generated_at: string;
+      report_quality?: 'complete' | 'timeout_limited';
+      group_a: string;
+      group_b: string;
+      execution?: {
+        elapsed_ms?: number;
+        fast_failures?: Array<{ profile: string; error: string }>;
+      };
+      deltas: {
+        avg_quality: number;
+        contradiction_rate: number;
+        duplication_rate: number;
+        coverage: number;
+      };
+      gate_result?: {
+        enabled: boolean;
+        passed: boolean;
+        reason: string;
+      };
+    };
+  }) {
+    const blob = new Blob([JSON.stringify(item.report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = item.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadAbCsv(item: ExperimentHistoryItem & {
+    kind: 'ab_regression';
+    report: {
+      generated_at: string;
+      group_a: string;
+      group_b: string;
+      deltas: {
+        avg_quality: number;
+        contradiction_rate: number;
+        duplication_rate: number;
+        coverage: number;
+      };
+      gate_result?: {
+        enabled: boolean;
+        passed: boolean;
+        reason: string;
+      };
+    };
+  }) {
+    const lines = [
+      'metric,delta_b_minus_a',
+      `avg_quality,${item.report.deltas.avg_quality.toFixed(6)}`,
+      `contradiction_rate,${item.report.deltas.contradiction_rate.toFixed(6)}`,
+      `duplication_rate,${item.report.deltas.duplication_rate.toFixed(6)}`,
+      `coverage,${item.report.deltas.coverage.toFixed(6)}`,
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = item.filename.replace(/\.json$/, '.csv');
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const experimentReports = experiments.filter(isExperimentHistory);
+  const abReports = experiments.filter(isAbHistory);
 
   return (
     <div className="p-8 max-w-[1200px]">
@@ -829,7 +982,7 @@ export default function TrainingPage() {
         </div>
       )}
 
-      {selectedSlug && experiments.length > 0 && (
+      {selectedSlug && experimentReports.length > 0 && (
         <div className="mb-10 rounded-2xl border border-[oklch(0.9_0_0)] bg-white p-5">
           <div className="flex items-center justify-between mb-4">
             <p className="text-[15px] font-semibold text-[oklch(0.2_0_0)]">
@@ -840,7 +993,7 @@ export default function TrainingPage() {
             </span>
           </div>
           <div className="space-y-3">
-            {experiments.map((item) => (
+            {experimentReports.map((item) => (
               <div
                 key={item.filename}
                 className="rounded-xl border border-[oklch(0.92_0_0)] bg-[oklch(0.985_0_0)] p-3"
@@ -923,6 +1076,114 @@ export default function TrainingPage() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selectedSlug && abReports.length > 0 && (
+        <div className="mb-10 rounded-2xl border border-[oklch(0.9_0_0)] bg-white p-5">
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-[15px] font-semibold text-[oklch(0.2_0_0)]">
+              A/B 回归报告（{selectedSlug}）
+            </p>
+          </div>
+          <div className="space-y-3">
+            {abReports.map((item) => (
+              <div
+                key={item.filename}
+                className="rounded-xl border border-[oklch(0.92_0_0)] bg-[oklch(0.985_0_0)] p-3"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[13px] font-medium text-[oklch(0.28_0_0)]">
+                      {new Date(item.report.generated_at).toLocaleString()}
+                    </p>
+                    <p className="text-[12px] text-[oklch(0.58_0_0)] mt-0.5">
+                      A={item.report.group_a} · B={item.report.group_b}
+                    </p>
+                    <p className="text-[11.5px] text-[oklch(0.56_0_0)] mt-0.5">
+                      质量标记：{item.report.report_quality ?? 'complete'} · 耗时：{Math.round((item.report.execution?.elapsed_ms ?? 0) / 1000)}s
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {item.report.gate_result?.enabled && (
+                      <span
+                        className={`text-[12px] px-2 py-1 rounded-full ${
+                          item.report.gate_result.passed
+                            ? 'bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)]'
+                            : 'bg-[oklch(0.96_0.03_20)] text-[oklch(0.42_0.15_20)]'
+                        }`}
+                      >
+                        Gate: {item.report.gate_result.passed ? 'passed' : 'failed'}
+                      </span>
+                    )}
+                    <button
+                      onClick={() =>
+                        setExpandedExperiment((prev) =>
+                          prev === item.filename ? '' : item.filename
+                        )
+                      }
+                      className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
+                    >
+                      {expandedExperiment === item.filename ? '收起' : '展开'}
+                    </button>
+                    <button
+                      onClick={() => downloadAbJson(item)}
+                      className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
+                    >
+                      <Download className="w-3.5 h-3.5" /> JSON
+                    </button>
+                    <button
+                      onClick={() => downloadAbCsv(item)}
+                      className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
+                    >
+                      <Download className="w-3.5 h-3.5" /> CSV
+                    </button>
+                  </div>
+                </div>
+
+                {expandedExperiment === item.filename && (
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="w-full text-[12.5px]">
+                      <thead>
+                        <tr className="text-left text-[oklch(0.55_0_0)] border-b border-[oklch(0.92_0_0)]">
+                          <th className="py-2 pr-3">指标</th>
+                          <th className="py-2 pr-3">Delta(B-A)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr className="border-b border-[oklch(0.95_0_0)]">
+                          <td className="py-2 pr-3">avg_quality</td>
+                          <td className="py-2 pr-3">{item.report.deltas.avg_quality.toFixed(4)}</td>
+                        </tr>
+                        <tr className="border-b border-[oklch(0.95_0_0)]">
+                          <td className="py-2 pr-3">contradiction_rate</td>
+                          <td className="py-2 pr-3">{item.report.deltas.contradiction_rate.toFixed(4)}</td>
+                        </tr>
+                        <tr className="border-b border-[oklch(0.95_0_0)]">
+                          <td className="py-2 pr-3">duplication_rate</td>
+                          <td className="py-2 pr-3">{item.report.deltas.duplication_rate.toFixed(4)}</td>
+                        </tr>
+                        <tr className="border-b border-[oklch(0.95_0_0)]">
+                          <td className="py-2 pr-3">coverage</td>
+                          <td className="py-2 pr-3">{item.report.deltas.coverage.toFixed(4)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    {item.report.gate_result?.reason && (
+                      <p className="mt-2 text-[12px] text-[oklch(0.58_0_0)]">
+                        Gate 说明：{item.report.gate_result.reason}
+                      </p>
+                    )}
+                    {(item.report.execution?.fast_failures?.length ?? 0) > 0 && (
+                      <p className="mt-1 text-[12px] text-[oklch(0.5_0.12_20)]">
+                        fast-fail：{item.report.execution?.fast_failures?.map((f) => `${f.profile}: ${f.error.slice(0, 80)}`).join(' | ')}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

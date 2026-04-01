@@ -12,8 +12,10 @@ import {
 } from '../../core/training/ab-report.js';
 import { TrainingProfile } from '../../core/training/types.js';
 import { runExperimentProfiles } from './experiment.js';
+import { runModelPreflight } from '../../core/training/preflight.js';
 
 const VALID_PROFILES: TrainingProfile[] = ['baseline', 'a1', 'a2', 'a3', 'a4', 'full'];
+const AB_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_AB_PROFILE_TIMEOUT_MS ?? 60_000);
 
 function normalizeProfile(input: string | undefined, fallback: TrainingProfile): TrainingProfile {
   const value = String(input ?? fallback).toLowerCase();
@@ -60,8 +62,24 @@ export async function cmdAbRegression(
   console.log(chalk.bold.cyan(`\n✦ A/B Regression (${slug})\n`));
   console.log(chalk.dim(`Groups: A=${groupA}, B=${groupB}`));
   console.log(chalk.dim(`Rounds per group: ${rounds}\n`));
+  const startedAt = Date.now();
 
-  const { rows } = await runExperimentProfiles(slug, rounds, [groupA, groupB]);
+  const preflight = await runModelPreflight({
+    timeoutMs: Number(process.env.NEEKO_PREFLIGHT_AB_TIMEOUT_MS ?? process.env.NEEKO_PREFLIGHT_TIMEOUT_MS ?? 15_000),
+    requireStructured: true,
+  });
+  if (!preflight.ok) {
+    throw new Error(`A/B preflight failed (${preflight.latencyMs}ms): ${preflight.reason ?? 'unknown'}`);
+  }
+
+  const { rows, failures } = await runExperimentProfiles(slug, rounds, [groupA, groupB], {
+    timeoutMs: AB_PROFILE_TIMEOUT_MS,
+  });
+  if (failures && failures.length > 0) {
+    for (const item of failures) {
+      console.log(chalk.yellow(`fast-fail ${item.profile}: ${item.error.slice(0, 160)}`));
+    }
+  }
   const selectedRows = pickRows(rows, groupA, groupB);
   const gateResult = evaluateGate(selectedRows, {
     enabled: options.gate === true,
@@ -71,7 +89,11 @@ export async function cmdAbRegression(
     baselineProfile: groupA,
     compareProfile: groupB,
   });
-  const report = buildAbComparisonReport(selectedRows, groupA, groupB, gateResult);
+  const report = buildAbComparisonReport(selectedRows, groupA, groupB, gateResult, {
+    reportQuality: failures && failures.length > 0 ? 'timeout_limited' : 'complete',
+    elapsedMs: Date.now() - startedAt,
+    fastFailures: failures ?? [],
+  });
 
   console.log(renderAbComparisonTable(report));
   if (gateResult.enabled) {
@@ -90,16 +112,24 @@ export async function cmdAbRegression(
     const jsonPath = join(outputDir, `${baseName}.json`);
     writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf-8');
     console.log(chalk.dim(`JSON report: ${jsonPath}`));
+    const latestJsonPath = join(outputDir, `ab-regression-latest-${slug}.json`);
+    writeFileSync(latestJsonPath, JSON.stringify(report, null, 2), 'utf-8');
   }
   if (format === 'all' || format === 'csv') {
     const csvPath = join(outputDir, `${baseName}.csv`);
-    writeFileSync(csvPath, toAbComparisonCsv(report), 'utf-8');
+    const csvContent = toAbComparisonCsv(report);
+    writeFileSync(csvPath, csvContent, 'utf-8');
     console.log(chalk.dim(`CSV report:  ${csvPath}`));
+    const latestCsvPath = join(outputDir, `ab-regression-latest-${slug}.csv`);
+    writeFileSync(latestCsvPath, csvContent, 'utf-8');
   }
   if (format === 'all' || format === 'md') {
     const mdPath = join(outputDir, `${baseName}.md`);
-    writeFileSync(mdPath, toAbComparisonMarkdown(report), 'utf-8');
+    const mdContent = toAbComparisonMarkdown(report);
+    writeFileSync(mdPath, mdContent, 'utf-8');
     console.log(chalk.dim(`MD report:   ${mdPath}`));
+    const latestMdPath = join(outputDir, `ab-regression-latest-${slug}.md`);
+    writeFileSync(latestMdPath, mdContent, 'utf-8');
   }
 
   if (gateResult.enabled && !gateResult.passed) {

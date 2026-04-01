@@ -9,6 +9,14 @@ export interface FailureResolution {
 
 export function classifyFailure(error: unknown): FailureResolution {
   const msg = String(error ?? '').toLowerCase();
+  if (
+    msg.includes('tool_choice') ||
+    msg.includes('not yet supported') ||
+    msg.includes('did not match schema') ||
+    msg.includes('no object generated')
+  ) {
+    return { tag: 'schema_incompat', recoveryAction: 'stage_skip_with_flag', retryable: false, stageCanSkip: true };
+  }
   if (msg.includes('timeout')) {
     return { tag: 'provider_timeout', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: false };
   }
@@ -50,3 +58,7 @@ export function createFailureLedgerEntry(input: {
     recovered: input.recovered,
   };
 }
+
+export const __failureLoopTestables = {
+  classifyFailure,
+};

@@ -15,6 +15,7 @@ interface NeekoConfig {
   qdrantApiKey?: string;
   defaultModel?: string;
   defaultTrainingProfile?: string;
+  defaultInputRoutingStrategy?: string;
   neekoDataDir?: string;
 }
 
@@ -24,6 +25,7 @@ const conf = new Conf<NeekoConfig>({
     qdrantUrl: 'http://localhost:6333',
     defaultModel: 'claude-sonnet-4-6',
     defaultTrainingProfile: 'full',
+    defaultInputRoutingStrategy: 'legacy',
     neekoDataDir: join(homedir(), '.neeko'),
   },
 });

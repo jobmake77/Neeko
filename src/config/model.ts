@@ -1,4 +1,4 @@
-import { anthropic } from '@ai-sdk/anthropic';
+import { anthropic, createAnthropic } from '@ai-sdk/anthropic';
 import { openai } from '@ai-sdk/openai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { google } from '@ai-sdk/google';
@@ -12,13 +12,23 @@ import type { LanguageModelV1 } from 'ai';
 export function resolveModel(): LanguageModelV1 {
   const cfg = settings.getAll();
 
-  const anthropicKey = cfg.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '';
-  const openaiKey    = cfg.openaiApiKey    || process.env.OPENAI_API_KEY    || '';
-  const kimiKey      = cfg.kimiApiKey      || process.env.KIMI_API_KEY      || '';
-  const geminiKey    = cfg.geminiApiKey    || process.env.GEMINI_API_KEY    || '';
-  const deepseekKey  = cfg.deepseekApiKey  || process.env.DEEPSEEK_API_KEY  || '';
+  const anthropicKey = String(cfg.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '').trim();
+  const openaiKey    = String(cfg.openaiApiKey    || process.env.OPENAI_API_KEY    || '').trim();
+  const kimiKey      = String(cfg.kimiApiKey      || process.env.KIMI_API_KEY      || '').trim();
+  const geminiKey    = String(cfg.geminiApiKey    || process.env.GEMINI_API_KEY    || '').trim();
+  const deepseekKey  = String(cfg.deepseekApiKey  || process.env.DEEPSEEK_API_KEY  || '').trim();
 
   const preferred = cfg.activeProvider as string | undefined;
+  const rawDefaultModel = String(cfg.defaultModel ?? '').trim();
+  const kimiModelFromEnv = String(process.env.NEEKO_KIMI_MODEL ?? process.env.KIMI_MODEL ?? '').trim();
+  const isKimiCodeKey = /^sk-kimi-/i.test(kimiKey);
+  const kimiModel = isKimiCodeKey
+    ? (kimiModelFromEnv || 'kimi-for-coding')
+    : (
+      kimiModelFromEnv ||
+      (/moonshot|kimi/i.test(rawDefaultModel) ? rawDefaultModel : '') ||
+      'moonshot-v1-128k'
+    );
 
   // Build ordered list: preferred first, then rest
   const order = [
@@ -40,12 +50,20 @@ export function resolveModel(): LanguageModelV1 {
       return openai('gpt-4o-mini') as unknown as LanguageModelV1;
     }
     if (provider === 'kimi' && kimiKey) {
-      console.error(`[model] 使用 Kimi（月之暗面）`);
-      const kimi = createOpenAI({
+      if (isKimiCodeKey) {
+        console.error(`[model] 使用 Kimi Code（Anthropic兼容） model=${kimiModel}`);
+        const kimiCoding = createAnthropic({
+          baseURL: 'https://api.kimi.com/coding/v1',
+          apiKey: kimiKey,
+        });
+        return kimiCoding(kimiModel as any) as unknown as LanguageModelV1;
+      }
+      console.error(`[model] 使用 Kimi（月之暗面 OpenAI兼容） model=${kimiModel}`);
+      const kimiOpenAI = createOpenAI({
         baseURL: 'https://api.moonshot.cn/v1',
         apiKey: kimiKey,
       });
-      return kimi('moonshot-v1-8k') as unknown as LanguageModelV1;
+      return kimiOpenAI(kimiModel) as unknown as LanguageModelV1;
     }
     if (provider === 'gemini' && geminiKey) {
       process.env.GOOGLE_GENERATIVE_AI_API_KEY = geminiKey;

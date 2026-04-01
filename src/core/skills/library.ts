@@ -81,6 +81,13 @@ const QUALITY_GATE = {
   minMethodCompleteness: 0.7,
 };
 
+const SKILL_ORIGIN_TIMEOUT_MS = Number(process.env.NEEKO_SKILL_ORIGIN_TIMEOUT_MS ?? 45_000);
+const SKILL_DISTILL_TIMEOUT_MS = Number(process.env.NEEKO_SKILL_DISTILL_TIMEOUT_MS ?? 25_000);
+const SKILL_EXPAND_TIMEOUT_MS = Number(process.env.NEEKO_SKILL_EXPAND_TIMEOUT_MS ?? 20_000);
+const SKILL_STAGE_BUDGET_MS = Number(process.env.NEEKO_SKILL_STAGE_BUDGET_MS ?? 180_000);
+const MAX_ORIGINS_FOR_DISTILL = Number(process.env.NEEKO_MAX_ORIGINS_FOR_DISTILL ?? 8);
+const MAX_CLUSTERS_FOR_DISTILL = Number(process.env.NEEKO_MAX_CLUSTERS_FOR_DISTILL ?? 4);
+
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   try {
@@ -358,7 +365,7 @@ WHY: ${origin.why}
 HOW: ${origin.how}
 Return 3 candidate sources.`,
     }),
-    35_000,
+    SKILL_EXPAND_TIMEOUT_MS,
     'skill evidence expansion'
   );
 
@@ -426,7 +433,7 @@ Rules:
 - trigger_signals should be short cues from user intent
 - avoid generic skill names`,
     }),
-    40_000,
+    SKILL_DISTILL_TIMEOUT_MS,
     'skill distill'
   );
 
@@ -445,6 +452,43 @@ Rules:
     contradiction_risk: object.skill.contradiction_risk,
     method_completeness: methodCompleteness,
     coverage_tags: Array.from(new Set(object.skill.coverage_tags)).slice(0, 10),
+    source_origin_ids: cluster.origins.map((item) => item.id),
+  };
+}
+
+function buildFallbackSkillFromCluster(
+  cluster: { id: string; thesis: string; origins: OriginSkill[] },
+  evidenceRefs: SkillEvidenceRef[]
+): Omit<DistilledSkill, 'quality_score' | 'id' | 'last_validated_at'> {
+  const lead = cluster.origins.slice().sort((a, b) => b.confidence - a.confidence)[0];
+  const fallbackName = lead?.name ?? cluster.thesis;
+  const why = lead?.why ?? `Derived from clustered persona signals around ${cluster.thesis}.`;
+  const how = lead?.how ?? `Apply ${cluster.thesis} with explicit constraints and concrete steps.`;
+  const boundaries = [
+    'Only apply when user intent matches this domain.',
+    'Avoid over-generalizing beyond evidenced context.',
+  ];
+  const triggerSignals = Array.from(new Set(cluster.origins.map((item) => item.name))).slice(0, 4);
+  const howSteps = [how, 'Validate assumptions against evidence before answering.'];
+
+  return {
+    name: fallbackName,
+    central_thesis: why,
+    why,
+    how_steps: howSteps,
+    boundaries,
+    trigger_signals: triggerSignals.length > 0 ? triggerSignals : [cluster.thesis],
+    anti_patterns: ['Generic advice without method steps'],
+    evidence_refs: evidenceRefs.slice(0, 16),
+    confidence: Math.max(0.55, Math.min(0.85, lead?.confidence ?? 0.6)),
+    contradiction_risk: 0.12,
+    method_completeness: methodCompletenessScore({
+      why,
+      how_steps: howSteps,
+      boundaries,
+      trigger_signals: triggerSignals.length > 0 ? triggerSignals : [cluster.thesis],
+    }),
+    coverage_tags: triggerSignals.slice(0, 8),
     source_origin_ids: cluster.origins.map((item) => item.id),
   };
 }
@@ -702,7 +746,7 @@ Rules:
 
 Content:\n${seedText || 'No content'}`,
       }),
-      90_000,
+      SKILL_ORIGIN_TIMEOUT_MS,
       'skill origin extraction'
     );
     extractedOrigins = object.origins;
@@ -720,21 +764,41 @@ Content:\n${seedText || 'No content'}`,
   }));
 
   const deduped = dedupeOrigins(rawOrigins);
-  const acceptedOrigins = deduped.filter((item) => item.evidence.length >= 2 && item.confidence >= 0.5);
+  const acceptedOrigins = deduped
+    .filter((item) => item.evidence.length >= 2 && item.confidence >= 0.5)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, MAX_ORIGINS_FOR_DISTILL);
   const pendingOrigins = deduped.filter((item) => !acceptedOrigins.includes(item));
 
-  const clusters = clusterOrigins(acceptedOrigins);
+  const clusters = clusterOrigins(acceptedOrigins).slice(0, MAX_CLUSTERS_FOR_DISTILL);
   const acceptedDistilled: DistilledSkill[] = [];
   const candidatePool: CandidateSkill[] = [];
+  const stageStart = Date.now();
 
   for (const cluster of clusters) {
+    if (Date.now() - stageStart > SKILL_STAGE_BUDGET_MS) {
+      console.warn('[SkillLibrary] distill stage budget exceeded, stop further clusters');
+      break;
+    }
     const clusterEvidence: SkillEvidenceRef[] = [];
     for (const origin of cluster.origins) {
-      const refs = await collectEvidenceForOrigin(origin);
-      clusterEvidence.push(...refs);
+      if (Date.now() - stageStart > SKILL_STAGE_BUDGET_MS) break;
+      try {
+        const refs = await collectEvidenceForOrigin(origin);
+        clusterEvidence.push(...refs);
+      } catch (error) {
+        console.warn(`[SkillLibrary] collect evidence failed for ${origin.name}: ${String(error)}`);
+      }
     }
 
-    const draft = await distillSkillFromCluster(cluster, mergeUniqueEvidence([], clusterEvidence));
+    const mergedEvidence = mergeUniqueEvidence([], clusterEvidence);
+    let draft: Omit<DistilledSkill, 'quality_score' | 'id' | 'last_validated_at'>;
+    try {
+      draft = await distillSkillFromCluster(cluster, mergedEvidence);
+    } catch (error) {
+      console.warn(`[SkillLibrary] distill failed for cluster "${cluster.thesis}", fallback used: ${String(error)}`);
+      draft = buildFallbackSkillFromCluster(cluster, mergedEvidence);
+    }
     const gated = gateCandidateSkill(draft);
     if (gated.accepted) {
       acceptedDistilled.push(gated.skill);

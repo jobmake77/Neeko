@@ -10,6 +10,7 @@ import { cmdExperiment } from './commands/experiment.js';
 import { cmdAbRegression } from './commands/ab-regression.js';
 import { cmdTrain } from './commands/train.js';
 import { cmdSkillsRefresh } from './commands/skills-refresh.js';
+import { cmdDualPipeline } from './commands/dual-pipeline.js';
 
 // Apply saved API keys to environment on startup
 const cfg = settings.getAll();
@@ -34,7 +35,8 @@ program
   .option('--yes', 'Skip all confirmation prompts (for non-interactive / Web UI use)')
   .option('--rounds <n>', 'Training rounds to run automatically (0 = skip training)', '0')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
-  .action(async (target?: string, options?: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string }) => {
+  .option('--input-routing <strategy>', 'Input routing strategy: legacy | v2')
+  .action(async (target?: string, options?: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string; inputRouting?: string }) => {
     await cmdCreate(target, options ?? {});
   });
 
@@ -83,6 +85,7 @@ program
   .option('--deepseek-key <key>', 'Set DeepSeek API key')
   .option('--qdrant-url <url>', 'Set Qdrant URL')
   .option('--training-profile <profile>', 'Set default training profile: baseline | a1 | a2 | a3 | a4 | full')
+  .option('--input-routing <strategy>', 'Set default input routing strategy: legacy | v2')
   .option('--show', 'Show current configuration')
   .action(async (options: {
     apiKey?: string;
@@ -90,6 +93,7 @@ program
     deepseekKey?: string;
     qdrantUrl?: string;
     trainingProfile?: string;
+    inputRouting?: string;
     show?: boolean;
   }) => {
     await cmdConfig(options);
@@ -105,6 +109,8 @@ program
   .option('--max-quality-drop <n>', 'Allowed quality drop for full vs baseline', '0.02')
   .option('--max-contradiction-rise <n>', 'Allowed contradiction rate rise for full vs baseline', '0.03')
   .option('--max-duplication-rise <n>', 'Allowed duplication rate rise for full vs baseline', '0.05')
+  .option('--input-routing <strategy>', 'Input routing strategy for experiment preprocessing: legacy | v2')
+  .option('--compare-input-routing', 'Run extra full-profile legacy vs v2 input routing comparison')
   .action(async (slug: string, options: {
     rounds?: string;
     outputDir?: string;
@@ -112,6 +118,8 @@ program
     maxQualityDrop?: string;
     maxContradictionRise?: string;
     maxDuplicationRise?: string;
+    inputRouting?: string;
+    compareInputRouting?: boolean;
   }) => {
     await cmdExperiment(slug, options);
   });
@@ -151,6 +159,7 @@ program
   .option('--rounds <n>', 'Training rounds (overrides mode)')
   .option('--track <track>', 'Track: persona_extract | work_execute | full_serial', 'full_serial')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
+  .option('--input-routing <strategy>', 'Input routing strategy placeholder: legacy | v2')
   .option('--retries <n>', 'Retry count for transient model format errors', '2')
   .option('--from-checkpoint <id>', 'Resume from checkpoint id (or latest)')
   .action(async (slug: string, options: {
@@ -158,6 +167,7 @@ program
     rounds?: string;
     track?: string;
     trainingProfile?: string;
+    inputRouting?: string;
     retries?: string;
     fromCheckpoint?: string;
   }) => {
@@ -173,7 +183,32 @@ program
     await cmdSkillsRefresh(slug, options);
   });
 
-program.parseAsync(process.argv).catch((err: Error) => {
-  console.error(`Error: ${err.message}`);
-  process.exit(1);
-});
+// ─── nico dual-pipeline ─────────────────────────────────────────────────────
+program
+  .command('dual-pipeline')
+  .description('Run fixed dual-account pipeline (turingou, HiTw93): train -> ab-regression serially')
+  .option('--rounds <n>', 'Rounds for train and A/B', '1')
+  .option('--mode <mode>', 'Train mode: quick | full', 'quick')
+  .option('--training-profile <profile>', 'Training profile for train', 'full')
+  .option('--output-dir <dir>', 'Output base directory for A/B reports')
+  .option('--no-gate', 'Disable A/B quality gate')
+  .action(async (options: {
+    rounds?: string;
+    mode?: 'quick' | 'full';
+    trainingProfile?: string;
+    outputDir?: string;
+    gate?: boolean;
+  }) => {
+    await cmdDualPipeline(options);
+  });
+
+program.parseAsync(process.argv)
+  .then(() => {
+    if (process.env.NEEKO_CLI_FORCE_EXIT === '1') {
+      setTimeout(() => process.exit(process.exitCode ?? 0), 0);
+    }
+  })
+  .catch((err: Error) => {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  });

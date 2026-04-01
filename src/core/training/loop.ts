@@ -121,16 +121,23 @@ export class TrainingLoop {
 
       for (const qItem of questionSet) {
         dimensionCoverage.add(qItem.target_dimension);
-        const response = await this.personaAgent.respond(qItem.question);
+        const trainingResponse = await this.personaAgent.respond(qItem.question, [], {
+          maxTokens: 512,
+          timeoutMs: 30_000,
+          retries: 0,
+        });
         const evaluation = await this.evaluatorAgent.evaluate(
           qItem.question,
-          response,
+          trainingResponse,
           this.soul.target_name,
           qItem.strategy,
           {
             calibrationEnabled: profile !== 'baseline' && profile !== 'a1',
             dualReview: profile === 'a2' || profile === 'a3' || profile === 'a4' || profile === 'full',
             disagreementThreshold: 0.2,
+            timeoutMs: 30_000,
+            retries: 0,
+            maxResponseChars: 1200,
           }
         );
 
@@ -164,7 +171,7 @@ export class TrainingLoop {
             if (decision.action === 'quarantine') {
               const queuedNode = createMemoryNode({
                 persona_id: this.persona.id,
-                original_text: response.slice(0, 2000),
+                original_text: trainingResponse.slice(0, 2000),
                 summary: candidate.summary,
                 category: candidate.category,
                 soul_dimension: candidate.soul_dimension,
@@ -181,7 +188,7 @@ export class TrainingLoop {
 
             const node = createMemoryNode({
               persona_id: this.persona.id,
-              original_text: response.slice(0, 2000),
+              original_text: trainingResponse.slice(0, 2000),
               summary: candidate.summary,
               category: candidate.category,
               soul_dimension: candidate.soul_dimension,

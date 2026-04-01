@@ -69,8 +69,8 @@ export class SoulExtractor {
     targetName: string,
     options?: { timeoutMs?: number; retries?: number }
   ): Promise<ChunkExtraction> {
-    const timeoutMs = options?.timeoutMs ?? 45_000;
-    const retries = Math.max(0, options?.retries ?? 1);
+    const timeoutMs = options?.timeoutMs ?? 30_000;
+    const retries = Math.max(0, options?.retries ?? 0);
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -110,7 +110,7 @@ Author: ${chunk.author}`,
   async extractBatch(
     chunks: SemanticChunk[],
     targetName: string,
-    concurrency = 5,
+    concurrency = 3,
     options?: { timeoutMs?: number; retries?: number }
   ): Promise<ChunkExtraction[]> {
     const results: ChunkExtraction[] = [];

@@ -23,6 +23,13 @@ import {
   loadSkillLibrary,
   saveSkillLibrary,
 } from '../../core/skills/library.js';
+import {
+  InputRoutingStrategy,
+  normalizeInputRoutingStrategy,
+  routeEvidenceDocuments,
+  writeInputRoutingReport,
+  writeRawDocsCache,
+} from '../../core/pipeline/evidence-routing.js';
 
 function savePersona(persona: Persona, soul: Soul): void {
   const dir = settings.getPersonaDir(persona.slug);
@@ -55,7 +62,10 @@ function saveTrainingReportFromRounds(
   writeFileSync(join(dir, 'training-report.json'), JSON.stringify(report, null, 2), 'utf-8');
 }
 
-export async function cmdCreate(target: string | undefined, options: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string }): Promise<void> {
+export async function cmdCreate(
+  target: string | undefined,
+  options: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string; inputRouting?: string }
+): Promise<void> {
   intro(chalk.bold.cyan('✦ Neeko — 数字孪生工厂'));
 
   const nonInteractive = options.yes === true;
@@ -168,8 +178,10 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   }
 
   // ── 检查 opencli 可用性 ────────────────────────────────────────────────────
+  let canUseOpenCli = true;
   if (mode === 'single' && handle) {
     const version = checkOpenCli();
+    canUseOpenCli = Boolean(version);
     if (!version) {
       p.note(
         '未检测到 opencli，请先安装：\n' +
@@ -186,12 +198,17 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     } else {
       p.log.info(`opencli ${version} 已就绪，将通过浏览器免 API 抓取推文`);
     }
+    if (!canUseOpenCli) {
+      handle = undefined;
+    }
   } else if (mode === 'single') {
     p.log.info('单人蒸馏将使用外部素材链接进行提炼（跳过 Twitter 抓取）。');
   }
 
   let currentSoul = soul;
   let allDocs: Awaited<ReturnType<TwitterAdapter['fetch']>> = [];
+  const inputRouting = resolveInputRoutingStrategy(options.inputRouting);
+  const personaDir = settings.getPersonaDir(persona.slug);
   persona.status = 'ingesting';
   persona.updated_at = new Date().toISOString();
   savePersona(persona, currentSoul);
@@ -217,45 +234,74 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     p.note('No data fetched. Will proceed with empty data (you can add data manually).', 'Warning');
   }
 
+  writeRawDocsCache(personaDir, allDocs);
+
   // ── Clean + chunk ─────────────────────────────────────────────────────────
   spin.start('Cleaning and chunking content...');
-  const cleaner = new DataCleaner();
-  const chunker = new SemanticChunker();
-  const cleanDocs = cleaner.clean(allDocs);
-  const chunks = chunker.chunkAll(cleanDocs);
-  spin.stop(`${chunks.length} semantic chunks ready`);
+  const routed = routeEvidenceDocuments(allDocs, {
+    strategy: inputRouting,
+    targetSignals: [displayName, handle ? `@${handle}` : '', ...sourceTargets],
+    cleaner: new DataCleaner(),
+    chunker: new SemanticChunker(),
+  });
+  const cleanDocs = routed.cleanDocs;
+  const chunks = routed.chunks;
+  const soulChunks = routed.soulChunks.length > 0 ? routed.soulChunks : routed.chunks;
+  writeInputRoutingReport(personaDir, {
+    strategy: inputRouting,
+    generated_at: new Date().toISOString(),
+    observability: routed.observability,
+    routed_docs: routed.routedDocs.map((item) => ({
+      route: item.route,
+      score: item.score,
+      decision_reason: item.decision_reason,
+      decision_flags: item.decision_flags,
+    })),
+  });
+  spin.stop(
+    `${chunks.length} semantic chunks ready` +
+    (inputRouting === 'v2'
+      ? ` (soul=${routed.observability.soul_docs}, memory=${routed.observability.memory_docs}, discard=${routed.observability.discard_docs})`
+      : '')
+  );
 
   // ── Soul extraction ───────────────────────────────────────────────────────
   persona.status = 'refining';
   persona.updated_at = new Date().toISOString();
   savePersona(persona, currentSoul);
-  if (chunks.length > 0) {
-    spin.start(`Extracting soul from ${chunks.length} chunks...`);
+  if (soulChunks.length > 0) {
+    spin.start(`Extracting soul from ${soulChunks.length} chunks...`);
     const extractor = new SoulExtractor();
     const aggregator = new SoulAggregator();
-    const batchSize = Math.min(chunks.length, 50); // cap for MVP
-    const extractions = await extractor.extractBatch(chunks.slice(0, batchSize), displayName);
-    currentSoul = aggregator.aggregate(soul, extractions, chunks.slice(0, batchSize));
+    const batchSize = Math.min(soulChunks.length, 30); // keep extraction bounded to avoid provider stalls
+    const extractions = await extractor.extractBatch(soulChunks.slice(0, batchSize), displayName);
+    currentSoul = aggregator.aggregate(soul, extractions, soulChunks.slice(0, batchSize));
     spin.stop(`Soul v${currentSoul.version} — confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
   }
 
   // ── Skill origin extraction + auto expansion ─────────────────────────────
   console.log('[SKILL_STAGE] skill_origin_extract');
-  spin.start('Extracting skill origins and building skill library...');
-  const personaDir = settings.getPersonaDir(persona.slug);
   const previousSkills = loadSkillLibrary(personaDir, persona.slug);
-  const skillLibrary = await buildSkillLibraryFromSources(
-    persona,
-    currentSoul,
-    chunks.slice(0, 80),
-    cleanDocs.slice(0, 80),
-    previousSkills
-  );
+  let skillLibrary = previousSkills;
+  if (chunks.length > 0 || cleanDocs.length > 0) {
+    spin.start('Extracting skill origins and building skill library...');
+    skillLibrary = await buildSkillLibraryFromSources(
+      persona,
+      currentSoul,
+      chunks.slice(0, 80),
+      cleanDocs.slice(0, 80),
+      previousSkills
+    );
+  } else {
+    spin.start('Skipping skill extraction due to empty evidence set...');
+  }
   console.log('[SKILL_STAGE] skill_expand');
   saveSkillLibrary(personaDir, skillLibrary);
   console.log('[SKILL_STAGE] skill_merge');
   spin.stop(
-    `Skill library updated — origins ${skillLibrary.origin_skills.length}, distilled ${skillLibrary.distilled_skills.length}`
+    chunks.length > 0 || cleanDocs.length > 0
+      ? `Skill library updated — origins ${skillLibrary.origin_skills.length}, distilled ${skillLibrary.distilled_skills.length}`
+      : 'Skill library unchanged — no evidence available'
   );
 
   // ── Ask about training ────────────────────────────────────────────────────
@@ -391,6 +437,13 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     `  Slug: ${chalk.cyan(persona.slug)}\n` +
     `  Chat: ${chalk.bold(`nico chat ${persona.slug}`)}\n` +
     `  Export: ${chalk.bold(`nico export ${persona.slug} --to openclaw`)}`
+  );
+}
+
+function resolveInputRoutingStrategy(raw?: string): InputRoutingStrategy {
+  return normalizeInputRoutingStrategy(
+    raw,
+    normalizeInputRoutingStrategy(String(settings.get('defaultInputRoutingStrategy') ?? 'legacy'))
   );
 }
 

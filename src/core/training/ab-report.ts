@@ -32,8 +32,13 @@ export interface GateResult {
 export interface AbComparisonReport {
   schema_version: 1;
   generated_at: string;
+  report_quality: 'complete' | 'timeout_limited';
   group_a: TrainingProfile;
   group_b: TrainingProfile;
+  execution: {
+    elapsed_ms: number;
+    fast_failures: Array<{ profile: TrainingProfile; error: string }>;
+  };
   metrics: {
     avg_quality: { a: number; b: number };
     contradiction_rate: { a: number; b: number };
@@ -131,7 +136,12 @@ export function buildAbComparisonReport(
   rows: ExperimentSummaryRow[],
   groupA: TrainingProfile,
   groupB: TrainingProfile,
-  gateResult: GateResult
+  gateResult: GateResult,
+  options?: {
+    reportQuality?: 'complete' | 'timeout_limited';
+    elapsedMs?: number;
+    fastFailures?: Array<{ profile: TrainingProfile; error: string }>;
+  }
 ): AbComparisonReport {
   const a = rows.find((row) => row.profile === groupA);
   const b = rows.find((row) => row.profile === groupB);
@@ -142,8 +152,13 @@ export function buildAbComparisonReport(
   return {
     schema_version: 1,
     generated_at: new Date().toISOString(),
+    report_quality: options?.reportQuality ?? 'complete',
     group_a: groupA,
     group_b: groupB,
+    execution: {
+      elapsed_ms: Math.max(0, options?.elapsedMs ?? 0),
+      fast_failures: options?.fastFailures ?? [],
+    },
     metrics: {
       avg_quality: { a: a.avgQuality, b: b.avgQuality },
       contradiction_rate: { a: a.contradictionRate, b: b.contradictionRate },
@@ -183,6 +198,8 @@ export function renderAbComparisonTable(report: AbComparisonReport): string {
 
 export function toAbComparisonCsv(report: AbComparisonReport): string {
   return [
+    `report_quality,${report.report_quality}`,
+    `elapsed_ms,${report.execution.elapsed_ms}`,
     'metric,group_a,group_b,delta_b_minus_a',
     `avg_quality,${report.metrics.avg_quality.a.toFixed(6)},${report.metrics.avg_quality.b.toFixed(6)},${report.deltas.avg_quality.toFixed(6)}`,
     `contradiction_rate,${report.metrics.contradiction_rate.a.toFixed(6)},${report.metrics.contradiction_rate.b.toFixed(6)},${report.deltas.contradiction_rate.toFixed(6)}`,
@@ -197,7 +214,12 @@ export function toAbComparisonMarkdown(report: AbComparisonReport): string {
     '',
     `- Group A: \`${report.group_a}\``,
     `- Group B: \`${report.group_b}\``,
+    `- Report quality: \`${report.report_quality}\``,
+    `- Elapsed: ${report.execution.elapsed_ms} ms`,
     `- Generated: ${report.generated_at}`,
+    report.execution.fast_failures.length > 0
+      ? `- Fast-fail: ${report.execution.fast_failures.map((f) => `${f.profile}: ${f.error.slice(0, 80)}`).join(' | ')}`
+      : '- Fast-fail: none',
     '',
     '| Metric | A | B | Delta (B-A) |',
     '|---|---:|---:|---:|',

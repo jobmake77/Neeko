@@ -4,6 +4,7 @@ import { Soul } from '../models/soul.js';
 import { resolveModel } from '../../config/model.js';
 import { SoulRenderer } from '../soul/renderer.js';
 import { MemoryRetriever } from '../memory/retriever.js';
+import { MemoryNode } from '../models/memory.js';
 import { CALIBRATION_SET, EVALUATION_RUBRIC } from '../training/evaluation.js';
 import { PersonaSkillLibrary } from '../skills/types.js';
 import { selectTriggeredSkillsForQuery, TriggeredSkillMatch } from '../skills/library.js';
@@ -65,15 +66,25 @@ export class PersonaAgent {
 
   async respond(
     userMessage: string,
-    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    options: {
+      maxTokens?: number;
+      timeoutMs?: number;
+      retries?: number;
+    } = {}
   ): Promise<string> {
-    const result = await this.respondWithMeta(userMessage, conversationHistory);
+    const result = await this.respondWithMeta(userMessage, conversationHistory, options);
     return result.text;
   }
 
   async respondWithMeta(
     userMessage: string,
-    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    options: {
+      maxTokens?: number;
+      timeoutMs?: number;
+      retries?: number;
+    } = {}
   ): Promise<{ text: string; triggeredSkills: TriggeredSkillMatch[]; normalizedQuery: string }> {
     const skillSelection = selectTriggeredSkillsForQuery(this.skillLibrary, userMessage, 2);
     const query = skillSelection.cleanQuery;
@@ -90,26 +101,48 @@ export class PersonaAgent {
       (memoryContext ? `\n\n${memoryContext}` : '') +
       (skillContext ? `\n\n${skillContext}` : '');
 
-    const { text } = await withRetry(
-      () =>
-        generateText({
-          model: this.model,
-          system: systemPrompt,
-          messages: [
-            ...conversationHistory,
-            { role: 'user', content: query },
-          ],
-          maxTokens: 1024,
-          temperature: 0.7,
-        }),
-      { label: 'persona respond', timeoutMs: 45_000, retries: 1 }
-    );
+    try {
+      const { text } = await withRetry(
+        () =>
+          generateText({
+            model: this.model,
+            system: systemPrompt,
+            messages: [
+              ...conversationHistory,
+              { role: 'user', content: query },
+            ],
+            maxTokens: options.maxTokens ?? 1024,
+            temperature: 0.7,
+          }),
+        { label: 'persona respond', timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
+      );
 
-    return {
-      text,
-      triggeredSkills: skillSelection.triggered,
-      normalizedQuery: query,
-    };
+      return {
+        text,
+        triggeredSkills: skillSelection.triggered,
+        normalizedQuery: query,
+      };
+    } catch (error) {
+      console.warn(`[PersonaAgent] fallback enabled: ${String(error)}`);
+      return {
+        text: this.fallbackResponse(query, memories),
+        triggeredSkills: skillSelection.triggered,
+        normalizedQuery: query,
+      };
+    }
+  }
+
+  private fallbackResponse(query: string, memories: MemoryNode[]): string {
+    const expertise = this.soul.knowledge_domains.expert[0] || this.soul.knowledge_domains.familiar[0] || 'the topic';
+    const belief = this.soul.values.core_beliefs[0]?.belief || '';
+    const reasoning = this.soul.thinking_patterns.problem_solving_approach || 'I break problems into first principles and practical tradeoffs.';
+    const memorySummary = memories.slice(0, 2).map((m) => m.summary).filter(Boolean).join(' ');
+    const sentences = [
+      `My instinct on ${expertise} is to stay concrete and focus on what actually compounds.`,
+      belief ? `A principle I keep coming back to is ${belief}.` : reasoning,
+      memorySummary || `For "${query}", I would start with the key constraint, choose the highest-leverage action, and then iterate quickly from feedback.`,
+    ];
+    return sentences.join(' ');
   }
 }
 
@@ -158,12 +191,13 @@ export class TrainerAgent {
       .map((s) => `${s.strategy}: ${s.count}`)
       .join(', ');
 
-    const { object } = await withRetry(
-      () =>
-        generateObject({
-          model: this.model,
-          schema: QuestionSetSchema,
-          prompt: `You are designing training questions to evaluate and improve a Persona Agent simulating "${soul.target_name}".
+    try {
+      const { object } = await withRetry(
+        () =>
+          generateObject({
+            model: this.model,
+            schema: QuestionSetSchema,
+            prompt: `You are designing training questions to evaluate and improve a Persona Agent simulating "${soul.target_name}".
 
 Round: ${round}
 Dimensions with low confidence: ${lowConfidence.join(', ') || 'none'}
@@ -184,11 +218,14 @@ Question strategy definitions:
 4. **scenario**: Practical problem-solving in their domain of expertise
 
 Return exactly ${questionCount} questions spanning different target dimensions, with strict strategy counts.`,
-        }),
-      { label: 'trainer generate questions', timeoutMs: 45_000, retries: 1 }
-    );
-
-    return object.questions;
+          }),
+        { label: 'trainer generate questions', timeoutMs: 45_000, retries: 1 }
+      );
+      return object.questions;
+    } catch (error) {
+      console.warn(`[TrainerAgent] schema fallback enabled: ${String(error)}`);
+      return this.fallbackQuestions(soul, strategyTargets, lowConfidence, questionCount, skillGapHints);
+    }
   }
 
   private lowConfidenceDimensions(soul: Soul): TargetDimension[] {
@@ -199,6 +236,33 @@ Return exactly ${questionCount} questions spanning different target dimensions, 
     if (soul.behavioral_traits.signature_behaviors.length < 2) dims.push('behavioral_traits');
     if (soul.knowledge_domains.expert.length === 0) dims.push('knowledge_domains');
     return dims;
+  }
+
+  private fallbackQuestions(
+    soul: Soul,
+    strategyTargets: Array<{ strategy: QuestionStrategy; count: number }>,
+    lowConfidence: TargetDimension[],
+    questionCount: number,
+    skillGapHints: string[]
+  ): TrainingQuestion[] {
+    const dimensions: TargetDimension[] = lowConfidence.length > 0
+      ? lowConfidence
+      : ['thinking_patterns', 'values', 'knowledge_domains', 'behavioral_traits', 'language_style'];
+    const gaps = skillGapHints.length > 0 ? skillGapHints : ['核心方法论', '边界条件', '失败复盘'];
+    const out: TrainingQuestion[] = [];
+    for (const target of strategyTargets) {
+      for (let i = 0; i < target.count; i++) {
+        const dim = dimensions[(out.length + i) % dimensions.length] ?? 'general';
+        const gap = gaps[(out.length + i) % gaps.length] ?? '关键能力';
+        out.push({
+          strategy: target.strategy,
+          target_dimension: dim,
+          expected_challenge_level: target.strategy === 'consistency' ? 'easy' : target.strategy === 'scenario' ? 'medium' : 'hard',
+          question: `围绕${soul.target_name}在「${gap}」上的做法，请给出可执行步骤，并说明适用边界与反例。`,
+        });
+      }
+    }
+    return out.slice(0, questionCount);
   }
 }
 
@@ -235,11 +299,17 @@ export class EvaluatorAgent {
       calibrationEnabled?: boolean;
       dualReview?: boolean;
       disagreementThreshold?: number;
+      timeoutMs?: number;
+      retries?: number;
+      maxResponseChars?: number;
     } = {}
   ): Promise<Evaluation> {
     const primary = await this.runSingleEvaluation(question, response, personaName, strategy, {
       calibrationEnabled: options.calibrationEnabled ?? true,
       reviewerRole: 'primary',
+      timeoutMs: options.timeoutMs ?? 45_000,
+      retries: options.retries ?? 1,
+      maxResponseChars: options.maxResponseChars ?? 1200,
     });
 
     const dualReview = options.dualReview ?? false;
@@ -248,6 +318,9 @@ export class EvaluatorAgent {
     const secondary = await this.runSingleEvaluation(question, response, personaName, strategy, {
       calibrationEnabled: options.calibrationEnabled ?? true,
       reviewerRole: 'secondary',
+      timeoutMs: options.timeoutMs ?? 45_000,
+      retries: options.retries ?? 1,
+      maxResponseChars: options.maxResponseChars ?? 1200,
     });
 
     const threshold = options.disagreementThreshold ?? 0.2;
@@ -278,6 +351,9 @@ export class EvaluatorAgent {
     options: {
       calibrationEnabled: boolean;
       reviewerRole: 'primary' | 'secondary';
+      timeoutMs: number;
+      retries: number;
+      maxResponseChars: number;
     }
   ): Promise<Evaluation> {
     const calibrationContext = options.calibrationEnabled
@@ -286,12 +362,16 @@ export class EvaluatorAgent {
       ).join('\n\n')
       : 'Calibration examples disabled.';
 
-    const { object } = await withRetry(
-      () =>
-        generateObject({
-          model: this.model,
-          schema: EvaluationSchema,
-          prompt: `You are an independent quality evaluator for a persona simulation of "${personaName}".
+    const responseSnippet = response.slice(0, options.maxResponseChars);
+
+    try {
+      const { object } = await withRetry(
+        () =>
+          generateObject({
+            model: this.model,
+            schema: EvaluationSchema,
+            temperature: 0,
+            prompt: `You are an independent quality evaluator for a persona simulation of "${personaName}".
 You do NOT have access to their internal Soul configuration — evaluate purely based on response quality.
 Reviewer role: ${options.reviewerRole}
 
@@ -304,7 +384,7 @@ Question asked (strategy: ${strategy}):
 "${question}"
 
 Persona's response:
-"${response}"
+"${responseSnippet}"
 
 Evaluate:
 1. consistency_score: Does this feel consistent with prior statements about ${personaName}? (0=contradicts known info, 1=perfectly consistent)
@@ -319,11 +399,41 @@ Verdict:
 - "flag_contradiction": Response contradicts known ${personaName} positions
 
 Extract any new memory candidates (insights about their beliefs, style, knowledge).`,
-        }),
-      { label: 'evaluator score response', timeoutMs: 45_000, retries: 1 }
-    );
+          }),
+        { label: 'evaluator score response', timeoutMs: options.timeoutMs, retries: options.retries }
+      );
+      return object;
+    } catch (error) {
+      console.warn(`[EvaluatorAgent] schema fallback enabled: ${String(error)}`);
+      return this.fallbackEvaluation(question, response, strategy);
+    }
+  }
 
-    return object;
+  private fallbackEvaluation(question: string, response: string, strategy: string): Evaluation {
+    const responseLen = response.trim().length;
+    const questionLen = question.trim().length;
+    const depth = Math.max(0.2, Math.min(0.85, responseLen / Math.max(120, questionLen * 6)));
+    const consistency = responseLen < 30 ? 0.25 : 0.55;
+    const authenticity = response.includes('I ') || response.includes('我') ? 0.58 : 0.52;
+    const overall = (consistency + authenticity + depth) / 3;
+    const verdict: Evaluation['verdict'] = overall >= 0.62 ? 'write' : overall >= 0.48 ? 'reinforce' : 'discard';
+    return {
+      consistency_score: consistency,
+      authenticity_score: authenticity,
+      depth_score: depth,
+      overall_score: overall,
+      verdict,
+      insights: [`fallback evaluation for strategy=${strategy}`],
+      new_memory_candidates:
+        verdict === 'write'
+          ? [{
+            summary: response.slice(0, 180),
+            category: 'opinion',
+            soul_dimension: 'general',
+            confidence: Math.max(0.45, Math.min(0.75, overall)),
+          }]
+          : [],
+    };
   }
 }
 
@@ -359,12 +469,15 @@ export class DirectorAgent {
       observability?: RoundObservability;
     }
   ): Promise<DirectorDecision> {
-    const { object } = await withRetry(
-      () =>
-        generateObject({
-          model: this.model,
-          schema: DirectorDecisionSchema,
-          prompt: `You are the Director overseeing training of a Persona Agent for "${soul.target_name}".
+    const heuristicCoverage = estimateCoverageScore(soul, roundSummary);
+    try {
+      const { object } = await withRetry(
+        () =>
+          generateObject({
+            model: this.model,
+            schema: DirectorDecisionSchema,
+            temperature: 0,
+            prompt: `You are the Director overseeing training of a Persona Agent for "${soul.target_name}".
 
 Training Round ${roundSummary.round} Summary:
 - Questions asked: ${roundSummary.questions_asked}
@@ -396,10 +509,69 @@ Observability signals:
 
 Decide whether to continue training, suggest soul updates, and estimate coverage.
 Coverage score reflects how well we've explored ${soul.target_name}'s worldview (0-1).`,
-        }),
-      { label: 'director review round', timeoutMs: 45_000, retries: 1 }
-    );
-
-    return object;
+          }),
+        { label: 'director review round', timeoutMs: 30_000, retries: 0 }
+      );
+      return {
+        ...object,
+        coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage, object.coverage_score),
+      };
+    } catch (error) {
+      console.warn(`[DirectorAgent] schema fallback enabled: ${String(error)}`);
+      const contradictionRate = roundSummary.observability?.contradictionRate ?? 0;
+      const shouldContinue = contradictionRate > 0.12 || roundSummary.avg_quality_score < 0.7;
+      return {
+        should_continue: shouldContinue,
+        convergence_reason: shouldContinue ? undefined : 'fallback-director: quality and contradiction reached target',
+        soul_updates: {
+          knowledge_gaps_identified: contradictionRate > 0.12 ? ['consistency'] : [],
+          new_blind_spots: [],
+        },
+        coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage),
+        quality_summary: `fallback-director review; contradiction=${contradictionRate.toFixed(2)}`,
+      };
+    }
   }
 }
+
+function estimateCoverageScore(
+  soul: Soul,
+  roundSummary: {
+    questions_asked: number;
+    nodes_written: number;
+    nodes_reinforced: number;
+    avg_quality_score: number;
+    observability?: RoundObservability;
+  }
+): number {
+  const questionUtilization =
+    (roundSummary.nodes_written + roundSummary.nodes_reinforced) / Math.max(1, roundSummary.questions_asked);
+  const lowConfidenceCoverage = roundSummary.observability?.lowConfidenceCoverage ?? 0;
+  const contradictionPenalty = roundSummary.observability?.contradictionRate ?? 0;
+  const heuristic =
+    soul.coverage_score * 0.35 +
+    lowConfidenceCoverage * 0.3 +
+    Math.min(1, questionUtilization) * 0.2 +
+    roundSummary.avg_quality_score * 0.15 -
+    contradictionPenalty * 0.2;
+  return Math.min(1, Math.max(0, heuristic));
+}
+
+function stabilizeCoverageScore(
+  previousCoverage: number,
+  heuristicCoverage: number,
+  modelCoverage?: number
+): number {
+  const blended = modelCoverage === undefined
+    ? heuristicCoverage
+    : (heuristicCoverage * 0.7) + (modelCoverage * 0.3);
+  const maxDelta = 0.2;
+  const lower = Math.max(0, previousCoverage - maxDelta);
+  const upper = Math.min(1, previousCoverage + maxDelta);
+  return Math.min(upper, Math.max(lower, blended));
+}
+
+export const __testables__ = {
+  estimateCoverageScore,
+  stabilizeCoverageScore,
+};

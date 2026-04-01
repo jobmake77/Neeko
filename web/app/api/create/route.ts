@@ -20,14 +20,17 @@ function stripAnsi(str: string) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const mode = url.searchParams.get('mode');      // 'single' | 'fusion'
+  const mode = url.searchParams.get('mode');      // only 'single' is supported by web
   const handle = url.searchParams.get('handle');  // e.g. elonmusk
-  const skill = url.searchParams.get('skill');    // e.g. 全栈工程师
+  const inputType = url.searchParams.get('inputType') ?? 'account';
+  const source = url.searchParams.get('source');
+  const sourceNote = url.searchParams.get('sourceNote');
+  const sourceFileName = url.searchParams.get('sourceFileName');
   const rounds = url.searchParams.get('rounds');  // e.g. 10
   const trainingProfile = url.searchParams.get('trainingProfile'); // e.g. full
   const expectedRounds = rounds && /^\d+$/.test(rounds) ? Math.max(1, parseInt(rounds, 10)) : 10;
   const startTs = Date.now();
-  const candidatePrefix = normalizeSlugCandidate(mode === 'single' ? handle : skill);
+  const candidatePrefix = normalizeSlugCandidate(handle || sourceFileName || source || sourceNote);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -151,17 +154,32 @@ export async function GET(req: Request) {
       // Build CLI args
       const { repoRoot, cliEntry } = resolveCliEntry();
       const args = [cliEntry, 'create'];
+      const normalizedHandle = (handle ?? '').replace(/^@/, '').trim();
+      const normalizedSource = String(source ?? '').trim();
+      const extractedHandle = extractHandleFromSource(normalizedSource);
+      let target = '';
+      if (normalizedHandle) {
+        target = `@${normalizedHandle}`;
+      } else if (extractedHandle) {
+        target = `@${extractedHandle}`;
+      } else if (normalizedSource) {
+        target = normalizedSource;
+      } else if (sourceFileName?.trim()) {
+        target = normalizeFallbackTarget(sourceFileName);
+      } else if (sourceNote?.trim()) {
+        target = normalizeFallbackTarget(sourceNote);
+      }
 
-      if (mode === 'single' && handle) {
-        args.push(`@${handle}`, '--yes');
-      } else if (mode === 'fusion' && skill) {
-        args.push('--skill', skill, '--yes');
-      } else {
-        send('❌ 参数错误：请提供 handle 或 skill');
+      if (mode !== 'single') {
+        send('⚠ 当前页面仅支持单人蒸馏，已忽略非 single 模式请求。');
+      }
+      if (!target) {
+        send('❌ 参数错误：请提供账号或素材链接/说明');
         sendEvent('done', { success: false });
         controller.close();
         return;
       }
+      args.push(target, '--yes');
 
       if (rounds && /^\d+$/.test(rounds)) {
         args.push('--rounds', rounds);
@@ -170,7 +188,10 @@ export async function GET(req: Request) {
         args.push('--training-profile', trainingProfile.toLowerCase());
       }
 
-      send(`▶ 启动构建：${mode === 'single' ? `@${handle}` : skill}`);
+      if (inputType !== 'account') {
+        send(`ℹ 输入方式：${inputType}${sourceFileName ? ` · ${sourceFileName}` : ''}`);
+      }
+      send(`▶ 启动构建：${target}`);
       emitProgress({ stage: 'init', stageLabel: '初始化任务', percent: 3 });
 
       const child = spawn(process.execPath, args, {
@@ -325,4 +346,23 @@ function resolveRecentSlug(candidatePrefix: string, startTs: number): string | n
     if (matched) return matched.slug;
   }
   return recent[0]?.slug ?? null;
+}
+
+function extractHandleFromSource(source: string): string {
+  if (!source) return '';
+  const fromAt = source.match(/@([a-zA-Z0-9_]{2,30})/);
+  if (fromAt) return fromAt[1];
+  const fromUrl = source.match(/(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]{2,30})/i);
+  if (fromUrl) return fromUrl[1];
+  return '';
+}
+
+function normalizeFallbackTarget(raw: string): string {
+  const cleaned = String(raw)
+    .replace(/\.[a-z0-9]+$/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+  return `@${cleaned || 'persona-source'}`;
 }

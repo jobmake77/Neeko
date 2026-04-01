@@ -2,12 +2,12 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { AtSign, Lightbulb, ArrowRight, ArrowLeft, Check, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { AtSign, FileArchive, FileText, Video, ArrowRight, ArrowLeft, Check, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-type Mode = 'single' | 'fusion' | null;
 type BuildStatus = 'idle' | 'running' | 'success' | 'error';
 type CultivationMode = 'quick' | 'full';
+type InputType = 'account' | 'text' | 'media' | 'archive';
 type BuildProgress = {
   stage: string;
   stageLabel: string;
@@ -53,10 +53,13 @@ function formatDuration(sec: number): string {
 
 export default function CreatePage() {
   const router = useRouter();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [mode, setMode] = useState<Mode>(null);
+  const [step, setStep] = useState<1 | 2>(1);
+  const mode = 'single';
+  const [inputType, setInputType] = useState<InputType>('account');
   const [handle, setHandle] = useState('');
-  const [skill, setSkill] = useState('');
+  const [sourceLink, setSourceLink] = useState('');
+  const [sourceNote, setSourceNote] = useState('');
+  const [sourceFileName, setSourceFileName] = useState('');
   const [cultivationMode, setCultivationMode] = useState<CultivationMode>('quick');
 
   // Build state
@@ -92,9 +95,15 @@ export default function CreatePage() {
       etaMax: cultivationMode === 'quick' ? 30 : 90,
     });
 
-    const params = new URLSearchParams({ mode: mode! });
-    if (mode === 'single') params.set('handle', handle.replace(/^@/, ''));
-    else params.set('skill', skill);
+    const params = new URLSearchParams({ mode });
+    params.set('inputType', inputType);
+    if (inputType === 'account') {
+      params.set('handle', handle.replace(/^@/, ''));
+    } else {
+      if (sourceLink.trim()) params.set('source', sourceLink.trim());
+      if (sourceNote.trim()) params.set('sourceNote', sourceNote.trim());
+      if (sourceFileName.trim()) params.set('sourceFileName', sourceFileName.trim());
+    }
     params.set('rounds', cultivationMode === 'quick' ? '3' : '10');
     params.set('trainingProfile', 'full');
 
@@ -133,6 +142,18 @@ export default function CreatePage() {
     };
   }
 
+  function currentSourceLabel(): string {
+    if (inputType === 'account') return `@${handle}`;
+    if (sourceFileName.trim()) return sourceFileName.trim();
+    if (sourceLink.trim()) return sourceLink.trim();
+    return sourceNote.trim() || '未命名素材';
+  }
+
+  function canProceed(): boolean {
+    if (inputType === 'account') return handle.trim().length > 0;
+    return sourceLink.trim().length > 0 || sourceNote.trim().length > 0 || sourceFileName.trim().length > 0;
+  }
+
   // ── Building view ─────────────────────────────────────────────────────────
   if (buildStatus !== 'idle') {
     return (
@@ -144,7 +165,7 @@ export default function CreatePage() {
             {buildStatus === 'error' && '构建失败'}
           </h1>
           <p className="text-[14px] text-[oklch(0.55_0_0)] mt-1">
-            {mode === 'single' ? `@${handle}` : skill}
+            {currentSourceLabel()}
           </p>
         </div>
 
@@ -237,7 +258,7 @@ export default function CreatePage() {
           )}
           {buildStatus === 'error' && (
             <button
-              onClick={() => { setBuildStatus('idle'); setLogs([]); setStep(3); }}
+              onClick={() => { setBuildStatus('idle'); setLogs([]); setStep(2); }}
               className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-[oklch(0.88_0_0)] text-[13.5px] text-[oklch(0.4_0_0)] hover:bg-[oklch(0.97_0_0)] transition-colors"
             >
               <ArrowLeft className="w-4 h-4" /> 返回重试
@@ -267,7 +288,7 @@ export default function CreatePage() {
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 mb-8">
-        {[1, 2, 3].map((s) => (
+        {[1, 2].map((s) => (
           <div key={s} className="flex items-center gap-2">
             <div className={cn(
               'w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-semibold transition-colors',
@@ -283,74 +304,69 @@ export default function CreatePage() {
               'text-[13px]',
               step === s ? 'text-[oklch(0.2_0_0)] font-medium' : 'text-[oklch(0.6_0_0)]'
             )}>
-              {s === 1 ? '选择模式' : s === 2 ? '配置来源' : '开始构建'}
+              {s === 1 ? '配置来源' : '开始构建'}
             </span>
-            {s < 3 && <div className="w-8 h-px bg-[oklch(0.88_0_0)]" />}
+            {s < 2 && <div className="w-8 h-px bg-[oklch(0.88_0_0)]" />}
           </div>
         ))}
       </div>
 
       {/* Step 1 */}
       {step === 1 && (
-        <div className="space-y-4">
-          <p className="text-[14px] text-[oklch(0.4_0_0)] font-medium mb-4">选择创建方式</p>
-
-          <button
-            onClick={() => { setMode('single'); setStep(2); }}
-            className={cn(
-              'w-full text-left p-5 rounded-2xl border-2 transition-all',
-              mode === 'single'
-                ? 'border-[oklch(0.72_0.18_142)] bg-[oklch(0.97_0.02_142)]'
-                : 'border-[oklch(0.9_0_0)] bg-white hover:border-[oklch(0.8_0.05_142)]'
-            )}
-          >
-            <div className="flex items-start gap-4">
-              <div className="w-10 h-10 rounded-xl bg-[oklch(0.94_0.05_142)] flex items-center justify-center flex-shrink-0">
-                <AtSign className="w-5 h-5 text-[oklch(0.4_0.15_142)]" />
-              </div>
-              <div>
-                <p className="font-semibold text-[15px] text-[oklch(0.2_0_0)]">单人蒸馏 Path A</p>
-                <p className="text-[13px] text-[oklch(0.55_0_0)] mt-1">
-                  输入目标人物的 Twitter 账号，通过 <code className="bg-[oklch(0.93_0_0)] px-1 rounded text-[12px]">opencli</code> 复用浏览器登录状态免 API 抓取推文。
-                </p>
-                <p className="text-[12px] text-[oklch(0.65_0_0)] mt-2">
-                  ✦ 无需 Twitter API Key · 复用 Chrome 已登录状态
-                </p>
-              </div>
-            </div>
-          </button>
-
-          <button
-            onClick={() => { setMode('fusion'); setStep(2); }}
-            className={cn(
-              'w-full text-left p-5 rounded-2xl border-2 transition-all',
-              mode === 'fusion'
-                ? 'border-[oklch(0.72_0.18_142)] bg-[oklch(0.97_0.02_142)]'
-                : 'border-[oklch(0.9_0_0)] bg-white hover:border-[oklch(0.8_0.05_142)]'
-            )}
-          >
-            <div className="flex items-start gap-4">
-              <div className="w-10 h-10 rounded-xl bg-[oklch(0.94_0.08_60)] flex items-center justify-center flex-shrink-0">
-                <Lightbulb className="w-5 h-5 text-[oklch(0.5_0.15_60)]" />
-              </div>
-              <div>
-                <p className="font-semibold text-[15px] text-[oklch(0.2_0_0)]">能力融合 Path B</p>
-                <p className="text-[13px] text-[oklch(0.55_0_0)] mt-1">
-                  输入目标技能，AI 自动拆解能力维度并推荐多位专家数据源，融合为复合型 Persona。
-                </p>
-                <p className="text-[12px] text-[oklch(0.65_0_0)] mt-2">
-                  适合：无明确标杆、需要组合多方经验的场景
-                </p>
-              </div>
-            </div>
-          </button>
-        </div>
-      )}
-
-      {/* Step 2 */}
-      {step === 2 && (
         <div className="space-y-5">
-          {mode === 'single' ? (
+          <p className="text-[14px] text-[oklch(0.4_0_0)] font-medium">单人蒸馏（Path A）</p>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setInputType('account')}
+              className={cn(
+                'w-full text-left p-4 rounded-xl border transition-all',
+                inputType === 'account'
+                  ? 'border-[oklch(0.72_0.18_142)] bg-[oklch(0.97_0.02_142)]'
+                  : 'border-[oklch(0.9_0_0)] bg-white hover:border-[oklch(0.8_0.05_142)]'
+              )}
+            >
+              <p className="text-[13px] font-medium flex items-center gap-2"><AtSign className="w-4 h-4" />账号</p>
+              <p className="text-[12px] text-[oklch(0.58_0_0)] mt-1">X/Twitter 账号</p>
+            </button>
+            <button
+              onClick={() => setInputType('text')}
+              className={cn(
+                'w-full text-left p-4 rounded-xl border transition-all',
+                inputType === 'text'
+                  ? 'border-[oklch(0.72_0.18_142)] bg-[oklch(0.97_0.02_142)]'
+                  : 'border-[oklch(0.9_0_0)] bg-white hover:border-[oklch(0.8_0.05_142)]'
+              )}
+            >
+              <p className="text-[13px] font-medium flex items-center gap-2"><FileText className="w-4 h-4" />文本</p>
+              <p className="text-[12px] text-[oklch(0.58_0_0)] mt-1">文章/长文链接</p>
+            </button>
+            <button
+              onClick={() => setInputType('media')}
+              className={cn(
+                'w-full text-left p-4 rounded-xl border transition-all',
+                inputType === 'media'
+                  ? 'border-[oklch(0.72_0.18_142)] bg-[oklch(0.97_0.02_142)]'
+                  : 'border-[oklch(0.9_0_0)] bg-white hover:border-[oklch(0.8_0.05_142)]'
+              )}
+            >
+              <p className="text-[13px] font-medium flex items-center gap-2"><Video className="w-4 h-4" />影音</p>
+              <p className="text-[12px] text-[oklch(0.58_0_0)] mt-1">视频/播客链接</p>
+            </button>
+            <button
+              onClick={() => setInputType('archive')}
+              className={cn(
+                'w-full text-left p-4 rounded-xl border transition-all',
+                inputType === 'archive'
+                  ? 'border-[oklch(0.72_0.18_142)] bg-[oklch(0.97_0.02_142)]'
+                  : 'border-[oklch(0.9_0_0)] bg-white hover:border-[oklch(0.8_0.05_142)]'
+              )}
+            >
+              <p className="text-[13px] font-medium flex items-center gap-2"><FileArchive className="w-4 h-4" />压缩包</p>
+              <p className="text-[12px] text-[oklch(0.58_0_0)] mt-1">素材包链接/标识</p>
+            </button>
+          </div>
+
+          {inputType === 'account' && (
             <div>
               <label className="block text-[14px] font-medium text-[oklch(0.3_0_0)] mb-2">
                 Twitter / X 账号
@@ -365,36 +381,53 @@ export default function CreatePage() {
                 />
               </div>
               <p className="text-[12px] text-[oklch(0.65_0_0)] mt-2">
-                通过 <code className="bg-[oklch(0.93_0_0)] px-1 rounded">opencli</code> 复用 Chrome 登录状态抓取推文，无需 API Key。请确保 Chrome 已登录 X.com。
+                通过 <code className="bg-[oklch(0.93_0_0)] px-1 rounded">opencli</code> 抓取公开内容。
               </p>
             </div>
-          ) : (
-            <div>
-              <label className="block text-[14px] font-medium text-[oklch(0.3_0_0)] mb-2">
-                目标技能或角色
-              </label>
-              <input
-                value={skill}
-                onChange={(e) => setSkill(e.target.value)}
-                placeholder="例如：全栈工程师、产品经理、股票分析师..."
-                className="w-full px-4 py-3 bg-white border border-[oklch(0.88_0_0)] rounded-xl text-[15px] outline-none focus:ring-2 focus:ring-[oklch(0.72_0.18_142)] transition-all"
-              />
-              <p className="text-[12px] text-[oklch(0.65_0_0)] mt-2">
-                AI 会自动拆解能力维度并推荐数据源供你确认
-              </p>
-            </div>
+          )}
+          {inputType !== 'account' && (
+            <>
+              <div>
+                <label className="block text-[14px] font-medium text-[oklch(0.3_0_0)] mb-2">
+                  素材链接
+                </label>
+                <input
+                  value={sourceLink}
+                  onChange={(e) => setSourceLink(e.target.value)}
+                  placeholder={inputType === 'archive' ? 'https://.../material.zip' : 'https://...'}
+                  className="w-full px-4 py-3 bg-white border border-[oklch(0.88_0_0)] rounded-xl text-[15px] outline-none focus:ring-2 focus:ring-[oklch(0.72_0.18_142)] transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-[14px] font-medium text-[oklch(0.3_0_0)] mb-2">
+                  素材说明（可选）
+                </label>
+                <textarea
+                  value={sourceNote}
+                  onChange={(e) => setSourceNote(e.target.value)}
+                  placeholder="例如：访谈合集、公开视频转写、推文导出包..."
+                  rows={3}
+                  className="w-full px-4 py-3 bg-white border border-[oklch(0.88_0_0)] rounded-xl text-[14px] outline-none focus:ring-2 focus:ring-[oklch(0.72_0.18_142)] transition-all resize-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[14px] font-medium text-[oklch(0.3_0_0)] mb-2">
+                  压缩包文件名（可选）
+                </label>
+                <input
+                  value={sourceFileName}
+                  onChange={(e) => setSourceFileName(e.target.value)}
+                  placeholder="materials.zip"
+                  className="w-full px-4 py-3 bg-white border border-[oklch(0.88_0_0)] rounded-xl text-[15px] outline-none focus:ring-2 focus:ring-[oklch(0.72_0.18_142)] transition-all"
+                />
+              </div>
+            </>
           )}
 
           <div className="flex gap-3 pt-2">
             <button
-              onClick={() => setStep(1)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[oklch(0.88_0_0)] text-[13.5px] text-[oklch(0.4_0_0)] hover:bg-[oklch(0.97_0_0)] transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" /> 返回
-            </button>
-            <button
-              onClick={() => setStep(3)}
-              disabled={mode === 'single' ? !handle.trim() : !skill.trim()}
+              onClick={() => setStep(2)}
+              disabled={!canProceed()}
               className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[oklch(0.15_0_0)] text-white text-[13.5px] font-medium hover:bg-[oklch(0.25_0_0)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               下一步 <ArrowRight className="w-4 h-4" />
@@ -404,18 +437,24 @@ export default function CreatePage() {
       )}
 
       {/* Step 3 */}
-      {step === 3 && (
+      {step === 2 && (
         <div className="space-y-5">
           <div className="bg-white rounded-2xl border border-[oklch(0.91_0_0)] p-5 space-y-3">
             <p className="text-[13px] font-medium text-[oklch(0.4_0_0)]">构建配置</p>
             <div className="space-y-2 text-[14px]">
               <div className="flex justify-between">
                 <span className="text-[oklch(0.6_0_0)]">模式</span>
-                <span className="font-medium">{mode === 'single' ? '单人蒸馏' : '能力融合'}</span>
+                <span className="font-medium">单人蒸馏</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[oklch(0.6_0_0)]">{mode === 'single' ? '目标账号' : '目标技能'}</span>
-                <span className="font-medium">{mode === 'single' ? `@${handle}` : skill}</span>
+                <span className="text-[oklch(0.6_0_0)]">输入类型</span>
+                <span className="font-medium">
+                  {inputType === 'account' ? '账号' : inputType === 'text' ? '文本' : inputType === 'media' ? '影音' : '压缩包'}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-[oklch(0.6_0_0)]">素材</span>
+                <span className="font-medium text-right break-all">{currentSourceLabel()}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-[oklch(0.6_0_0)]">预计花费</span>
@@ -463,7 +502,7 @@ export default function CreatePage() {
 
           <div className="flex gap-3">
             <button
-              onClick={() => setStep(2)}
+              onClick={() => setStep(1)}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[oklch(0.88_0_0)] text-[13.5px] text-[oklch(0.4_0_0)] hover:bg-[oklch(0.97_0_0)] transition-colors"
             >
               <ArrowLeft className="w-4 h-4" /> 返回

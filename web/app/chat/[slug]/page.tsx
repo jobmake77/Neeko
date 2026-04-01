@@ -173,7 +173,12 @@ export default function ChatPage({ params }: { params: Promise<{ slug: string }>
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={cn('flex gap-3', msg.role === 'user' ? 'justify-end' : 'justify-start')}
+              className={cn(
+                'flex gap-3 rounded-2xl border p-2.5',
+                msg.role === 'user'
+                  ? 'justify-end border-[oklch(0.88_0.01_250)] bg-[oklch(0.985_0.005_250)]'
+                  : 'justify-start border-[oklch(0.9_0_0)] bg-[oklch(0.99_0_0)]'
+              )}
             >
               {msg.role === 'assistant' && (
                 <div

@@ -69,9 +69,16 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   if (target) {
     // Single-person distill (Path A): nico create @elonmusk
     mode = 'single';
-    handle = target.replace(/^@/, '');
-    displayName = handle;
-    sourceTargets = [handle];
+    const normalizedTarget = target.trim();
+    if (looksLikeUrl(normalizedTarget)) {
+      handle = undefined;
+      displayName = deriveDisplayNameFromSource(normalizedTarget);
+      sourceTargets = [normalizedTarget];
+    } else {
+      handle = normalizedTarget.replace(/^@/, '');
+      displayName = handle;
+      sourceTargets = [handle];
+    }
   } else if (options.skill) {
     // Capability fusion (Path B): nico create --skill "全栈工程师"
     mode = 'fusion';
@@ -161,7 +168,7 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   }
 
   // ── 检查 opencli 可用性 ────────────────────────────────────────────────────
-  if (mode === 'single') {
+  if (mode === 'single' && handle) {
     const version = checkOpenCli();
     if (!version) {
       p.note(
@@ -179,6 +186,8 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
     } else {
       p.log.info(`opencli ${version} 已就绪，将通过浏览器免 API 抓取推文`);
     }
+  } else if (mode === 'single') {
+    p.log.info('单人蒸馏将使用外部素材链接进行提炼（跳过 Twitter 抓取）。');
   }
 
   let currentSoul = soul;
@@ -385,6 +394,19 @@ export async function cmdCreate(target: string | undefined, options: { skill?: s
   );
 }
 
+function looksLikeUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input);
+}
+
+function deriveDisplayNameFromSource(source: string): string {
+  try {
+    const u = new URL(source);
+    const lastSegment = u.pathname.split('/').filter(Boolean).pop();
+    return (lastSegment && lastSegment.length >= 2 ? lastSegment : u.hostname).replace(/[^a-zA-Z0-9_-]/g, '-');
+  } catch {
+    return 'source-persona';
+  }
+}
 function normalizeTrainingProfile(raw?: string): TrainingProfile {
   const fallback = String(settings.get('defaultTrainingProfile') ?? 'full').toLowerCase();
   const value = String(raw ?? fallback).toLowerCase();

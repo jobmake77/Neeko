@@ -3,6 +3,7 @@ import { intro, outro, text, password, select } from '@clack/prompts';
 import chalk from 'chalk';
 import { settings } from '../../config/settings.js';
 import { TrainingProfile } from '../../core/training/types.js';
+import { InputRoutingStrategy, normalizeInputRoutingStrategy } from '../../core/pipeline/evidence-routing.js';
 
 export async function cmdConfig(options: {
   apiKey?: string;
@@ -10,6 +11,7 @@ export async function cmdConfig(options: {
   deepseekKey?: string;
   qdrantUrl?: string;
   trainingProfile?: string;
+  inputRouting?: string;
   show?: boolean;
 }): Promise<void> {
   if (options.show) {
@@ -51,9 +53,14 @@ export async function cmdConfig(options: {
     settings.set('defaultTrainingProfile', profile);
     console.log(chalk.green(`✓ Default training profile saved: ${profile}`));
   }
+  if (options.inputRouting) {
+    const strategy = normalizeInputRouting(options.inputRouting);
+    settings.set('defaultInputRoutingStrategy', strategy);
+    console.log(chalk.green(`✓ Default input routing saved: ${strategy}`));
+  }
 
   // If no flags provided, run interactive config
-  if (!options.apiKey && !options.openaiKey && !options.deepseekKey && !options.qdrantUrl && !options.trainingProfile && !options.show) {
+  if (!options.apiKey && !options.openaiKey && !options.deepseekKey && !options.qdrantUrl && !options.trainingProfile && !options.inputRouting && !options.show) {
     intro(chalk.bold.cyan('✦ Nico Configuration'));
 
     const anthropicKey = await password({
@@ -102,6 +109,18 @@ export async function cmdConfig(options: {
       settings.set('defaultTrainingProfile', normalizeTrainingProfile(trainingProfile as string));
     }
 
+    const inputRouting = await select({
+      message: 'Default input routing',
+      options: [
+        { value: 'legacy', label: 'legacy (recommended default)' },
+        { value: 'v2', label: 'v2 (evidence routing preview)' },
+      ],
+      initialValue: normalizeInputRouting(String(settings.get('defaultInputRoutingStrategy') ?? 'legacy')),
+    });
+    if (!p.isCancel(inputRouting)) {
+      settings.set('defaultInputRoutingStrategy', normalizeInputRouting(inputRouting as string));
+    }
+
     outro(chalk.green('✓ Configuration saved'));
   }
 }
@@ -112,4 +131,8 @@ function normalizeTrainingProfile(raw: string): TrainingProfile {
     return value;
   }
   return 'full';
+}
+
+function normalizeInputRouting(raw: string): InputRoutingStrategy {
+  return normalizeInputRoutingStrategy(raw, 'legacy');
 }

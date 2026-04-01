@@ -10,6 +10,7 @@ export type FailureTag =
   | 'provider_timeout'
   | 'fetch_error'
   | 'parse_drift'
+  | 'schema_incompat'
   | 'reward_instability'
   | 'lock_stale'
   | 'data_conflict'

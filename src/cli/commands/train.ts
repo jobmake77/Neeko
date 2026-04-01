@@ -33,6 +33,8 @@ import { ReplayBuffer } from '../../core/training/replay.js';
 import { CheckpointStore } from '../../core/training/checkpoint.js';
 import { createFailureLedgerEntry, classifyFailure } from '../../core/training/failure-loop.js';
 import { runTrainingOrchestrator } from '../../core/training/orchestrator.js';
+import { runModelPreflight } from '../../core/training/preflight.js';
+import { normalizeInputRoutingStrategy } from '../../core/pipeline/evidence-routing.js';
 
 interface TrainRuntimeContext {
   dir: string;
@@ -43,12 +45,38 @@ interface TrainRuntimeContext {
   rounds: number;
   profile: TrainingProfile;
   store: MemoryStore;
-  spin: ReturnType<typeof spinner>;
+  spin: {
+    start: (msg: string) => void;
+    stop: (msg?: string) => void;
+    message: (msg: string) => void;
+  };
   replay: ReplayBuffer;
   checkpointStore: CheckpointStore;
   assetPaths: ReturnType<typeof getTrainingAssetPaths>;
   skillMetrics: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number };
   errorLedger: ErrorLedgerEntry[];
+}
+
+const TRACK_STAGE_TIMEOUT_MS = Number(process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? 180_000);
+const TRACK_BUDGET_MS = Number(process.env.NEEKO_TRAIN_TRACK_BUDGET_MS ?? 540_000);
+const TRACK_HEARTBEAT_MS = Number(process.env.NEEKO_TRAIN_TRACK_HEARTBEAT_MS ?? 10_000);
+const PROVIDER_TIMEOUT_RETRY_MAX = Number(process.env.NEEKO_RETRY_PROVIDER_TIMEOUT_MAX ?? 1);
+const PARSE_DRIFT_RETRY_MAX = Number(process.env.NEEKO_RETRY_PARSE_DRIFT_MAX ?? 1);
+const NO_SPINNER = process.env.NEEKO_NO_SPINNER === '1' || process.env.CI === '1' || !process.stdout.isTTY;
+
+function createTrainSpinner() {
+  if (!NO_SPINNER) return spinner();
+  return {
+    start(msg: string) {
+      console.log(msg);
+    },
+    stop(msg?: string) {
+      if (msg) console.log(msg);
+    },
+    message(msg: string) {
+      console.log(msg);
+    },
+  };
 }
 
 export async function cmdTrain(
@@ -57,6 +85,7 @@ export async function cmdTrain(
     rounds?: string;
     mode?: string;
     trainingProfile?: string;
+    inputRouting?: string;
     retries?: string;
     track?: string;
     fromCheckpoint?: string;
@@ -79,8 +108,12 @@ export async function cmdTrain(
   const mode = normalizeMode(options.mode, rounds);
   const retries = resolveRetries(options.retries);
   const track = normalizeTrack(options.track);
+  const inputRouting = normalizeInputRoutingStrategy(
+    options.inputRouting,
+    normalizeInputRoutingStrategy(String(settings.get('defaultInputRoutingStrategy') ?? 'legacy'))
+  );
 
-  const spin = spinner();
+  const spin = createTrainSpinner();
   const store = new MemoryStore({
     qdrantUrl: settings.get('qdrantUrl'),
     qdrantApiKey: settings.get('qdrantApiKey'),
@@ -93,6 +126,14 @@ export async function cmdTrain(
     throw new Error('Qdrant 不可达，无法继续培养。请先启动 Qdrant。');
   }
 
+  const preflight = await runModelPreflight({
+    timeoutMs: Number(process.env.NEEKO_PREFLIGHT_TRAIN_TIMEOUT_MS ?? process.env.NEEKO_PREFLIGHT_TIMEOUT_MS ?? 20_000),
+    requireStructured: true,
+  });
+  if (!preflight.ok) {
+    throw new Error(`模型预检失败（耗时 ${preflight.latencyMs}ms）：${preflight.reason ?? 'unknown'}`);
+  }
+
   persona.status = 'training';
   persistPersonaAndSoul(dir, persona, soul);
 
@@ -102,6 +143,9 @@ export async function cmdTrain(
   const errorLedger = readJsonFile<ErrorLedgerEntry[]>(assetPaths.errorLedgerPath, []);
 
   spin.start(`继续培养 ${slug}（${rounds} 轮，profile=${profile}，track=${track}）...`);
+  if (inputRouting !== 'legacy') {
+    spin.message(`输入路由策略已设置为 ${inputRouting}，当前训练链路不会重新摄取输入，保留现有 persona 数据。`);
+  }
 
   writeTrainingContext(contextPath, {
     state: 'running',
@@ -201,14 +245,20 @@ async function runTrackWithRecovery(
   };
 
   let lastError: unknown;
-  let recoveries = 0;
-  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+  const deadline = Date.now() + TRACK_BUDGET_MS;
+  for (let attempt = 1; ; attempt++) {
+    if (Date.now() >= deadline) {
+      throw new Error(`track ${track} budget timeout after ${TRACK_BUDGET_MS}ms`);
+    }
     try {
-      return await runOnce();
+      return await runWithTrackHeartbeat(runtime, track, () =>
+        withTimeout(runOnce(), TRACK_STAGE_TIMEOUT_MS, `track ${track}`)
+      );
     } catch (error) {
       lastError = error;
       const resolution = classifyFailure(error);
-      const recovered = resolution.retryable && attempt <= retries;
+      const retryLimit = retryLimitForTag(resolution.tag, retries);
+      const recovered = resolution.retryable && attempt <= retryLimit && Date.now() < deadline;
       runtime.errorLedger.push(
         createFailureLedgerEntry({
           slug: runtime.persona.slug,
@@ -219,8 +269,10 @@ async function runTrackWithRecovery(
         })
       );
       if (!recovered) break;
-      recoveries++;
-      runtime.spin.message(`阶段失败(${resolution.tag})，执行恢复策略 ${resolution.recoveryAction}（${attempt}/${retries + 1}）`);
+      if (resolution.tag === 'parse_drift') {
+        process.env.NEEKO_RELAXED_SCHEMA_MODE = '1';
+      }
+      runtime.spin.message(`阶段失败(${resolution.tag})，执行恢复策略 ${resolution.recoveryAction}（${attempt}/${retryLimit + 1}）`);
       await sleep(800 * attempt);
     }
   }
@@ -524,6 +576,10 @@ function normalizeTrack(rawTrack?: string): StartTrackType {
 }
 
 function resolveRounds(rawRounds?: string, rawMode?: string): number {
+  if (rawRounds !== undefined) {
+    const explicit = parseInt(rawRounds, 10);
+    if (!Number.isNaN(explicit)) return Math.max(1, explicit);
+  }
   const mode = String(rawMode ?? '').toLowerCase();
   if (mode === 'quick') return 3;
   if (mode === 'full') return 10;
@@ -536,6 +592,13 @@ function resolveRetries(raw?: string): number {
   const parsed = parseInt(raw ?? '2', 10);
   if (Number.isNaN(parsed)) return 2;
   return Math.max(0, Math.min(parsed, 5));
+}
+
+function retryLimitForTag(tag: string, configuredRetries: number): number {
+  if (tag === 'provider_timeout') return Math.min(configuredRetries, Math.max(0, PROVIDER_TIMEOUT_RETRY_MAX));
+  if (tag === 'parse_drift') return Math.min(configuredRetries, Math.max(0, PARSE_DRIFT_RETRY_MAX));
+  if (tag === 'schema_incompat') return 0;
+  return configuredRetries;
 }
 
 function readExistingRounds(reportPath: string): TrainingRoundSnapshot[] {
@@ -689,4 +752,43 @@ function p95(values: number[]): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runWithTrackHeartbeat<T>(
+  runtime: TrainRuntimeContext,
+  track: TrackType,
+  task: () => Promise<T>
+): Promise<T> {
+  const timer = setInterval(() => {
+    writeTrainingContext(runtime.contextPath, {
+      state: 'running',
+      slug: runtime.persona.slug,
+      profile: runtime.profile,
+      requested_rounds: runtime.rounds,
+      completed_rounds: runtime.soul.training_rounds_completed,
+      updated_at: new Date().toISOString(),
+      report_path: runtime.reportPath,
+      track,
+    });
+  }, TRACK_HEARTBEAT_MS);
+
+  try {
+    return await task();
+  } finally {
+    clearInterval(timer);
+  }
 }

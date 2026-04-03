@@ -139,19 +139,30 @@ async function* streamJsonArrayEvents(filePath: string): AsyncGenerator<ChatMess
 }
 
 function normalizeChatEvent(value: Record<string, unknown>): ChatMessageEvent | null {
-  const content = String(value.content ?? value.text ?? '').trim();
+  const content = String(value.content ?? value.text ?? value.message ?? value.body ?? '').trim();
   if (!content) return null;
   const timestamp = safeIso(value.timestamp ?? value.time ?? value.created_at);
+  const sender = String(
+    value.sender ??
+    value.author ??
+    value.name ??
+    value.sender_name ??
+    value.nickname ??
+    value.from ??
+    'unknown'
+  );
+  const eventType = optionalString(value.type ?? value.message_type ?? value.msg_type);
+  const boundaryByType = eventType ? /system|meta|separator|notification/i.test(eventType) : false;
   return {
     id: crypto.randomUUID(),
-    sender: String(value.sender ?? value.author ?? value.name ?? 'unknown'),
+    sender,
     content,
     timestamp,
     conversation_id: optionalString(value.conversation_id ?? value.thread_id ?? value.chat_id),
     metadata: {
       ...value,
     },
-    system_boundary: isSystemBoundary(content),
+    system_boundary: boundaryByType || isSystemBoundary(content),
   };
 }
 

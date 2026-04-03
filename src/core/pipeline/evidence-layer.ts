@@ -157,14 +157,22 @@ export function buildStandaloneEvidenceBatch(
   const resolver = options.manifest ? new SpeakerResolver(options.manifest) : null;
   const sceneClassifier = new SceneClassifier(options.manifest);
   const items: EvidenceItem[] = docs.map((doc) => {
+    const videoSpeaker = doc.source_type === 'video'
+      ? resolveVideoEvidenceSpeaker(doc, resolver, options.manifest)
+      : null;
     const resolvedSpeaker = resolver?.resolveSpeaker(doc.author);
     const speaker =
-      resolvedSpeaker && resolvedSpeaker.role !== 'unknown'
+      videoSpeaker ??
+      ((resolvedSpeaker && resolvedSpeaker.role !== 'unknown')
         ? resolvedSpeaker
         : options.manifest
           ? { role: 'target' as EvidenceSpeakerRole, confidence: doc.source_type === 'article' ? 0.72 : 0.88 }
-          : { role: 'target' as EvidenceSpeakerRole, confidence: 0.9 };
+          : { role: 'target' as EvidenceSpeakerRole, confidence: 0.9 });
     const scene = sceneClassifier.classify({ content: doc.content }, doc.source_type);
+    const transcriptBounds = resolveTranscriptBounds(doc);
+    const transcriptSessionId = resolveTranscriptSessionId(doc);
+    const transcriptConversationId = optionalString(doc.metadata?.conversation_id) ?? transcriptSessionId;
+    const speakerName = videoSpeaker?.speaker_name ?? doc.author;
     return {
       id: crypto.randomUUID(),
       raw_document_id: doc.id,
@@ -172,17 +180,17 @@ export function buildStandaloneEvidenceBatch(
       modality: doc.source_type === 'video' ? 'transcript' : 'text',
       content: doc.content,
       speaker_role: speaker.role,
-      speaker_name: doc.author,
+      speaker_name: speakerName,
       target_confidence: speaker.confidence,
       scene,
-      conversation_id: optionalString(doc.metadata?.conversation_id),
-      session_id: optionalString(doc.metadata?.session_id),
+      conversation_id: transcriptConversationId,
+      session_id: optionalString(doc.metadata?.session_id) ?? transcriptSessionId,
       window_role: 'standalone',
-      timestamp_start: doc.published_at,
-      timestamp_end: doc.published_at,
+      timestamp_start: transcriptBounds.timestamp_start ?? doc.published_at,
+      timestamp_end: transcriptBounds.timestamp_end ?? doc.published_at,
       context_before: [],
       context_after: [],
-      evidence_kind: inferEvidenceKind(doc.content),
+      evidence_kind: inferEvidenceKind(doc.content, doc.metadata),
       stability_hints: {
         repeated_count: 0,
         repeated_in_sessions: 0,
@@ -436,13 +444,88 @@ function mergeScenes(scenes: EvidenceScene[]): EvidenceScene {
   return 'unknown';
 }
 
-function inferEvidenceKind(content: string): EvidenceItem['evidence_kind'] {
+function inferEvidenceKind(content: string, metadata?: Record<string, unknown>): EvidenceItem['evidence_kind'] {
+  const nonverbalSignals = Array.isArray(metadata?.nonverbal_signals)
+    ? metadata.nonverbal_signals.filter(Boolean)
+    : [];
+  if (nonverbalSignals.length > 0) return 'behavior_signal';
   if (/\b(i prefer|我更喜欢|prefer|喜欢)\b/i.test(content)) return 'preference';
   if (/\b(i decided|决定|will do|选择)\b/i.test(content)) return 'decision';
   if (/\b(because|所以|原因|therefore)\b/i.test(content)) return 'explanation';
   if (/\b(always|never|should|must|原则)\b/i.test(content)) return 'behavior_signal';
   if (/\?/.test(content)) return 'reply';
   return 'statement';
+}
+
+function resolveVideoEvidenceSpeaker(
+  doc: RawDocument,
+  resolver: SpeakerResolver | null,
+  manifest?: TargetManifest
+): { role: EvidenceSpeakerRole; confidence: number; speaker_name: string } | null {
+  const metadata = doc.metadata ?? {};
+  const speakerSegments = Array.isArray(metadata.speaker_segments) ? metadata.speaker_segments : [];
+  const firstNamedSegment = speakerSegments.find((segment) => typeof segment === 'object' && segment !== null && resolveSpeakerName(segment));
+  const explicitSpeakerName =
+    resolveSpeakerName(firstNamedSegment) ??
+    optionalString(metadata.speaker_name) ??
+    optionalString(metadata.speaker) ??
+    (doc.author && doc.author !== 'unknown' ? doc.author : undefined);
+
+  if (!explicitSpeakerName) return null;
+  const explicitRole = optionalString(metadata.speaker_role) ?? optionalString((firstNamedSegment as Record<string, unknown> | undefined)?.role);
+  if (explicitRole === 'target' || explicitRole === 'self' || explicitRole === 'other' || explicitRole === 'unknown') {
+    return {
+      role: explicitRole,
+      confidence: explicitRole === 'target' ? 0.98 : explicitRole === 'unknown' ? 0.35 : 0.84,
+      speaker_name: explicitSpeakerName,
+    };
+  }
+
+  const resolved = resolver?.resolveSpeaker(explicitSpeakerName);
+  if (resolved) {
+    return {
+      ...resolved,
+      speaker_name: explicitSpeakerName,
+    };
+  }
+
+  if (manifest) {
+    return {
+      role: 'target',
+      confidence: 0.76,
+      speaker_name: explicitSpeakerName,
+    };
+  }
+
+  return {
+    role: 'unknown',
+    confidence: 0.35,
+    speaker_name: explicitSpeakerName,
+  };
+}
+
+function resolveSpeakerName(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  return optionalString(record.speaker_name) ?? optionalString(record.speaker) ?? optionalString(record.name);
+}
+
+function resolveTranscriptSessionId(doc: RawDocument): string | undefined {
+  const filename = optionalString(doc.metadata?.filename);
+  if (!filename) return undefined;
+  return `transcript:${filename}`;
+}
+
+function resolveTranscriptBounds(doc: RawDocument): { timestamp_start?: string; timestamp_end?: string } {
+  const startIso =
+    optionalIso(doc.metadata?.segment_start_iso) ??
+    optionalIso(doc.metadata?.timestamp_start) ??
+    undefined;
+  const endIso =
+    optionalIso(doc.metadata?.segment_end_iso) ??
+    optionalIso(doc.metadata?.timestamp_end) ??
+    undefined;
+  return { timestamp_start: startIso, timestamp_end: endIso };
 }
 
 function normalizeAlias(value: string): string {
@@ -456,6 +539,13 @@ function normalizeAlias(value: string): string {
 function optionalString(value: unknown): string | undefined {
   const text = String(value ?? '').trim();
   return text ? text : undefined;
+}
+
+function optionalIso(value: unknown): string | undefined {
+  const text = optionalString(value);
+  if (!text) return undefined;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 function fingerprintEvidence(content: string): string {

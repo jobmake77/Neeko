@@ -63,6 +63,30 @@ test('buildChatEvidenceBatchFromFile creates target-centered windows with contex
   assert.equal(batch.items[1].content.includes('document tradeoffs'), true);
 });
 
+test('buildChatEvidenceBatchFromFile accepts alternate chat export field names', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'neeko-evidence-alt-'));
+  const filePath = join(dir, 'chat.jsonl');
+  writeFileSync(
+    filePath,
+    [
+      JSON.stringify({ sender_name: 'Bob', message: 'Kickoff tomorrow?', timestamp: '2026-04-01T10:00:00Z' }),
+      JSON.stringify({ nickname: 'Alice', body: 'Yes, let us keep the plan lean.', created_at: '2026-04-01T10:01:00Z' }),
+      JSON.stringify({ type: 'system', message: 'Messages below are encrypted.' }),
+    ].join('\n'),
+    'utf-8'
+  );
+
+  const batch = await buildChatEvidenceBatchFromFile(filePath, {
+    manifest: manifest(),
+    sourceType: 'wechat',
+    sourceUrl: filePath,
+  });
+
+  assert.equal(batch.items.length, 1);
+  assert.equal(batch.items[0].speaker_name, 'Alice');
+  assert.equal(batch.stats.raw_messages, 3);
+});
+
 test('standalone and video evidence batches convert into routable documents', () => {
   const docs = [
     {
@@ -86,6 +110,36 @@ test('standalone and video evidence batches convert into routable documents', ()
   const routedDocs = convertEvidenceItemsToDocuments(batch.items, docs);
   assert.equal(batch.items[0].modality, 'transcript');
   assert.equal(routedDocs[0].metadata.evidence.modality, 'transcript');
+});
+
+test('video transcript evidence uses speaker and nonverbal metadata when present', () => {
+  const docs = [
+    {
+      id: '22222222-2222-4222-8222-222222222222',
+      source_type: 'video',
+      source_url: '/tmp/interview.mp4',
+      source_platform: 'local',
+      content: 'We should keep shipping and let the data teach us.',
+      author: 'unknown',
+      fetched_at: '2026-04-01T00:00:00.000Z',
+      metadata: {
+        filename: 'interview.mp4',
+        speaker_segments: [
+          { speaker_name: 'Alice', role: 'target', start_ms: 0, end_ms: 3200 },
+        ],
+        segment_start_ms: 0,
+        segment_end_ms: 3200,
+        nonverbal_signals: ['laugh'],
+        transcript_segment_id: 7,
+      },
+    },
+  ];
+
+  const batch = buildVideoTranscriptEvidenceBatch(docs, manifest());
+  assert.equal(batch.items[0].speaker_name, 'Alice');
+  assert.equal(batch.items[0].speaker_role, 'target');
+  assert.equal(batch.items[0].conversation_id, 'transcript:interview.mp4');
+  assert.equal(batch.items[0].evidence_kind, 'behavior_signal');
 });
 
 test('writeEvidenceArtifacts writes audit files', () => {

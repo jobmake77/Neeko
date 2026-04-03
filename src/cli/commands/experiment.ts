@@ -19,6 +19,10 @@ import {
   routeEvidenceDocuments,
 } from '../../core/pipeline/evidence-routing.js';
 import { SoulAggregator, SoulExtractor } from '../../core/soul/extractor.js';
+import {
+  resolveTrainingStrategy,
+  selectSoulChunksForStrategy,
+} from '../../core/training/strategy-resolver.js';
 
 export const DEFAULT_EXPERIMENT_PROFILES: TrainingProfile[] = ['baseline', 'a1', 'a2', 'a3', 'a4', 'full'];
 
@@ -41,6 +45,10 @@ interface InputRoutingComparisonRow {
   label: string;
   profile: TrainingProfile;
   input_routing: InputRoutingStrategy;
+  runtime_preset: string;
+  optimization_mode: string;
+  corpus_segment: string;
+  decision_reason: string;
   totalRounds: number;
   avgQuality: number;
   contradictionRate: number;
@@ -258,7 +266,8 @@ export async function cmdExperiment(
         chalk.dim(
           `  ${row.label.padEnd(12)} quality=${(row.avgQuality * 100).toFixed(1)}% ` +
           `contra=${(row.contradictionRate * 100).toFixed(1)}% coverage=${(row.coverage * 100).toFixed(1)}% ` +
-          `docs(s/m/d)=${row.observability.soul_docs}/${row.observability.memory_docs}/${row.observability.discard_docs}`
+          `docs(s/m/d)=${row.observability.soul_docs}/${row.observability.memory_docs}/${row.observability.discard_docs} ` +
+          `preset=${row.runtime_preset} opt=${row.optimization_mode}`
         )
       );
     }
@@ -307,6 +316,11 @@ async function runInputRoutingComparison(
       strategy,
       targetSignals: [basePersona.name, basePersona.handle ?? '', ...basePersona.source_targets],
     });
+    const strategyDecision = resolveTrainingStrategy({
+      inputRoutingStrategy: strategy,
+      observability: routed.observability,
+      rawDocCount: docs.length,
+    });
     const persona: Persona = {
       ...basePersona,
       id: crypto.randomUUID(),
@@ -317,15 +331,30 @@ async function runInputRoutingComparison(
     await store.ensureCollection(persona.memory_collection);
     const soulSeed = createEmptySoul(basePersona.name, basePersona.handle);
     let soul = soulSeed;
-    if (routed.soulChunks.length > 0) {
-      const batchSize = Math.min(routed.soulChunks.length, 30);
-      const extractions = await extractor.extractBatch(routed.soulChunks.slice(0, batchSize), basePersona.name);
-      soul = aggregator.aggregate(soulSeed, extractions, routed.soulChunks.slice(0, batchSize));
+    const selectedSoulChunks = selectSoulChunksForStrategy(
+      routed.soulChunks,
+      routed.routedDocs.map((item) => ({ document_id: item.doc.id, score: item.score })),
+      strategyDecision,
+      Math.min(routed.soulChunks.length, 30)
+    );
+    if (selectedSoulChunks.length > 0) {
+      const extractions = await extractor.extractBatch(selectedSoulChunks, basePersona.name, strategyDecision.extractionConcurrency, {
+        cacheEnabled: strategyDecision.extractorCacheEnabled,
+        cachePath: `/tmp/neeko-soul-cache-${slug}-${strategy}.json`,
+        timeoutMs: strategyDecision.extractionTimeoutMs,
+        retries: strategyDecision.extractionRetries,
+      });
+      soul = aggregator.aggregate(soulSeed, extractions, selectedSoulChunks);
     }
 
     const loop = new TrainingLoop(soul, persona, store);
     const result = await withTimeout(
-      loop.run({ maxRounds: rounds, profile }),
+      loop.run({
+        maxRounds: rounds,
+        profile,
+        runtimePreset: strategyDecision.runtimePreset,
+        evaluatorLayered: strategyDecision.evaluatorLayered,
+      }),
       EXPERIMENT_PROFILE_TIMEOUT_MS,
       `input routing ${strategy}`
     );
@@ -342,6 +371,10 @@ async function runInputRoutingComparison(
       label: `${profile}+${strategy}`,
       profile,
       input_routing: strategy,
+      runtime_preset: strategyDecision.runtimePreset,
+      optimization_mode: strategyDecision.optimizationMode,
+      corpus_segment: strategyDecision.corpusSegment,
+      decision_reason: strategyDecision.reason,
       totalRounds: result.totalRounds,
       avgQuality,
       contradictionRate,

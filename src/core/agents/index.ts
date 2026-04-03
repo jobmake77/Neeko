@@ -41,12 +41,59 @@ async function withRetry<T>(
       return await withTimeout(fn(), timeoutMs, options.label);
     } catch (error) {
       lastError = error;
-      if (attempt < retries) {
-        await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+      if (attempt < retries && shouldRetryProviderError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, computeRetryBackoffMs(attempt)));
       }
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function shouldRetryProviderError(error: unknown): boolean {
+  const message = String(error ?? '').toLowerCase();
+  return (
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('429') ||
+    message.includes('rate limit') ||
+    message.includes('overloaded') ||
+    message.includes('temporar') ||
+    message.includes('network') ||
+    message.includes('socket') ||
+    message.includes('econnreset') ||
+    message.includes('econnrefused') ||
+    message.includes('etimedout') ||
+    message.includes('enotfound') ||
+    message.includes('503') ||
+    message.includes('502') ||
+    message.includes('504') ||
+    message.includes('500') ||
+    message.includes('fetch failed') ||
+    message.includes('bad gateway') ||
+    message.includes('service unavailable')
+  );
+}
+
+function computeRetryBackoffMs(attempt: number): number {
+  const base = 900 * (attempt + 1);
+  const jitter = Math.min(700, attempt * 150);
+  return base + jitter;
+}
+
+const runtimeFallbackMetrics = {
+  trainerFallbacks: 0,
+  personaFallbacks: 0,
+  evaluatorFallbacks: 0,
+  directorFallbacks: 0,
+};
+
+export function snapshotAndResetAgentFallbackMetrics(): typeof runtimeFallbackMetrics {
+  const snapshot = { ...runtimeFallbackMetrics };
+  runtimeFallbackMetrics.trainerFallbacks = 0;
+  runtimeFallbackMetrics.personaFallbacks = 0;
+  runtimeFallbackMetrics.evaluatorFallbacks = 0;
+  runtimeFallbackMetrics.directorFallbacks = 0;
+  return snapshot;
 }
 
 // ─── Persona Agent ────────────────────────────────────────────────────────────
@@ -71,6 +118,9 @@ export class PersonaAgent {
       maxTokens?: number;
       timeoutMs?: number;
       retries?: number;
+      compactPrompt?: boolean;
+      memoryLimit?: number;
+      memoryMaxChars?: number;
     } = {}
   ): Promise<string> {
     const result = await this.respondWithMeta(userMessage, conversationHistory, options);
@@ -84,6 +134,9 @@ export class PersonaAgent {
       maxTokens?: number;
       timeoutMs?: number;
       retries?: number;
+      compactPrompt?: boolean;
+      memoryLimit?: number;
+      memoryMaxChars?: number;
     } = {}
   ): Promise<{ text: string; triggeredSkills: TriggeredSkillMatch[]; normalizedQuery: string }> {
     const skillSelection = selectTriggeredSkillsForQuery(this.skillLibrary, userMessage, 2);
@@ -91,13 +144,14 @@ export class PersonaAgent {
 
     // RAG: retrieve relevant memories
     const memories = await this.retriever.retrieve(this.collection, query, {
-      limit: 8,
+      limit: options.memoryLimit ?? 8,
       minConfidence: 0.35,
     });
 
-    const memoryContext = this.retriever.formatContext(memories);
+    const memoryContext = this.retriever.formatContext(memories, options.memoryMaxChars ?? 3000);
     const skillContext = skillSelection.context;
-    const systemPrompt = this.renderer.render(this.soul) +
+    const soulPrompt = options.compactPrompt ? this.renderer.renderCompact(this.soul) : this.renderer.render(this.soul);
+    const systemPrompt = soulPrompt +
       (memoryContext ? `\n\n${memoryContext}` : '') +
       (skillContext ? `\n\n${skillContext}` : '');
 
@@ -123,6 +177,7 @@ export class PersonaAgent {
         normalizedQuery: query,
       };
     } catch (error) {
+      runtimeFallbackMetrics.personaFallbacks++;
       console.warn(`[PersonaAgent] fallback enabled: ${String(error)}`);
       return {
         text: this.fallbackResponse(query, memories),
@@ -175,6 +230,9 @@ export class TrainerAgent {
       questionsPerRound?: number;
       skillHints?: string[];
       skillGapHints?: string[];
+      timeoutMs?: number;
+      retries?: number;
+      compactPrompt?: boolean;
     } = {}
   ): Promise<TrainingQuestion[]> {
     const strategyTargets = options.strategyTargets ?? [
@@ -190,6 +248,9 @@ export class TrainerAgent {
     const constraints = strategyTargets
       .map((s) => `${s.strategy}: ${s.count}`)
       .join(', ');
+    const prompt = options.compactPrompt
+      ? this.buildCompactTrainerPrompt(soul.target_name, round, lowConfidence, previousQuestions, skillGapHints, skillHints, constraints, questionCount, options.previousRound)
+      : this.buildFullTrainerPrompt(soul.target_name, round, lowConfidence, previousQuestions, skillGapHints, skillHints, constraints, questionCount, options.previousRound);
 
     try {
       const { object } = await withRetry(
@@ -197,13 +258,40 @@ export class TrainerAgent {
           generateObject({
             model: this.model,
             schema: QuestionSetSchema,
-            prompt: `You are designing training questions to evaluate and improve a Persona Agent simulating "${soul.target_name}".
+            prompt,
+          }),
+        {
+          label: 'trainer generate questions',
+          timeoutMs: options.timeoutMs ?? 45_000,
+          retries: options.retries ?? 1,
+        }
+      );
+      return object.questions;
+    } catch (error) {
+      runtimeFallbackMetrics.trainerFallbacks++;
+      console.warn(`[TrainerAgent] schema fallback enabled: ${String(error)}`);
+      return this.fallbackQuestions(soul, strategyTargets, lowConfidence, questionCount, skillGapHints);
+    }
+  }
+
+  private buildFullTrainerPrompt(
+    targetName: string,
+    round: number,
+    lowConfidence: TargetDimension[],
+    previousQuestions: string[],
+    skillGapHints: string[],
+    skillHints: string[],
+    constraints: string,
+    questionCount: number,
+    previousRound?: RoundObservability
+  ): string {
+    return `You are designing training questions to evaluate and improve a Persona Agent simulating "${targetName}".
 
 Round: ${round}
 Dimensions with low confidence: ${lowConfidence.join(', ') || 'none'}
 Previously used questions (avoid repeating): ${previousQuestions.slice(-10).join(' | ') || 'none'}
-Previous round contradiction rate: ${options.previousRound?.contradictionRate.toFixed(2) ?? 'n/a'}
-Previous round low-confidence coverage: ${options.previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
+Previous round contradiction rate: ${previousRound?.contradictionRate.toFixed(2) ?? 'n/a'}
+Previous round low-confidence coverage: ${previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
 Priority skill gaps (must prioritize if relevant): ${skillGapHints.slice(0, 8).join(' | ') || 'none'}
 Skill hints (prefer covering these, if relevant): ${skillHints.slice(0, 12).join(' | ') || 'none'}
 
@@ -212,20 +300,46 @@ Use curriculum constraints:
 - Total questions: ${questionCount}
 
 Question strategy definitions:
-1. **blind_spot**: Questions about topics they might avoid or lack expertise in (expose gaps)
-2. **stress_test**: Challenging scenarios that test consistency under pressure
-3. **consistency**: Questions that should have predictable answers based on known beliefs
-4. **scenario**: Practical problem-solving in their domain of expertise
+1. blind_spot: Questions about topics they might avoid or lack expertise in.
+2. stress_test: Challenging scenarios that test consistency under pressure.
+3. consistency: Questions that should have predictable answers based on known beliefs.
+4. scenario: Practical problem-solving in their domain of expertise.
 
-Return exactly ${questionCount} questions spanning different target dimensions, with strict strategy counts.`,
-          }),
-        { label: 'trainer generate questions', timeoutMs: 45_000, retries: 1 }
-      );
-      return object.questions;
-    } catch (error) {
-      console.warn(`[TrainerAgent] schema fallback enabled: ${String(error)}`);
-      return this.fallbackQuestions(soul, strategyTargets, lowConfidence, questionCount, skillGapHints);
-    }
+Return exactly ${questionCount} questions spanning different target dimensions, with strict strategy counts.`;
+  }
+
+  private buildCompactTrainerPrompt(
+    targetName: string,
+    round: number,
+    lowConfidence: TargetDimension[],
+    previousQuestions: string[],
+    skillGapHints: string[],
+    skillHints: string[],
+    constraints: string,
+    questionCount: number,
+    previousRound?: RoundObservability
+  ): string {
+    const recentQuestions = previousQuestions.slice(-4).join(' | ') || 'none';
+    const gapSummary = skillGapHints.slice(0, 4).join(' | ') || 'none';
+    const hintSummary = skillHints.slice(0, 5).join(' | ') || 'none';
+    return `Design ${questionCount} training questions for "${targetName}".
+
+Round=${round}
+Low-confidence dimensions=${lowConfidence.join(', ') || 'none'}
+Avoid repeating=${recentQuestions}
+Prev contradiction=${previousRound?.contradictionRate.toFixed(2) ?? 'n/a'}
+Prev low-confidence coverage=${previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
+Priority gaps=${gapSummary}
+Useful hints=${hintSummary}
+Strategy mix=${constraints}
+
+Question types:
+- blind_spot = expose avoided or weak topics
+- stress_test = pressure-test consistency
+- consistency = confirm stable beliefs
+- scenario = practical decision-making
+
+Return exactly ${questionCount} items with strict strategy counts and diverse target dimensions.`;
   }
 
   private lowConfidenceDimensions(soul: Soul): TargetDimension[] {
@@ -302,14 +416,24 @@ export class EvaluatorAgent {
       timeoutMs?: number;
       retries?: number;
       maxResponseChars?: number;
+      compactPrompt?: boolean;
+      layeredMode?: boolean;
     } = {}
   ): Promise<Evaluation> {
+    if (options.layeredMode) {
+      const heuristic = this.heuristicEvaluation(question, response, strategy);
+      if (heuristic.fastPath) {
+        return heuristic.evaluation;
+      }
+    }
+
     const primary = await this.runSingleEvaluation(question, response, personaName, strategy, {
       calibrationEnabled: options.calibrationEnabled ?? true,
       reviewerRole: 'primary',
       timeoutMs: options.timeoutMs ?? 45_000,
       retries: options.retries ?? 1,
       maxResponseChars: options.maxResponseChars ?? 1200,
+      compactPrompt: options.compactPrompt ?? false,
     });
 
     const dualReview = options.dualReview ?? false;
@@ -321,6 +445,7 @@ export class EvaluatorAgent {
       timeoutMs: options.timeoutMs ?? 45_000,
       retries: options.retries ?? 1,
       maxResponseChars: options.maxResponseChars ?? 1200,
+      compactPrompt: options.compactPrompt ?? false,
     });
 
     const threshold = options.disagreementThreshold ?? 0.2;
@@ -354,6 +479,7 @@ export class EvaluatorAgent {
       timeoutMs: number;
       retries: number;
       maxResponseChars: number;
+      compactPrompt: boolean;
     }
   ): Promise<Evaluation> {
     const calibrationContext = options.calibrationEnabled
@@ -364,14 +490,14 @@ export class EvaluatorAgent {
 
     const responseSnippet = response.slice(0, options.maxResponseChars);
 
-    try {
-      const { object } = await withRetry(
-        () =>
-          generateObject({
-            model: this.model,
-            schema: EvaluationSchema,
-            temperature: 0,
-            prompt: `You are an independent quality evaluator for a persona simulation of "${personaName}".
+    const compactPrompt = `Evaluate a persona reply for "${personaName}".
+Question (${strategy}): "${question}"
+Reply: "${responseSnippet}"
+Return scores 0..1 for consistency/authenticity/depth/overall.
+Pick one verdict: write, reinforce, discard, flag_contradiction.
+Only include memory candidates if there is clearly new signal.`;
+
+    const fullPrompt = `You are an independent quality evaluator for a persona simulation of "${personaName}".
 You do NOT have access to their internal Soul configuration — evaluate purely based on response quality.
 Reviewer role: ${options.reviewerRole}
 
@@ -398,12 +524,22 @@ Verdict:
 - "discard": Generic/unhelpful response — nothing to extract
 - "flag_contradiction": Response contradicts known ${personaName} positions
 
-Extract any new memory candidates (insights about their beliefs, style, knowledge).`,
+Extract any new memory candidates (insights about their beliefs, style, knowledge).`;
+
+    try {
+      const { object } = await withRetry(
+        () =>
+          generateObject({
+            model: this.model,
+            schema: EvaluationSchema,
+            temperature: 0,
+            prompt: options.compactPrompt ? compactPrompt : fullPrompt,
           }),
         { label: 'evaluator score response', timeoutMs: options.timeoutMs, retries: options.retries }
       );
       return object;
     } catch (error) {
+      runtimeFallbackMetrics.evaluatorFallbacks++;
       console.warn(`[EvaluatorAgent] schema fallback enabled: ${String(error)}`);
       return this.fallbackEvaluation(question, response, strategy);
     }
@@ -433,6 +569,47 @@ Extract any new memory candidates (insights about their beliefs, style, knowledg
             confidence: Math.max(0.45, Math.min(0.75, overall)),
           }]
           : [],
+    };
+  }
+
+  private heuristicEvaluation(
+    question: string,
+    response: string,
+    strategy: string
+  ): { fastPath: boolean; evaluation: Evaluation } {
+    const responseLen = response.trim().length;
+    const questionLen = question.trim().length;
+    const hasStructure = /[:;,.!?]/.test(response) || /\b(because|therefore|first|second|should|need)\b/i.test(response);
+    const mentionsSelf = /\b(I|my|me)\b|我|我的/.test(response);
+    const depth = Math.max(0.15, Math.min(0.9, responseLen / Math.max(100, questionLen * 5)));
+    const authenticity = mentionsSelf ? 0.68 : hasStructure ? 0.56 : 0.45;
+    const consistency = responseLen < 40 ? 0.28 : hasStructure ? 0.66 : 0.52;
+    const overall = (consistency * 0.4) + (authenticity * 0.35) + (depth * 0.25);
+    const verdict: Evaluation['verdict'] =
+      overall >= 0.72 ? 'write' : overall >= 0.5 ? 'reinforce' : 'discard';
+    const evaluation: Evaluation = {
+      consistency_score: consistency,
+      authenticity_score: authenticity,
+      depth_score: depth,
+      overall_score: overall,
+      verdict,
+      insights: [`layered heuristic for strategy=${strategy}`],
+      new_memory_candidates:
+        verdict === 'write'
+          ? [{
+            summary: response.slice(0, 180),
+            category: 'opinion',
+            soul_dimension: 'general',
+            confidence: Math.max(0.5, Math.min(0.78, overall)),
+          }]
+          : [],
+    };
+
+    const definitelyWeak = responseLen < 55 || overall < 0.42;
+    const definitelyStrong = responseLen >= 180 && hasStructure && overall >= 0.8;
+    return {
+      fastPath: definitelyWeak || definitelyStrong,
+      evaluation,
     };
   }
 }
@@ -467,9 +644,17 @@ export class DirectorAgent {
       avg_quality_score: number;
       evaluations: Evaluation[];
       observability?: RoundObservability;
-    }
+    },
+    options: {
+      timeoutMs?: number;
+      retries?: number;
+      compactPrompt?: boolean;
+    } = {}
   ): Promise<DirectorDecision> {
     const heuristicCoverage = estimateCoverageScore(soul, roundSummary);
+    const prompt = options.compactPrompt
+      ? this.buildCompactDirectorPrompt(soul, roundSummary)
+      : this.buildFullDirectorPrompt(soul, roundSummary);
     try {
       const { object } = await withRetry(
         () =>
@@ -477,7 +662,53 @@ export class DirectorAgent {
             model: this.model,
             schema: DirectorDecisionSchema,
             temperature: 0,
-            prompt: `You are the Director overseeing training of a Persona Agent for "${soul.target_name}".
+            prompt,
+          }),
+        {
+          label: 'director review round',
+          timeoutMs: options.timeoutMs ?? 40_000,
+          retries: options.retries ?? 1,
+        }
+      );
+      return {
+        ...object,
+        coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage, object.coverage_score),
+      };
+    } catch (error) {
+      runtimeFallbackMetrics.directorFallbacks++;
+      console.warn(`[DirectorAgent] schema fallback enabled: ${String(error)}`);
+      const contradictionRate = roundSummary.observability?.contradictionRate ?? 0;
+      const shouldContinue = computeDirectorFallbackShouldContinue(
+        roundSummary.round,
+        roundSummary.avg_quality_score,
+        contradictionRate
+      );
+      return {
+        should_continue: shouldContinue,
+        convergence_reason: shouldContinue ? undefined : 'fallback-director: quality and contradiction reached target',
+        soul_updates: {
+          knowledge_gaps_identified: contradictionRate > 0.12 ? ['consistency'] : [],
+          new_blind_spots: [],
+        },
+        coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage),
+        quality_summary: `fallback-director review; contradiction=${contradictionRate.toFixed(2)}`,
+      };
+    }
+  }
+
+  private buildFullDirectorPrompt(
+    soul: Soul,
+    roundSummary: {
+      round: number;
+      questions_asked: number;
+      nodes_written: number;
+      nodes_reinforced: number;
+      avg_quality_score: number;
+      evaluations: Evaluation[];
+      observability?: RoundObservability;
+    }
+  ): string {
+    return `You are the Director overseeing training of a Persona Agent for "${soul.target_name}".
 
 Training Round ${roundSummary.round} Summary:
 - Questions asked: ${roundSummary.questions_asked}
@@ -508,29 +739,41 @@ Observability signals:
 ` : ''}
 
 Decide whether to continue training, suggest soul updates, and estimate coverage.
-Coverage score reflects how well we've explored ${soul.target_name}'s worldview (0-1).`,
-          }),
-        { label: 'director review round', timeoutMs: 30_000, retries: 0 }
-      );
-      return {
-        ...object,
-        coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage, object.coverage_score),
-      };
-    } catch (error) {
-      console.warn(`[DirectorAgent] schema fallback enabled: ${String(error)}`);
-      const contradictionRate = roundSummary.observability?.contradictionRate ?? 0;
-      const shouldContinue = contradictionRate > 0.12 || roundSummary.avg_quality_score < 0.7;
-      return {
-        should_continue: shouldContinue,
-        convergence_reason: shouldContinue ? undefined : 'fallback-director: quality and contradiction reached target',
-        soul_updates: {
-          knowledge_gaps_identified: contradictionRate > 0.12 ? ['consistency'] : [],
-          new_blind_spots: [],
-        },
-        coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage),
-        quality_summary: `fallback-director review; contradiction=${contradictionRate.toFixed(2)}`,
-      };
+Coverage score reflects how well we've explored ${soul.target_name}'s worldview (0-1).`;
+  }
+
+  private buildCompactDirectorPrompt(
+    soul: Soul,
+    roundSummary: {
+      round: number;
+      questions_asked: number;
+      nodes_written: number;
+      nodes_reinforced: number;
+      avg_quality_score: number;
+      evaluations: Evaluation[];
+      observability?: RoundObservability;
     }
+  ): string {
+    const writes = roundSummary.evaluations.filter((e) => e.verdict === 'write').length;
+    const reinforces = roundSummary.evaluations.filter((e) => e.verdict === 'reinforce').length;
+    const discards = roundSummary.evaluations.filter((e) => e.verdict === 'discard').length;
+    const contradictions = roundSummary.evaluations.filter((e) => e.verdict === 'flag_contradiction').length;
+    return `Director review for "${soul.target_name}".
+
+Round=${roundSummary.round}
+Q=${roundSummary.questions_asked} write=${writes} reinforce=${reinforces} discard=${discards} contradiction=${contradictions}
+nodes_written=${roundSummary.nodes_written} nodes_reinforced=${roundSummary.nodes_reinforced}
+avg_quality=${roundSummary.avg_quality_score.toFixed(2)}
+overall_confidence=${soul.overall_confidence.toFixed(2)}
+coverage=${soul.coverage_score.toFixed(2)}
+expert_domains=${soul.knowledge_domains.expert.slice(0, 4).join(', ') || 'none'}
+duplication_rate=${roundSummary.observability?.duplicationRate.toFixed(2) ?? 'n/a'}
+contradiction_rate=${roundSummary.observability?.contradictionRate.toFixed(2) ?? 'n/a'}
+low_conf_coverage=${roundSummary.observability?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
+high_value=${roundSummary.observability?.newHighValueMemories ?? 0}
+quarantined=${roundSummary.observability?.quarantinedMemories ?? 0}
+
+Return whether training should continue, any small soul updates, and a coverage estimate 0-1.`;
   }
 }
 
@@ -571,7 +814,22 @@ function stabilizeCoverageScore(
   return Math.min(upper, Math.max(lower, blended));
 }
 
+function computeDirectorFallbackShouldContinue(
+  round: number,
+  avgQualityScore: number,
+  contradictionRate: number
+): boolean {
+  // A timeout/fallback in the director should be conservative: we should not
+  // prematurely stop training before we have seen enough rounds to judge
+  // convergence with any confidence.
+  if (round < 3) return true;
+  return contradictionRate > 0.12 || avgQualityScore < 0.7;
+}
+
 export const __testables__ = {
+  computeDirectorFallbackShouldContinue,
   estimateCoverageScore,
   stabilizeCoverageScore,
+  snapshotAndResetAgentFallbackMetrics,
+  shouldRetryProviderError,
 };

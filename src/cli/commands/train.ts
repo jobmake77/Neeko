@@ -34,7 +34,12 @@ import { CheckpointStore } from '../../core/training/checkpoint.js';
 import { createFailureLedgerEntry, classifyFailure } from '../../core/training/failure-loop.js';
 import { runTrainingOrchestrator } from '../../core/training/orchestrator.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
-import { normalizeInputRoutingStrategy } from '../../core/pipeline/evidence-routing.js';
+import {
+  loadInputRoutingReport,
+  loadRawDocsCache,
+  normalizeInputRoutingStrategy,
+} from '../../core/pipeline/evidence-routing.js';
+import { resolveTrainingStrategy, TrainingStrategyDecision } from '../../core/training/strategy-resolver.js';
 
 interface TrainRuntimeContext {
   dir: string;
@@ -55,6 +60,7 @@ interface TrainRuntimeContext {
   assetPaths: ReturnType<typeof getTrainingAssetPaths>;
   skillMetrics: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number };
   errorLedger: ErrorLedgerEntry[];
+  strategyDecision: TrainingStrategyDecision;
 }
 
 const TRACK_STAGE_TIMEOUT_MS = Number(process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? 180_000);
@@ -112,6 +118,13 @@ export async function cmdTrain(
     options.inputRouting,
     normalizeInputRoutingStrategy(String(settings.get('defaultInputRoutingStrategy') ?? 'legacy'))
   );
+  const inputRoutingReport = loadInputRoutingReport(dir, inputRouting);
+  const rawDocs = loadRawDocsCache(dir);
+  const strategyDecision = resolveTrainingStrategy({
+    inputRoutingStrategy: inputRouting,
+    observability: inputRoutingReport?.observability,
+    rawDocCount: rawDocs.length,
+  });
 
   const spin = createTrainSpinner();
   const store = new MemoryStore({
@@ -146,6 +159,9 @@ export async function cmdTrain(
   if (inputRouting !== 'legacy') {
     spin.message(`输入路由策略已设置为 ${inputRouting}，当前训练链路不会重新摄取输入，保留现有 persona 数据。`);
   }
+  spin.message(
+    `训练策略已解析：preset=${strategyDecision.runtimePreset}，optimization=${strategyDecision.optimizationMode}，segment=${strategyDecision.corpusSegment}`
+  );
 
   writeTrainingContext(contextPath, {
     state: 'running',
@@ -178,6 +194,7 @@ export async function cmdTrain(
       skillCoverageScore: 0,
     },
     errorLedger,
+    strategyDecision,
   };
 
   try {
@@ -323,6 +340,8 @@ async function runTrackLoop(
   const result = await loop.run({
     maxRounds: runtime.rounds,
     profile: perTrackProfile,
+    runtimePreset: runtime.strategyDecision.runtimePreset,
+    evaluatorLayered: runtime.strategyDecision.evaluatorLayered,
     onProgress: (progress) => {
       runtime.spin.message(
         `[${track}] Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten}, quality ${(progress.avgQualityScore * 100).toFixed(0)}%`

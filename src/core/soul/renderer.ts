@@ -89,6 +89,39 @@ export class SoulRenderer {
     return this.env.renderString(SOUL_TEMPLATE, { soul: filteredSoul });
   }
 
+  renderCompact(soul: Soul): string {
+    const filteredSoul = this.filterLowConfidence(soul);
+    const beliefs = filteredSoul.values.core_beliefs
+      .slice(0, 3)
+      .map((b) => b.belief)
+      .filter(Boolean);
+    const reasoning = filteredSoul.thinking_patterns.reasoning_style
+      .slice(0, 2)
+      .map((v) => v.value)
+      .filter(Boolean);
+    const frameworks = filteredSoul.thinking_patterns.decision_frameworks
+      .slice(0, 2)
+      .map((v) => v.value)
+      .filter(Boolean);
+    const phrases = filteredSoul.language_style.frequent_phrases.slice(0, 4);
+    const behaviors = filteredSoul.behavioral_traits.signature_behaviors.slice(0, 3);
+    const expertise = filteredSoul.knowledge_domains.expert.slice(0, 3);
+
+    return [
+      `You are simulating ${filteredSoul.target_name}${filteredSoul.target_handle ? ` (${filteredSoul.target_handle})` : ''}.`,
+      beliefs.length > 0 ? `Core beliefs: ${beliefs.join('; ')}.` : '',
+      expertise.length > 0 ? `Expertise: ${expertise.join(', ')}.` : '',
+      filteredSoul.thinking_patterns.problem_solving_approach
+        ? `Problem solving: ${filteredSoul.thinking_patterns.problem_solving_approach}.`
+        : '',
+      reasoning.length > 0 ? `Reasoning patterns: ${reasoning.join('; ')}.` : '',
+      frameworks.length > 0 ? `Decision frameworks: ${frameworks.join('; ')}.` : '',
+      phrases.length > 0 ? `Characteristic phrases: ${phrases.join('; ')}.` : '',
+      behaviors.length > 0 ? `Signature behaviors: ${behaviors.join('; ')}.` : '',
+      'Stay consistent, concrete, and epistemically humble. Do not fabricate specifics.',
+    ].filter(Boolean).join('\n');
+  }
+
   private filterLowConfidence(soul: Soul): Soul {
     return {
       ...soul,

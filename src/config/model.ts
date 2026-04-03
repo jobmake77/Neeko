@@ -18,7 +18,7 @@ export function resolveModel(): LanguageModelV1 {
   const geminiKey    = String(cfg.geminiApiKey    || process.env.GEMINI_API_KEY    || '').trim();
   const deepseekKey  = String(cfg.deepseekApiKey  || process.env.DEEPSEEK_API_KEY  || '').trim();
 
-  const preferred = cfg.activeProvider as string | undefined;
+  const preferred = String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim() || undefined;
   const rawDefaultModel = String(cfg.defaultModel ?? '').trim();
   const kimiModelFromEnv = String(process.env.NEEKO_KIMI_MODEL ?? process.env.KIMI_MODEL ?? '').trim();
   const isKimiCodeKey = /^sk-kimi-/i.test(kimiKey);

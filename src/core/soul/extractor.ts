@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { SemanticChunk } from '../models/memory.js';
 import { Soul, ConfidentItem } from '../models/soul.js';
 import { resolveModel } from '../../config/model.js';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
 
 // ─── Extraction result per chunk ─────────────────────────────────────────────
 
@@ -47,6 +49,34 @@ const EMPTY_EXTRACTION: ChunkExtraction = {
   knowledge_domains: {},
 };
 
+const DEFAULT_CACHE_PATH = '/tmp/neeko-soul-extraction-cache.json';
+const EXTRACTION_CACHE = new Map<string, ChunkExtraction>();
+
+function shouldRetryExtractionError(error: unknown): boolean {
+  const message = String(error ?? '').toLowerCase();
+  return (
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('429') ||
+    message.includes('rate limit') ||
+    message.includes('503') ||
+    message.includes('502') ||
+    message.includes('504') ||
+    message.includes('500') ||
+    message.includes('network') ||
+    message.includes('socket') ||
+    message.includes('econnreset') ||
+    message.includes('etimedout') ||
+    message.includes('enotfound') ||
+    message.includes('fetch failed') ||
+    message.includes('service unavailable')
+  );
+}
+
+function extractionRetryBackoffMs(attempt: number): number {
+  return 1_000 * (attempt + 1) + Math.min(600, attempt * 200);
+}
+
 // ─── Soul Extractor ──────────────────────────────────────────────────────────
 
 export class SoulExtractor {
@@ -67,10 +97,16 @@ export class SoulExtractor {
   async extractFromChunk(
     chunk: SemanticChunk,
     targetName: string,
-    options?: { timeoutMs?: number; retries?: number }
+    options?: { timeoutMs?: number; retries?: number; cachePath?: string; cacheEnabled?: boolean }
   ): Promise<ChunkExtraction> {
     const timeoutMs = options?.timeoutMs ?? 30_000;
     const retries = Math.max(0, options?.retries ?? 0);
+    const cacheEnabled = options?.cacheEnabled ?? false;
+    const cacheKey = buildExtractionCacheKey(chunk, targetName);
+    if (cacheEnabled) {
+      const cached = readCachedExtraction(cacheKey, options?.cachePath);
+      if (cached) return cached;
+    }
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -96,11 +132,12 @@ Author: ${chunk.author}`,
           'soul extraction'
         );
 
+        if (cacheEnabled) writeCachedExtraction(cacheKey, object, options?.cachePath);
         return object;
       } catch (error) {
         lastError = error;
-        if (attempt < retries) {
-          await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+        if (attempt < retries && shouldRetryExtractionError(error)) {
+          await new Promise((resolve) => setTimeout(resolve, extractionRetryBackoffMs(attempt)));
         }
       }
     }
@@ -111,12 +148,13 @@ Author: ${chunk.author}`,
     chunks: SemanticChunk[],
     targetName: string,
     concurrency = 3,
-    options?: { timeoutMs?: number; retries?: number }
+    options?: { timeoutMs?: number; retries?: number; cachePath?: string; cacheEnabled?: boolean }
   ): Promise<ChunkExtraction[]> {
     const results: ChunkExtraction[] = [];
+    const safeConcurrency = Math.max(1, concurrency);
 
-    for (let i = 0; i < chunks.length; i += concurrency) {
-      const batch = chunks.slice(i, i + concurrency);
+    for (let i = 0; i < chunks.length; i += safeConcurrency) {
+      const batch = chunks.slice(i, i + safeConcurrency);
       const batchResults = await Promise.all(
         batch.map(async (c) => {
           try {
@@ -128,10 +166,57 @@ Author: ${chunk.author}`,
         })
       );
       results.push(...batchResults);
+      if (i + safeConcurrency < chunks.length && safeConcurrency > 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
     }
 
     return results;
   }
+}
+
+function buildExtractionCacheKey(chunk: SemanticChunk, targetName: string): string {
+  return `${targetName}::${chunk.source_type}::${simpleHash(chunk.content)}`;
+}
+
+function readCachedExtraction(cacheKey: string, cachePath?: string): ChunkExtraction | null {
+  const mem = EXTRACTION_CACHE.get(cacheKey);
+  if (mem) return mem;
+  const path = cachePath ?? DEFAULT_CACHE_PATH;
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, ChunkExtraction>;
+    const value = parsed[cacheKey];
+    if (!value) return null;
+    EXTRACTION_CACHE.set(cacheKey, value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedExtraction(cacheKey: string, extraction: ChunkExtraction, cachePath?: string): void {
+  EXTRACTION_CACHE.set(cacheKey, extraction);
+  const path = cachePath ?? DEFAULT_CACHE_PATH;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    let existing: Record<string, ChunkExtraction> = {};
+    if (existsSync(path)) {
+      existing = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, ChunkExtraction>;
+    }
+    existing[cacheKey] = extraction;
+    writeFileSync(path, JSON.stringify(existing), 'utf-8');
+  } catch {
+    // cache is opportunistic; ignore write failures
+  }
+}
+
+function simpleHash(value: string): string {
+  let h = 0;
+  for (let i = 0; i < value.length; i++) {
+    h = (Math.imul(31, h) + value.charCodeAt(i)) | 0;
+  }
+  return String(h >>> 0);
 }
 
 // ─── Soul Aggregator ─────────────────────────────────────────────────────────

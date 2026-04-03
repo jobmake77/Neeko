@@ -62,17 +62,18 @@ export class SemanticChunker {
       .split(/\n{2,}/)
       .map((p) => p.trim())
       .filter(Boolean);
+    const units = paragraphs.flatMap((paragraph) => this.splitOversizedUnit(paragraph));
 
     const chunks: string[] = [];
     let current = '';
 
-    for (const para of paragraphs) {
-      const combined = current ? `${current}\n\n${para}` : para;
+    for (const unit of units) {
+      const combined = current ? `${current}\n\n${unit}` : unit;
       if (this.estimateTokens(combined) > this.maxTokens && current) {
         chunks.push(current);
         // overlap: keep last sentence of current
         const overlap = this.lastSentences(current, this.overlapTokens);
-        current = overlap ? `${overlap}\n\n${para}` : para;
+        current = overlap ? `${overlap}\n\n${unit}` : unit;
       } else {
         current = combined;
       }
@@ -103,8 +104,93 @@ export class SemanticChunker {
     return Math.ceil(cjk / 2 + rest / 4);
   }
 
+  private splitOversizedUnit(text: string): string[] {
+    if (this.estimateTokens(text) <= this.maxTokens) return [text];
+
+    const sentences = text
+      .split(/(?<=[.!?。！？；;])\s*|\n+/u)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (sentences.length <= 1) {
+      return this.sliceByCharBudget(text);
+    }
+
+    const chunks: string[] = [];
+    let current = '';
+
+    for (const sentence of sentences) {
+      if (this.estimateTokens(sentence) > this.maxTokens) {
+        if (current) {
+          chunks.push(current);
+          current = '';
+        }
+        chunks.push(...this.sliceByCharBudget(sentence));
+        continue;
+      }
+
+      const combined = current ? `${current} ${sentence}` : sentence;
+      if (this.estimateTokens(combined) > this.maxTokens && current) {
+        chunks.push(current);
+        current = sentence;
+      } else {
+        current = combined;
+      }
+    }
+
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
+  private sliceByCharBudget(text: string): string[] {
+    const chunks: string[] = [];
+    const charBudget = this.estimateCharBudget(text);
+    let start = 0;
+
+    while (start < text.length) {
+      let end = Math.min(text.length, start + charBudget);
+      if (end < text.length) {
+        const breakpoint = this.findBreakpoint(text, start, end);
+        if (breakpoint > start + Math.floor(charBudget * 0.5)) {
+          end = breakpoint;
+        }
+      }
+      chunks.push(text.slice(start, end).trim());
+      start = end;
+    }
+
+    return chunks.filter(Boolean);
+  }
+
+  private estimateCharBudget(text: string): number {
+    const cjk = (text.match(/[\u4e00-\u9fff\u3040-\u30ff]/g) ?? []).length;
+    const cjkRatio = cjk / Math.max(1, text.length);
+    return Math.max(240, Math.floor(this.maxTokens * (cjkRatio > 0.35 ? 2 : 4)));
+  }
+
+  private findBreakpoint(text: string, start: number, end: number): number {
+    const window = text.slice(start, end);
+    const punctuation = Math.max(
+      window.lastIndexOf('。'),
+      window.lastIndexOf('！'),
+      window.lastIndexOf('？'),
+      window.lastIndexOf('.'),
+      window.lastIndexOf('!'),
+      window.lastIndexOf('?'),
+      window.lastIndexOf('；'),
+      window.lastIndexOf(';'),
+      window.lastIndexOf('，'),
+      window.lastIndexOf(',')
+    );
+    if (punctuation >= 0) return start + punctuation + 1;
+
+    const whitespace = window.lastIndexOf(' ');
+    if (whitespace >= 0) return start + whitespace + 1;
+    return end;
+  }
+
   private lastSentences(text: string, maxTokens: number): string {
-    const sentences = text.split(/(?<=[.!?])\s+/);
+    const sentences = text.split(/(?<=[.!?。！？；;])\s*/u);
     let result = '';
     for (let i = sentences.length - 1; i >= 0; i--) {
       const candidate = sentences.slice(i).join(' ');

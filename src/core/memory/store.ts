@@ -185,7 +185,18 @@ export class MemoryStore {
         message.includes('invalid_api_key') ||
         message.includes('404 page not found') ||
         message.includes('ENOTFOUND') ||
-        message.includes('ECONNREFUSED');
+        message.includes('ECONNREFUSED') ||
+        message.includes('ETIMEDOUT') ||
+        message.includes('ECONNRESET') ||
+        message.includes('429') ||
+        message.includes('500') ||
+        message.includes('502') ||
+        message.includes('503') ||
+        message.includes('504') ||
+        message.includes('rate limit') ||
+        message.includes('timeout') ||
+        message.includes('timed out') ||
+        message.includes('overloaded');
 
       if (!shouldFallback) throw error;
       this.logLocalFallbackOnce('OpenAI embedding 调用失败，切换为本地 embedding 回退');

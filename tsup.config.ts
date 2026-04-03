@@ -7,6 +7,8 @@ export default defineConfig({
     'src/testing/ab-report-test-entry.ts',
     'src/testing/agents-test-entry.ts',
     'src/testing/evidence-routing-test-entry.ts',
+    'src/testing/evidence-layer-test-entry.ts',
+    'src/testing/training-strategy-test-entry.ts',
     'src/testing/input-routing-ab-entry.ts',
   ],
   format: ['esm'],

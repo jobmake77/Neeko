@@ -5,6 +5,7 @@ import { createPersona } from '../../core/models/persona.js';
 import { createEmptySoul } from '../../core/models/soul.js';
 import { TwitterAdapter, checkOpenCli } from '../../core/pipeline/ingestion/twitter.js';
 import { ArticleAdapter } from '../../core/pipeline/ingestion/article.js';
+import { VideoAdapter } from '../../core/pipeline/ingestion/video.js';
 import { DataCleaner, SemanticChunker } from '../../core/pipeline/cleaner.js';
 import { SoulExtractor, SoulAggregator } from '../../core/soul/extractor.js';
 import { MemoryStore } from '../../core/memory/store.js';
@@ -12,12 +13,25 @@ import { TrainingLoop, TrainingProgress } from '../../core/training/loop.js';
 import { DataSourceRecommender } from '../../core/recommender/sources.js';
 import { settings } from '../../config/settings.js';
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, extname, join, resolve } from 'path';
 import yaml from 'js-yaml';
 import { Soul } from '../../core/models/soul.js';
 import { Persona } from '../../core/models/persona.js';
 import { TrainingProfile } from '../../core/training/types.js';
 import { buildTrainingRunReport, buildTrainingRunReportFromRounds, TrainingRoundSnapshot } from '../../core/training/report.js';
+import { EvidenceBatch, TargetManifest } from '../../core/models/evidence.js';
+import {
+  resolveTrainingStrategy,
+  selectSoulChunksForStrategy,
+} from '../../core/training/strategy-resolver.js';
+import {
+  buildChatEvidenceBatchFromFile,
+  buildStandaloneEvidenceBatch,
+  buildVideoTranscriptEvidenceBatch,
+  convertEvidenceItemsToDocuments,
+  loadTargetManifest,
+  writeEvidenceArtifacts,
+} from '../../core/pipeline/evidence-layer.js';
 import {
   buildSkillLibraryFromSources,
   loadSkillLibrary,
@@ -64,7 +78,15 @@ function saveTrainingReportFromRounds(
 
 export async function cmdCreate(
   target: string | undefined,
-  options: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string; inputRouting?: string }
+  options: {
+    skill?: string;
+    targetManifest?: string;
+    chatPlatform?: string;
+    yes?: boolean;
+    rounds?: string;
+    trainingProfile?: string;
+    inputRouting?: string;
+  }
 ): Promise<void> {
   intro(chalk.bold.cyan('✦ Neeko — 数字孪生工厂'));
 
@@ -75,12 +97,25 @@ export async function cmdCreate(
   let displayName: string;
   let handle: string | undefined;
   let sourceTargets: string[];
+  let localSourcePath: string | undefined;
+  let localSourceKind: 'chat' | 'video' | undefined;
+  let targetManifest: TargetManifest | undefined;
 
   if (target) {
     // Single-person distill (Path A): nico create @elonmusk
     mode = 'single';
     const normalizedTarget = target.trim();
-    if (looksLikeUrl(normalizedTarget)) {
+    if (isLocalFileTarget(normalizedTarget)) {
+      localSourcePath = resolve(normalizedTarget);
+      localSourceKind = detectLocalSourceKind(localSourcePath);
+      if (!options.targetManifest) {
+        throw new Error('Local chat/video inputs require --target-manifest <path>.');
+      }
+      targetManifest = loadTargetManifest(resolve(options.targetManifest));
+      handle = undefined;
+      displayName = targetManifest.target_name;
+      sourceTargets = [localSourcePath];
+    } else if (looksLikeUrl(normalizedTarget)) {
       handle = undefined;
       displayName = deriveDisplayNameFromSource(normalizedTarget);
       sourceTargets = [normalizedTarget];
@@ -201,32 +236,75 @@ export async function cmdCreate(
     if (!canUseOpenCli) {
       handle = undefined;
     }
+  } else if (mode === 'single' && localSourcePath) {
+    p.log.info(`单人蒸馏将使用本地${localSourceKind === 'chat' ? '聊天' : '视频'}素材进行提炼。`);
   } else if (mode === 'single') {
     p.log.info('单人蒸馏将使用外部素材链接进行提炼（跳过 Twitter 抓取）。');
   }
 
   let currentSoul = soul;
   let allDocs: Awaited<ReturnType<TwitterAdapter['fetch']>> = [];
+  let evidenceBatch: EvidenceBatch | undefined;
   const inputRouting = resolveInputRoutingStrategy(options.inputRouting);
   const personaDir = settings.getPersonaDir(persona.slug);
   persona.status = 'ingesting';
   persona.updated_at = new Date().toISOString();
   savePersona(persona, currentSoul);
-  if (mode === 'single' && handle) {
+  if (mode === 'single' && localSourcePath && localSourceKind === 'chat') {
+    spin.start(`正在解析聊天记录 ${localSourcePath}...`);
+    evidenceBatch = await buildChatEvidenceBatchFromFile(localSourcePath, {
+      manifest: targetManifest!,
+      sourceType: normalizeChatPlatform(options.chatPlatform),
+      sourceUrl: localSourcePath,
+    });
+    writeEvidenceArtifacts(personaDir, evidenceBatch, targetManifest);
+    allDocs = convertEvidenceItemsToDocuments(evidenceBatch.items);
+    spin.stop(`聊天证据就绪：${evidenceBatch.stats.target_windows} 个 target windows，${evidenceBatch.stats.sessions} 个 sessions`);
+  } else if (mode === 'single' && localSourcePath && localSourceKind === 'video') {
+    spin.start(`正在转写视频/音频 ${localSourcePath}...`);
+    const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+    const sourceDocs = await adapter.fetch(localSourcePath);
+    evidenceBatch = buildVideoTranscriptEvidenceBatch(sourceDocs, targetManifest!);
+    writeEvidenceArtifacts(personaDir, evidenceBatch, targetManifest);
+    allDocs = convertEvidenceItemsToDocuments(evidenceBatch.items, sourceDocs);
+    spin.stop(`视频证据就绪：${evidenceBatch.items.length} 段 transcript evidence`);
+  } else if (mode === 'single' && handle) {
     spin.start(`正在通过 opencli 抓取 @${handle} 的推文（复用 Chrome 登录状态）...`);
     const adapter = new TwitterAdapter();
     const docs = await adapter.fetch(handle, { limit: 200 });
     spin.stop(`抓取完成：${docs.length} 条推文`);
-    allDocs = docs;
+    evidenceBatch = buildStandaloneEvidenceBatch(docs, {
+      manifest: {
+        target_name: displayName,
+        target_aliases: handle ? [handle, `@${handle}`] : [],
+        self_aliases: [],
+        known_other_aliases: [],
+      },
+      sourceLabel: 'twitter',
+    });
+    writeEvidenceArtifacts(personaDir, evidenceBatch);
+    allDocs = convertEvidenceItemsToDocuments(evidenceBatch.items, docs);
   } else {
     spin.start('正在从推荐数据源获取内容...');
     const adapter = new ArticleAdapter();
+    const collected: Awaited<ReturnType<ArticleAdapter['fetch']>> = [];
     for (const src of sourceTargets.slice(0, 5)) {
       if (src.startsWith('http')) {
         const docs = await adapter.fetch(src).catch(() => []);
-        allDocs.push(...docs);
+        collected.push(...docs);
       }
     }
+    evidenceBatch = buildStandaloneEvidenceBatch(collected, {
+      manifest: {
+        target_name: displayName,
+        target_aliases: [displayName],
+        self_aliases: [],
+        known_other_aliases: [],
+      },
+      sourceLabel: 'article',
+    });
+    writeEvidenceArtifacts(personaDir, evidenceBatch);
+    allDocs = convertEvidenceItemsToDocuments(evidenceBatch.items, collected);
     spin.stop(`获取完成：${allDocs.length} 篇内容`);
   }
 
@@ -244,13 +322,25 @@ export async function cmdCreate(
     cleaner: new DataCleaner(),
     chunker: new SemanticChunker(),
   });
+  const strategyDecision = resolveTrainingStrategy({
+    inputRoutingStrategy: inputRouting,
+    observability: routed.observability,
+    rawDocCount: allDocs.length,
+  });
   const cleanDocs = routed.cleanDocs;
   const chunks = routed.chunks;
-  const soulChunks = routed.soulChunks.length > 0 ? routed.soulChunks : routed.chunks;
+  const routedSoulChunks = routed.soulChunks.length > 0 ? routed.soulChunks : routed.chunks;
+  const soulChunks = selectSoulChunksForStrategy(
+    routedSoulChunks,
+    routed.routedDocs.map((item) => ({ document_id: item.doc.id, score: item.score })),
+    strategyDecision,
+    Math.min(routedSoulChunks.length, 30)
+  );
   writeInputRoutingReport(personaDir, {
     strategy: inputRouting,
     generated_at: new Date().toISOString(),
     observability: routed.observability,
+    strategy_decision: strategyDecision,
     routed_docs: routed.routedDocs.map((item) => ({
       route: item.route,
       score: item.score,
@@ -261,7 +351,7 @@ export async function cmdCreate(
   spin.stop(
     `${chunks.length} semantic chunks ready` +
     (inputRouting === 'v2'
-      ? ` (soul=${routed.observability.soul_docs}, memory=${routed.observability.memory_docs}, discard=${routed.observability.discard_docs})`
+      ? ` (soul=${routed.observability.soul_docs}, memory=${routed.observability.memory_docs}, discard=${routed.observability.discard_docs}, segment=${strategyDecision.corpusSegment}, opt=${strategyDecision.optimizationMode})`
       : '')
   );
 
@@ -273,9 +363,13 @@ export async function cmdCreate(
     spin.start(`Extracting soul from ${soulChunks.length} chunks...`);
     const extractor = new SoulExtractor();
     const aggregator = new SoulAggregator();
-    const batchSize = Math.min(soulChunks.length, 30); // keep extraction bounded to avoid provider stalls
-    const extractions = await extractor.extractBatch(soulChunks.slice(0, batchSize), displayName);
-    currentSoul = aggregator.aggregate(soul, extractions, soulChunks.slice(0, batchSize));
+    const extractions = await extractor.extractBatch(soulChunks, displayName, strategyDecision.extractionConcurrency, {
+      cacheEnabled: strategyDecision.extractorCacheEnabled,
+      cachePath: `/tmp/neeko-soul-cache-${persona.slug}.json`,
+      timeoutMs: strategyDecision.extractionTimeoutMs,
+      retries: strategyDecision.extractionRetries,
+    });
+    currentSoul = aggregator.aggregate(soul, extractions, soulChunks);
     spin.stop(`Soul v${currentSoul.version} — confidence ${(currentSoul.overall_confidence * 100).toFixed(0)}%`);
   }
 
@@ -340,6 +434,9 @@ export async function cmdCreate(
     }
 
     spin.start('Running cultivation loop...');
+    spin.message(
+      `Training strategy: preset=${strategyDecision.runtimePreset}, optimization=${strategyDecision.optimizationMode}, segment=${strategyDecision.corpusSegment}`
+    );
     const loop = new TrainingLoop(currentSoul, persona, store);
     const contextPath = join(personaDir, 'training-context.json');
     const originSkillsAdded = skillLibrary.origin_skills.length;
@@ -367,6 +464,8 @@ export async function cmdCreate(
     const result = await loop.run({
       maxRounds,
       profile,
+      runtimePreset: strategyDecision.runtimePreset,
+      evaluatorLayered: strategyDecision.evaluatorLayered,
       onProgress: (progress) => {
         spin.message(
           `Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten} nodes, quality ${(progress.avgQualityScore * 100).toFixed(0)}%, ` +
@@ -449,6 +548,22 @@ function resolveInputRoutingStrategy(raw?: string): InputRoutingStrategy {
 
 function looksLikeUrl(input: string): boolean {
   return /^https?:\/\//i.test(input);
+}
+
+function isLocalFileTarget(input: string): boolean {
+  return existsSync(resolve(input));
+}
+
+function detectLocalSourceKind(filePath: string): 'chat' | 'video' {
+  const ext = extname(filePath).toLowerCase();
+  if (['.mp4', '.mov', '.m4v', '.mp3', '.m4a', '.wav', '.aac', '.webm'].includes(ext)) {
+    return 'video';
+  }
+  return 'chat';
+}
+
+function normalizeChatPlatform(raw?: string): 'wechat' | 'feishu' {
+  return String(raw ?? 'wechat').toLowerCase() === 'feishu' ? 'feishu' : 'wechat';
 }
 
 function deriveDisplayNameFromSource(source: string): string {

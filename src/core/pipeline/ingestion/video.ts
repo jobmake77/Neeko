@@ -31,9 +31,39 @@ export class VideoAdapter extends BaseSourceAdapter {
       response_format: 'verbose_json',
     });
 
+    const payload = transcription as {
+      text?: string;
+      duration?: number;
+      language?: string;
+      segments?: Array<{ id?: number; start?: number; end?: number; text?: string }>;
+    };
     const text = typeof transcription === 'string'
       ? transcription
-      : (transcription as { text: string }).text;
+      : payload.text ?? '';
+
+    const segments = Array.isArray(payload.segments) ? payload.segments : [];
+    if (segments.length > 0) {
+      return segments
+        .filter((segment) => String(segment.text ?? '').trim().length > 0)
+        .map((segment) =>
+          this.makeDoc({
+            source_type: 'video',
+            source_url: filePath,
+            content: String(segment.text ?? '').trim(),
+            author: 'unknown',
+            metadata: {
+              filename,
+              duration: payload.duration,
+              language: payload.language,
+              speaker_segments: [],
+              segment_start_ms: Math.round((segment.start ?? 0) * 1000),
+              segment_end_ms: Math.round((segment.end ?? 0) * 1000),
+              nonverbal_signals: [],
+              transcript_segment_id: segment.id,
+            },
+          })
+        );
+    }
 
     return [
       this.makeDoc({
@@ -43,8 +73,10 @@ export class VideoAdapter extends BaseSourceAdapter {
         author: 'unknown',
         metadata: {
           filename,
-          duration: (transcription as { duration?: number }).duration,
-          language: (transcription as { language?: string }).language,
+          duration: payload.duration,
+          language: payload.language,
+          speaker_segments: [],
+          nonverbal_signals: [],
         },
       }),
     ];

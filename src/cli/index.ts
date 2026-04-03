@@ -32,11 +32,21 @@ program
   .command('create [target]')
   .description('Create a new persona agent (e.g. nico create @elonmusk)')
   .option('--skill <skill>', 'Create a composite agent by skill (Path B)')
+  .option('--target-manifest <path>', 'Explicit target manifest for local chat/video inputs')
+  .option('--chat-platform <platform>', 'Chat platform for local exports: wechat | feishu', 'wechat')
   .option('--yes', 'Skip all confirmation prompts (for non-interactive / Web UI use)')
   .option('--rounds <n>', 'Training rounds to run automatically (0 = skip training)', '0')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
   .option('--input-routing <strategy>', 'Input routing strategy: legacy | v2')
-  .action(async (target?: string, options?: { skill?: string; yes?: boolean; rounds?: string; trainingProfile?: string; inputRouting?: string }) => {
+  .action(async (target?: string, options?: {
+    skill?: string;
+    targetManifest?: string;
+    chatPlatform?: string;
+    yes?: boolean;
+    rounds?: string;
+    trainingProfile?: string;
+    inputRouting?: string;
+  }) => {
     await cmdCreate(target, options ?? {});
   });
 

@@ -11,11 +11,14 @@ import { RoundObservability, TrainingProfile } from './types.js';
 import { settings } from '../../config/settings.js';
 import { computeCoverageByOrigin, loadSkillLibrary } from '../skills/library.js';
 import { PersonaSkillLibrary } from '../skills/types.js';
+import { getTrainingRuntimeConfig, TrainingRuntimePreset } from './runtime-tuning.js';
 
 export interface TrainingOptions {
   maxRounds?: number;
   questionsPerRound?: number;
   profile?: TrainingProfile;
+  runtimePreset?: TrainingRuntimePreset;
+  evaluatorLayered?: boolean;
   onProgress?: (progress: TrainingProgress) => void;
 }
 
@@ -64,7 +67,15 @@ export class TrainingLoop {
   }
 
   async run(options: TrainingOptions = {}): Promise<{ soul: Soul; totalRounds: number; history: TrainingProgress[] }> {
-    const { maxRounds = 20, questionsPerRound = 5, profile = 'full', onProgress } = options;
+    const {
+      maxRounds = 20,
+      questionsPerRound = 5,
+      profile = 'full',
+      runtimePreset = 'balanced',
+      evaluatorLayered,
+      onProgress,
+    } = options;
+    const runtime = getTrainingRuntimeConfig(runtimePreset);
 
     const convergenceHistory: ConvergenceState[] = [];
     const allPreviousQuestions: string[] = [];
@@ -95,6 +106,9 @@ export class TrainingLoop {
           questionsPerRound,
           skillHints: this.skillHints(),
           skillGapHints: gapHints,
+          timeoutMs: runtime.trainerTimeoutMs,
+          retries: runtime.trainerRetries,
+          compactPrompt: runtime.trainerCompactPrompt,
         }
       );
       allPreviousQuestions.push(...questionSet.map((q) => q.question));
@@ -122,9 +136,12 @@ export class TrainingLoop {
       for (const qItem of questionSet) {
         dimensionCoverage.add(qItem.target_dimension);
         const trainingResponse = await this.personaAgent.respond(qItem.question, [], {
-          maxTokens: 512,
-          timeoutMs: 30_000,
-          retries: 0,
+          maxTokens: runtime.personaMaxTokens,
+          timeoutMs: runtime.personaTimeoutMs,
+          retries: runtime.personaRetries,
+          compactPrompt: runtime.personaCompactPrompt,
+          memoryLimit: runtime.personaMemoryLimit,
+          memoryMaxChars: runtime.personaMemoryMaxChars,
         });
         const evaluation = await this.evaluatorAgent.evaluate(
           qItem.question,
@@ -135,9 +152,11 @@ export class TrainingLoop {
             calibrationEnabled: profile !== 'baseline' && profile !== 'a1',
             dualReview: profile === 'a2' || profile === 'a3' || profile === 'a4' || profile === 'full',
             disagreementThreshold: 0.2,
-            timeoutMs: 30_000,
-            retries: 0,
-            maxResponseChars: 1200,
+            timeoutMs: runtime.evaluatorTimeoutMs,
+            retries: runtime.evaluatorRetries,
+            maxResponseChars: runtime.evaluatorMaxResponseChars,
+            compactPrompt: runtime.evaluatorCompactPrompt,
+            layeredMode: evaluatorLayered ?? runtime.evaluatorLayered,
           }
         );
 
@@ -250,6 +269,10 @@ export class TrainingLoop {
         avg_quality_score: avgQuality,
         evaluations: roundEvaluations,
         observability,
+      }, {
+        timeoutMs: runtime.directorTimeoutMs,
+        retries: runtime.directorRetries,
+        compactPrompt: runtime.directorCompactPrompt,
       });
 
       // Apply director's soul updates

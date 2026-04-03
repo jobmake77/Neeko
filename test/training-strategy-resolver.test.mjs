@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   __trainingStrategyTestables,
+  estimateExtractionStageTimeoutMs,
   normalizeOptimizationMode,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
@@ -40,6 +41,20 @@ test('resolver applies segmented v2 strategy by corpus scale', () => {
   assert.equal(__trainingStrategyTestables.classifyCorpusSegment(401), 'large');
 });
 
+test('resolver tightens extraction settings for kimi on medium corpora', () => {
+  const decision = resolveTrainingStrategy({
+    inputRoutingStrategy: 'v2',
+    observability: { raw_docs: 122, clean_docs: 122 },
+    providerName: 'kimi',
+  });
+  assert.equal(decision.corpusSegment, 'medium');
+  assert.equal(decision.extractionConcurrency, 1);
+  assert.equal(decision.extractionRetries, 0);
+  assert.equal(decision.extractionTimeoutMs, 20000);
+  assert.equal(decision.prioritizeTopSoulChunks, true);
+  assert.equal(decision.maxSoulChunks, 8);
+});
+
 test('manual overrides still win over auto resolution', () => {
   const decision = resolveTrainingStrategy({
     inputRoutingStrategy: 'v2',
@@ -75,4 +90,17 @@ test('selectSoulChunksForStrategy prefers top scored chunks when enabled', () =>
     2
   );
   assert.deepEqual(selected.map((item) => item.document_id), ['b', 'c']);
+});
+
+test('estimateExtractionStageTimeoutMs scales with extraction workload', () => {
+  const timeout = estimateExtractionStageTimeoutMs(
+    {
+      extractionConcurrency: 1,
+      extractionRetries: 0,
+      extractionTimeoutMs: 20000,
+    },
+    4,
+    240000
+  );
+  assert.equal(timeout >= 88000, true);
 });

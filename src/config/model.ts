@@ -5,6 +5,23 @@ import { google } from '@ai-sdk/google';
 import { settings } from './settings.js';
 import type { LanguageModelV1 } from 'ai';
 
+export type ProviderName = 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
+
+export function resolvePreferredProviderName(): ProviderName | undefined {
+  const cfg = settings.getAll();
+  const preferred = String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim().toLowerCase();
+  if (
+    preferred === 'claude' ||
+    preferred === 'openai' ||
+    preferred === 'kimi' ||
+    preferred === 'gemini' ||
+    preferred === 'deepseek'
+  ) {
+    return preferred;
+  }
+  return undefined;
+}
+
 /**
  * 返回当前可用的 LLM 模型实例。
  * 优先使用 activeProvider 对应的 key；若该 key 为空则按顺序 fallback 到第一个有值的 provider。
@@ -18,7 +35,7 @@ export function resolveModel(): LanguageModelV1 {
   const geminiKey    = String(cfg.geminiApiKey    || process.env.GEMINI_API_KEY    || '').trim();
   const deepseekKey  = String(cfg.deepseekApiKey  || process.env.DEEPSEEK_API_KEY  || '').trim();
 
-  const preferred = String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim() || undefined;
+  const preferred = resolvePreferredProviderName();
   const rawDefaultModel = String(cfg.defaultModel ?? '').trim();
   const kimiModelFromEnv = String(process.env.NEEKO_KIMI_MODEL ?? process.env.KIMI_MODEL ?? '').trim();
   const isKimiCodeKey = /^sk-kimi-/i.test(kimiKey);

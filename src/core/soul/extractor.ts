@@ -2,7 +2,7 @@ import { generateObject } from 'ai';
 import { z } from 'zod';
 import { SemanticChunk } from '../models/memory.js';
 import { Soul, ConfidentItem } from '../models/soul.js';
-import { resolveModel } from '../../config/model.js';
+import { resolveModel, resolvePreferredProviderName } from '../../config/model.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 
@@ -111,22 +111,12 @@ export class SoulExtractor {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
+        const providerName = resolvePreferredProviderName();
         const { object } = await this.withTimeout(
           generateObject({
             model: resolveModel(),
             schema: ChunkExtractionSchema,
-            prompt: `You are analyzing a piece of content written by or attributed to "${targetName}".
-Extract structured personality/soul information from this content.
-Only extract what is clearly evidenced — do NOT hallucinate traits.
-Assign confidence scores (0-1) based on how clearly the evidence supports each observation.
-
-Content:
-"""
-${chunk.content}
-"""
-
-Source type: ${chunk.source_type}
-Author: ${chunk.author}`,
+            prompt: buildExtractionPrompt(targetName, chunk, providerName),
           }),
           timeoutMs,
           'soul extraction'
@@ -173,6 +163,47 @@ Author: ${chunk.author}`,
 
     return results;
   }
+}
+
+function buildExtractionPrompt(
+  targetName: string,
+  chunk: SemanticChunk,
+  providerName?: string
+): string {
+  const contentBudget = providerName === 'kimi' ? 1_600 : 4_000;
+  const content = chunk.content.slice(0, contentBudget);
+  if (providerName === 'kimi') {
+    return `Analyze the excerpt attributed to "${targetName}" and extract only high-confidence structured soul signals.
+Keep it strict and concise. Prefer precision over recall. If a field is weakly supported, leave it empty.
+
+Return evidence only for:
+- language_style
+- values
+- thinking_patterns
+- behavioral_traits
+- knowledge_domains
+
+Excerpt:
+"""
+${content}
+"""
+
+Source type: ${chunk.source_type}
+Author: ${chunk.author}`;
+  }
+
+  return `You are analyzing a piece of content written by or attributed to "${targetName}".
+Extract structured personality/soul information from this content.
+Only extract what is clearly evidenced — do NOT hallucinate traits.
+Assign confidence scores (0-1) based on how clearly the evidence supports each observation.
+
+Content:
+"""
+${content}
+"""
+
+Source type: ${chunk.source_type}
+Author: ${chunk.author}`;
 }
 
 function buildExtractionCacheKey(chunk: SemanticChunk, targetName: string): string {

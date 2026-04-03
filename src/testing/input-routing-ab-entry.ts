@@ -9,10 +9,12 @@ import { TrainingLoop } from '../core/training/loop.js';
 import { settings } from '../config/settings.js';
 import { snapshotAndResetAgentFallbackMetrics } from '../core/agents/index.js';
 import {
+  estimateExtractionStageTimeoutMs,
   normalizeOptimizationMode,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
 } from '../core/training/strategy-resolver.js';
+import { resolvePreferredProviderName } from '../config/model.js';
 
 interface TweetLike {
   id: string;
@@ -54,10 +56,6 @@ async function main() {
     60_000,
     parseInt(timeoutRaw ?? process.env.INPUT_ROUTING_AB_TIMEOUT_MS ?? '60000', 10) || 60_000
   );
-  const extractionStageTimeoutMs = Math.max(
-    30_000,
-    Math.min(strategyTimeoutMs, parseInt(process.env.INPUT_ROUTING_EXTRACTION_TIMEOUT_MS ?? '90000', 10) || 90_000)
-  );
   const tweets = JSON.parse(readFileSync(postsPath, 'utf-8')) as TweetLike[];
   const docs = tweets.map(toRawDocument);
   const strategies: InputRoutingStrategy[] = ['legacy', 'v2'];
@@ -83,6 +81,7 @@ async function main() {
         rawDocCount: docs.length,
         explicitRuntimePreset: runtimePresetOverride,
         explicitOptimizationMode: optimizationMode,
+        providerName: resolvePreferredProviderName(),
       });
       const persona = createPersona(handle, 'single', [handle], () => false);
       persona.id = crypto.randomUUID();
@@ -96,9 +95,15 @@ async function main() {
         routed.soulChunks,
         routed.routedDocs.map((item) => ({ document_id: item.doc.id, score: item.score })),
         strategyDecision,
-        4
+        Math.min(4, strategyDecision.maxSoulChunks)
       );
       if (routed.soulChunks.length > 0) {
+        const extractionStageTimeoutMs = process.env.INPUT_ROUTING_EXTRACTION_TIMEOUT_MS
+          ? Math.max(
+              30_000,
+              Math.min(strategyTimeoutMs, parseInt(process.env.INPUT_ROUTING_EXTRACTION_TIMEOUT_MS, 10) || 90_000)
+            )
+          : estimateExtractionStageTimeoutMs(strategyDecision, soulSlice.length, strategyTimeoutMs);
         const extractions = await withTimeout(
           extractor.extractBatch(soulSlice, handle, strategyDecision.extractionConcurrency, {
             timeoutMs: strategyDecision.extractionTimeoutMs,

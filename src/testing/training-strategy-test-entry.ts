@@ -1,5 +1,6 @@
 export {
   __trainingStrategyTestables,
+  estimateExtractionStageTimeoutMs,
   normalizeOptimizationMode,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,

@@ -3,6 +3,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
+import { resolvePreferredProviderName } from '../../config/model.js';
 import { Persona } from '../../core/models/persona.js';
 import { Soul } from '../../core/models/soul.js';
 import { createEmptySoul } from '../../core/models/soul.js';
@@ -320,6 +321,7 @@ async function runInputRoutingComparison(
       inputRoutingStrategy: strategy,
       observability: routed.observability,
       rawDocCount: docs.length,
+      providerName: resolvePreferredProviderName(),
     });
     const persona: Persona = {
       ...basePersona,
@@ -335,7 +337,7 @@ async function runInputRoutingComparison(
       routed.soulChunks,
       routed.routedDocs.map((item) => ({ document_id: item.doc.id, score: item.score })),
       strategyDecision,
-      Math.min(routed.soulChunks.length, 30)
+      Math.min(routed.soulChunks.length, strategyDecision.maxSoulChunks)
     );
     if (selectedSoulChunks.length > 0) {
       const extractions = await extractor.extractBatch(selectedSoulChunks, basePersona.name, strategyDecision.extractionConcurrency, {

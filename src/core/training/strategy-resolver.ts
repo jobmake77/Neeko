@@ -1,5 +1,6 @@
 import type { InputRoutingObservability, InputRoutingStrategy } from '../pipeline/evidence-routing.js';
 import { TrainingRuntimePreset, resolveTrainingRuntimePreset } from './runtime-tuning.js';
+import type { ProviderName } from '../../config/model.js';
 
 export type TrainingOptimizationMode = 'baseline' | 'evaluator' | 'extractor' | 'combined';
 export type TrainingOptimizationModeInput = TrainingOptimizationMode | 'auto';
@@ -11,6 +12,7 @@ export interface TrainingStrategyDecision {
   evaluatorLayered: boolean;
   extractorCacheEnabled: boolean;
   prioritizeTopSoulChunks: boolean;
+  maxSoulChunks: number;
   extractionConcurrency: number;
   extractionTimeoutMs: number;
   extractionRetries: number;
@@ -34,10 +36,12 @@ export function resolveTrainingStrategy(options: {
   rawDocCount?: number;
   explicitRuntimePreset?: string;
   explicitOptimizationMode?: string;
+  providerName?: ProviderName | string;
 } = {}): TrainingStrategyDecision {
   const corpusScale = resolveCorpusScale(options.observability, options.rawDocCount);
   const corpusSegment = classifyCorpusSegment(corpusScale);
   const inputRoutingStrategy = options.inputRoutingStrategy ?? 'legacy';
+  const providerName = normalizeProviderName(options.providerName);
   const manualPreset = options.explicitRuntimePreset
     ? resolveTrainingRuntimePreset(options.explicitRuntimePreset)
     : null;
@@ -49,14 +53,15 @@ export function resolveTrainingStrategy(options: {
       requestedMode === 'auto' ? inferOptimizationMode(inputRoutingStrategy, corpusSegment) : requestedMode,
       corpusSegment,
       corpusScale,
-      'manual override applied on top of corpus-aware strategy resolution'
+      'manual override applied on top of corpus-aware strategy resolution',
+      providerName
     );
   }
 
   const preset = inferRuntimePreset(inputRoutingStrategy, corpusSegment);
   const optimizationMode = inferOptimizationMode(inputRoutingStrategy, corpusSegment);
   const reason = buildReason(inputRoutingStrategy, corpusSegment, corpusScale, optimizationMode);
-  return buildDecision(preset, optimizationMode, corpusSegment, corpusScale, reason);
+  return buildDecision(preset, optimizationMode, corpusSegment, corpusScale, reason, providerName);
 }
 
 export function selectSoulChunksForStrategy<T extends { document_id: string }>(
@@ -136,28 +141,77 @@ function buildDecision(
   optimizationMode: TrainingOptimizationMode,
   corpusSegment: TrainingCorpusSegment,
   corpusScale: number,
-  reason: string
+  reason: string,
+  providerName?: ProviderName
 ): TrainingStrategyDecision {
+  const kimiTightMode = providerName === 'kimi' && (corpusSegment === 'medium' || corpusSegment === 'large');
+  const extractionConcurrency = kimiTightMode
+    ? 1
+    : optimizationMode === 'combined' || corpusSegment === 'large'
+      ? 1
+      : 2;
+  const extractionRetries = kimiTightMode
+    ? 0
+    : optimizationMode === 'combined' || runtimePreset === 'robust'
+      ? 2
+      : 0;
+  const extractionTimeoutMs = kimiTightMode
+    ? 20_000
+    : optimizationMode === 'combined' || corpusSegment === 'large' || runtimePreset === 'robust'
+      ? 28_000
+      : 24_000;
+  const prioritizeTopSoulChunks =
+    kimiTightMode ||
+    optimizationMode === 'extractor' ||
+    optimizationMode === 'combined';
+  const maxSoulChunks = kimiTightMode
+    ? corpusSegment === 'large' ? 6 : 8
+    : corpusSegment === 'large'
+      ? 18
+      : 30;
   return {
     runtimePreset,
     optimizationMode,
     evaluatorLayered: optimizationMode === 'evaluator' || optimizationMode === 'combined',
     extractorCacheEnabled: true,
-    prioritizeTopSoulChunks: optimizationMode === 'extractor' || optimizationMode === 'combined',
-    extractionConcurrency: optimizationMode === 'combined' || corpusSegment === 'large' ? 1 : 2,
-    extractionTimeoutMs:
-      optimizationMode === 'combined' || corpusSegment === 'large' || runtimePreset === 'robust'
-        ? 28_000
-        : 24_000,
-    extractionRetries: optimizationMode === 'combined' || runtimePreset === 'robust' ? 2 : 0,
+    prioritizeTopSoulChunks,
+    maxSoulChunks,
+    extractionConcurrency,
+    extractionTimeoutMs,
+    extractionRetries,
     corpusSegment,
     corpusScale,
     reason,
   };
 }
 
+export function estimateExtractionStageTimeoutMs(
+  decision: Pick<TrainingStrategyDecision, 'extractionConcurrency' | 'extractionRetries' | 'extractionTimeoutMs'>,
+  chunkCount: number,
+  ceilingMs: number
+): number {
+  const safeChunkCount = Math.max(0, chunkCount);
+  const safeConcurrency = Math.max(1, decision.extractionConcurrency);
+  const batches = Math.max(1, Math.ceil(safeChunkCount / safeConcurrency));
+  const attemptsPerChunk = Math.max(1, decision.extractionRetries + 1);
+  const retryBackoffBudget = Math.max(0, decision.extractionRetries) * 1_200;
+  const estimated =
+    batches * (decision.extractionTimeoutMs * attemptsPerChunk + retryBackoffBudget) +
+    Math.max(8_000, safeChunkCount * 1_000);
+  return Math.max(30_000, Math.min(ceilingMs, estimated));
+}
+
+function normalizeProviderName(raw?: string): ProviderName | undefined {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (value === 'claude' || value === 'openai' || value === 'kimi' || value === 'gemini' || value === 'deepseek') {
+    return value;
+  }
+  return undefined;
+}
+
 export const __trainingStrategyTestables = {
   SMALL_CORPUS_MAX,
   MEDIUM_CORPUS_MAX,
   classifyCorpusSegment,
+  normalizeProviderName,
 };

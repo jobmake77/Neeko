@@ -12,6 +12,7 @@ import { MemoryStore } from '../../core/memory/store.js';
 import { TrainingLoop, TrainingProgress } from '../../core/training/loop.js';
 import { DataSourceRecommender } from '../../core/recommender/sources.js';
 import { settings } from '../../config/settings.js';
+import { resolvePreferredProviderName } from '../../config/model.js';
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'fs';
 import { dirname, extname, join, resolve } from 'path';
 import yaml from 'js-yaml';
@@ -326,6 +327,7 @@ export async function cmdCreate(
     inputRoutingStrategy: inputRouting,
     observability: routed.observability,
     rawDocCount: allDocs.length,
+    providerName: resolvePreferredProviderName(),
   });
   const cleanDocs = routed.cleanDocs;
   const chunks = routed.chunks;
@@ -334,7 +336,7 @@ export async function cmdCreate(
     routedSoulChunks,
     routed.routedDocs.map((item) => ({ document_id: item.doc.id, score: item.score })),
     strategyDecision,
-    Math.min(routedSoulChunks.length, 30)
+    Math.min(routedSoulChunks.length, strategyDecision.maxSoulChunks)
   );
   writeInputRoutingReport(personaDir, {
     strategy: inputRouting,

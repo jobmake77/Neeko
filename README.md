@@ -1,5 +1,9 @@
 # Neeko — 数字孪生工厂
 
+<p align="center">
+  <img src="./docs/assets/neeko-logo.png" alt="Neeko Logo" width="240" />
+</p>
+
 > 输入一个真实人物的公开数据，输出一个可工作的 AI 数字副本。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)

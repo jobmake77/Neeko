@@ -22,6 +22,7 @@ import { TrainingProfile } from '../../core/training/types.js';
 import { buildTrainingRunReport, buildTrainingRunReportFromRounds, TrainingRoundSnapshot } from '../../core/training/report.js';
 import { EvidenceBatch, TargetManifest } from '../../core/models/evidence.js';
 import {
+  resolveTrainingExecutionSettings,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
 } from '../../core/training/strategy-resolver.js';
@@ -87,6 +88,7 @@ export async function cmdCreate(
     rounds?: string;
     trainingProfile?: string;
     inputRouting?: string;
+    kimiStabilityMode?: string;
   }
 ): Promise<void> {
   intro(chalk.bold.cyan('✦ Neeko — 数字孪生工厂'));
@@ -436,9 +438,20 @@ export async function cmdCreate(
     }
 
     spin.start('Running cultivation loop...');
+    const executionSettings = resolveTrainingExecutionSettings({
+      strategyDecision,
+      providerName: resolvePreferredProviderName(),
+      rounds: maxRounds,
+      explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
+    });
     spin.message(
       `Training strategy: preset=${strategyDecision.runtimePreset}, optimization=${strategyDecision.optimizationMode}, segment=${strategyDecision.corpusSegment}`
     );
+    if (executionSettings.kimiStabilityMode !== 'standard') {
+      spin.message(
+        `Kimi stability: mode=${executionSettings.kimiStabilityMode}, director_interval=${executionSettings.directorReviewInterval}`
+      );
+    }
     const loop = new TrainingLoop(currentSoul, persona, store);
     const contextPath = join(personaDir, 'training-context.json');
     const originSkillsAdded = skillLibrary.origin_skills.length;
@@ -466,8 +479,12 @@ export async function cmdCreate(
     const result = await loop.run({
       maxRounds,
       profile,
-      runtimePreset: strategyDecision.runtimePreset,
-      evaluatorLayered: strategyDecision.evaluatorLayered,
+      runtimePreset: executionSettings.runtimePreset,
+      runtimeOverrides: executionSettings.runtimeOverrides,
+      evaluatorLayered: executionSettings.evaluatorLayered,
+      evaluatorDualReview: executionSettings.evaluatorDualReview,
+      directorReviewInterval: executionSettings.directorReviewInterval,
+      directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
       onProgress: (progress) => {
         spin.message(
           `Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten} nodes, quality ${(progress.avgQualityScore * 100).toFixed(0)}%, ` +

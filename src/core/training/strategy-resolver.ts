@@ -1,10 +1,16 @@
 import type { InputRoutingObservability, InputRoutingStrategy } from '../pipeline/evidence-routing.js';
-import { TrainingRuntimePreset, resolveTrainingRuntimePreset } from './runtime-tuning.js';
+import {
+  TrainingRuntimeOverrides,
+  TrainingRuntimePreset,
+  resolveTrainingRuntimePreset,
+} from './runtime-tuning.js';
 import type { ProviderName } from '../../config/model.js';
 
 export type TrainingOptimizationMode = 'baseline' | 'evaluator' | 'extractor' | 'combined';
 export type TrainingOptimizationModeInput = TrainingOptimizationMode | 'auto';
 export type TrainingCorpusSegment = 'unknown' | 'small' | 'medium' | 'large';
+export type KimiStabilityMode = 'standard' | 'tight_runtime' | 'sparse_director' | 'hybrid';
+export type KimiStabilityModeInput = KimiStabilityMode | 'auto';
 
 export interface TrainingStrategyDecision {
   runtimePreset: TrainingRuntimePreset;
@@ -21,12 +27,45 @@ export interface TrainingStrategyDecision {
   reason: string;
 }
 
+export interface KimiStabilityDecision {
+  mode: KimiStabilityMode;
+  runtimePreset: TrainingRuntimePreset;
+  runtimeOverrides?: TrainingRuntimeOverrides;
+  evaluatorLayered?: boolean;
+  evaluatorDualReview?: boolean;
+  directorReviewInterval: number;
+  directorAlwaysOnFinalRound: boolean;
+  reason: string;
+}
+
+export interface TrainingExecutionSettings {
+  runtimePreset: TrainingRuntimePreset;
+  runtimeOverrides?: TrainingRuntimeOverrides;
+  evaluatorLayered: boolean;
+  evaluatorDualReview?: boolean;
+  directorReviewInterval: number;
+  directorAlwaysOnFinalRound: boolean;
+  kimiStabilityMode: KimiStabilityMode;
+  kimiStabilityReason: string;
+}
+
 const SMALL_CORPUS_MAX = 120;
 const MEDIUM_CORPUS_MAX = 400;
 
 export function normalizeOptimizationMode(raw?: string, fallback: TrainingOptimizationModeInput = 'auto'): TrainingOptimizationModeInput {
   const value = String(raw ?? fallback).toLowerCase();
   if (value === 'baseline' || value === 'evaluator' || value === 'extractor' || value === 'combined') return value;
+  return 'auto';
+}
+
+export function normalizeKimiStabilityMode(
+  raw?: string,
+  fallback: KimiStabilityModeInput = 'auto'
+): KimiStabilityModeInput {
+  const value = String(raw ?? fallback).toLowerCase();
+  if (value === 'standard' || value === 'tight_runtime' || value === 'sparse_director' || value === 'hybrid') {
+    return value;
+  }
   return 'auto';
 }
 
@@ -86,6 +125,112 @@ export function selectSoulChunksForStrategy<T extends { document_id: string }>(
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .slice(0, boundedLimit)
     .map((item) => item.chunk);
+}
+
+export function resolveKimiStabilityDecision(options: {
+  baseDecision: Pick<TrainingStrategyDecision, 'runtimePreset' | 'evaluatorLayered' | 'corpusSegment'>;
+  providerName?: ProviderName | string;
+  rounds?: number;
+  explicitMode?: string;
+}): KimiStabilityDecision {
+  const providerName = normalizeProviderName(options.providerName);
+  const requestedMode = normalizeKimiStabilityMode(options.explicitMode, 'auto');
+  const mode =
+    requestedMode === 'auto'
+      ? 'standard'
+      : requestedMode;
+
+  if (providerName !== 'kimi') {
+    return {
+      mode: 'standard',
+      runtimePreset: options.baseDecision.runtimePreset,
+      evaluatorLayered: options.baseDecision.evaluatorLayered,
+      directorReviewInterval: 1,
+      directorAlwaysOnFinalRound: true,
+      reason: 'non-kimi provider keeps standard training cadence',
+    };
+  }
+
+  const tightRuntimeOverrides = buildTightRuntimeOverrides(options.baseDecision.runtimePreset);
+
+  if (mode === 'tight_runtime') {
+    return {
+      mode,
+      runtimePreset: options.baseDecision.runtimePreset,
+      runtimeOverrides: tightRuntimeOverrides,
+      evaluatorLayered: true,
+      evaluatorDualReview: false,
+      directorReviewInterval: 1,
+      directorAlwaysOnFinalRound: true,
+      reason: 'tight_runtime trims prompt budgets and disables evaluator dual-review to reduce Kimi second-round latency',
+    };
+  }
+
+  if (mode === 'sparse_director') {
+    return {
+      mode,
+      runtimePreset: options.baseDecision.runtimePreset,
+      runtimeOverrides: {
+        directorCompactPrompt: true,
+        directorTimeoutMs: Math.min(20_000, getSafeTimeout(tightRuntimeOverrides.directorTimeoutMs)),
+      },
+      evaluatorLayered: options.baseDecision.evaluatorLayered,
+      directorReviewInterval: Math.max(2, options.rounds ?? 2),
+      directorAlwaysOnFinalRound: true,
+      reason: 'sparse_director keeps normal training quality but only runs a full director review on the final round',
+    };
+  }
+
+  if (mode === 'hybrid') {
+    return {
+      mode,
+      runtimePreset: options.baseDecision.runtimePreset,
+      runtimeOverrides: tightRuntimeOverrides,
+      evaluatorLayered: true,
+      evaluatorDualReview: false,
+      directorReviewInterval: Math.max(2, options.rounds ?? 2),
+      directorAlwaysOnFinalRound: true,
+      reason: 'hybrid combines tighter runtime budgets with sparse director cadence for Kimi-heavy second-round runs',
+    };
+  }
+
+  return {
+    mode: 'standard',
+    runtimePreset: options.baseDecision.runtimePreset,
+    evaluatorLayered: options.baseDecision.evaluatorLayered,
+    directorReviewInterval: 1,
+    directorAlwaysOnFinalRound: true,
+    reason: 'standard keeps the existing Kimi training cadence for comparison',
+  };
+}
+
+export function resolveTrainingExecutionSettings(options: {
+  strategyDecision?: Pick<TrainingStrategyDecision, 'runtimePreset' | 'evaluatorLayered' | 'corpusSegment'>;
+  providerName?: ProviderName | string;
+  rounds?: number;
+  explicitKimiStabilityMode?: string;
+} = {}): TrainingExecutionSettings {
+  const stability = resolveKimiStabilityDecision({
+    baseDecision: options.strategyDecision ?? {
+      runtimePreset: 'balanced',
+      evaluatorLayered: false,
+      corpusSegment: 'unknown',
+    },
+    providerName: options.providerName,
+    rounds: options.rounds,
+    explicitMode: options.explicitKimiStabilityMode,
+  });
+
+  return {
+    runtimePreset: stability.runtimePreset,
+    runtimeOverrides: stability.runtimeOverrides,
+    evaluatorLayered: stability.evaluatorLayered ?? options.strategyDecision?.evaluatorLayered ?? false,
+    evaluatorDualReview: stability.evaluatorDualReview,
+    directorReviewInterval: stability.directorReviewInterval,
+    directorAlwaysOnFinalRound: stability.directorAlwaysOnFinalRound,
+    kimiStabilityMode: stability.mode,
+    kimiStabilityReason: stability.reason,
+  };
 }
 
 function resolveCorpusScale(
@@ -185,6 +330,33 @@ function buildDecision(
   };
 }
 
+function buildTightRuntimeOverrides(runtimePreset: TrainingRuntimePreset): TrainingRuntimeOverrides {
+  if (runtimePreset === 'fast') return {};
+  return {
+    trainerTimeoutMs: 22_000,
+    trainerRetries: 0,
+    trainerCompactPrompt: true,
+    personaMaxTokens: 280,
+    personaTimeoutMs: 28_000,
+    personaRetries: 1,
+    personaCompactPrompt: true,
+    personaMemoryLimit: 3,
+    personaMemoryMaxChars: 700,
+    directorTimeoutMs: 18_000,
+    directorRetries: 0,
+    directorCompactPrompt: true,
+    evaluatorTimeoutMs: 22_000,
+    evaluatorRetries: 1,
+    evaluatorMaxResponseChars: 850,
+    evaluatorCompactPrompt: true,
+    evaluatorLayered: true,
+  };
+}
+
+function getSafeTimeout(value?: number): number {
+  return Math.max(1, value ?? 0);
+}
+
 export function estimateExtractionStageTimeoutMs(
   decision: Pick<TrainingStrategyDecision, 'extractionConcurrency' | 'extractionRetries' | 'extractionTimeoutMs'>,
   chunkCount: number,
@@ -213,5 +385,6 @@ export const __trainingStrategyTestables = {
   SMALL_CORPUS_MAX,
   MEDIUM_CORPUS_MAX,
   classifyCorpusSegment,
+  buildTightRuntimeOverrides,
   normalizeProviderName,
 };

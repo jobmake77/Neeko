@@ -39,7 +39,13 @@ import {
   loadRawDocsCache,
   normalizeInputRoutingStrategy,
 } from '../../core/pipeline/evidence-routing.js';
-import { resolveTrainingStrategy, TrainingStrategyDecision } from '../../core/training/strategy-resolver.js';
+import {
+  resolveTrainingExecutionSettings,
+  resolveTrainingStrategy,
+  TrainingExecutionSettings,
+  TrainingStrategyDecision,
+} from '../../core/training/strategy-resolver.js';
+import { resolvePreferredProviderName } from '../../config/model.js';
 
 interface TrainRuntimeContext {
   dir: string;
@@ -61,6 +67,7 @@ interface TrainRuntimeContext {
   skillMetrics: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number };
   errorLedger: ErrorLedgerEntry[];
   strategyDecision: TrainingStrategyDecision;
+  executionSettings: TrainingExecutionSettings;
 }
 
 const TRACK_STAGE_TIMEOUT_MS = Number(process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? 180_000);
@@ -95,6 +102,7 @@ export async function cmdTrain(
     retries?: string;
     track?: string;
     fromCheckpoint?: string;
+    kimiStabilityMode?: string;
   } = {}
 ): Promise<void> {
   const dir = settings.getPersonaDir(slug);
@@ -124,6 +132,13 @@ export async function cmdTrain(
     inputRoutingStrategy: inputRouting,
     observability: inputRoutingReport?.observability,
     rawDocCount: rawDocs.length,
+    providerName: resolvePreferredProviderName(),
+  });
+  const executionSettings = resolveTrainingExecutionSettings({
+    strategyDecision,
+    providerName: resolvePreferredProviderName(),
+    rounds,
+    explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
   });
 
   const spin = createTrainSpinner();
@@ -162,6 +177,11 @@ export async function cmdTrain(
   spin.message(
     `训练策略已解析：preset=${strategyDecision.runtimePreset}，optimization=${strategyDecision.optimizationMode}，segment=${strategyDecision.corpusSegment}`
   );
+  if (executionSettings.kimiStabilityMode !== 'standard') {
+    spin.message(
+      `Kimi stability 已启用：mode=${executionSettings.kimiStabilityMode}，director_interval=${executionSettings.directorReviewInterval}`
+    );
+  }
 
   writeTrainingContext(contextPath, {
     state: 'running',
@@ -195,6 +215,7 @@ export async function cmdTrain(
     },
     errorLedger,
     strategyDecision,
+    executionSettings,
   };
 
   try {
@@ -340,8 +361,12 @@ async function runTrackLoop(
   const result = await loop.run({
     maxRounds: runtime.rounds,
     profile: perTrackProfile,
-    runtimePreset: runtime.strategyDecision.runtimePreset,
-    evaluatorLayered: runtime.strategyDecision.evaluatorLayered,
+    runtimePreset: runtime.executionSettings.runtimePreset,
+    runtimeOverrides: runtime.executionSettings.runtimeOverrides,
+    evaluatorLayered: runtime.executionSettings.evaluatorLayered,
+    evaluatorDualReview: runtime.executionSettings.evaluatorDualReview,
+    directorReviewInterval: runtime.executionSettings.directorReviewInterval,
+    directorAlwaysOnFinalRound: runtime.executionSettings.directorAlwaysOnFinalRound,
     onProgress: (progress) => {
       runtime.spin.message(
         `[${track}] Round ${progress.round}/${progress.maxRounds} — +${progress.nodesWritten}, quality ${(progress.avgQualityScore * 100).toFixed(0)}%`

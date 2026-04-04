@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import {
   __trainingStrategyTestables,
   estimateExtractionStageTimeoutMs,
+  normalizeKimiStabilityMode,
   normalizeOptimizationMode,
+  resolveTrainingExecutionSettings,
+  resolveKimiStabilityDecision,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
 } from '../dist/testing/training-strategy-test-entry.js';
@@ -12,6 +15,12 @@ test('normalizeOptimizationMode defaults to auto', () => {
   assert.equal(normalizeOptimizationMode(undefined), 'auto');
   assert.equal(normalizeOptimizationMode('combined'), 'combined');
   assert.equal(normalizeOptimizationMode('weird'), 'auto');
+});
+
+test('normalizeKimiStabilityMode defaults to auto', () => {
+  assert.equal(normalizeKimiStabilityMode(undefined), 'auto');
+  assert.equal(normalizeKimiStabilityMode('hybrid'), 'hybrid');
+  assert.equal(normalizeKimiStabilityMode('weird'), 'auto');
 });
 
 test('resolver keeps legacy on baseline optimization path', () => {
@@ -53,6 +62,77 @@ test('resolver tightens extraction settings for kimi on medium corpora', () => {
   assert.equal(decision.extractionTimeoutMs, 20000);
   assert.equal(decision.prioritizeTopSoulChunks, true);
   assert.equal(decision.maxSoulChunks, 8);
+});
+
+test('kimi stability resolver exposes multiple governance modes', () => {
+  const baseDecision = {
+    runtimePreset: 'robust',
+    evaluatorLayered: true,
+    corpusSegment: 'medium',
+  };
+
+  const tight = resolveKimiStabilityDecision({
+    baseDecision,
+    providerName: 'kimi',
+    rounds: 2,
+    explicitMode: 'tight_runtime',
+  });
+  const sparse = resolveKimiStabilityDecision({
+    baseDecision,
+    providerName: 'kimi',
+    rounds: 2,
+    explicitMode: 'sparse_director',
+  });
+  const hybrid = resolveKimiStabilityDecision({
+    baseDecision,
+    providerName: 'kimi',
+    rounds: 2,
+    explicitMode: 'hybrid',
+  });
+
+  assert.equal(tight.mode, 'tight_runtime');
+  assert.equal(tight.evaluatorDualReview, false);
+  assert.equal(tight.runtimeOverrides.evaluatorCompactPrompt, true);
+  assert.equal(sparse.mode, 'sparse_director');
+  assert.equal(sparse.directorReviewInterval, 2);
+  assert.equal(hybrid.mode, 'hybrid');
+  assert.equal(hybrid.evaluatorDualReview, false);
+  assert.equal(hybrid.directorReviewInterval, 2);
+});
+
+test('non-kimi provider stays on standard stability mode', () => {
+  const decision = resolveKimiStabilityDecision({
+    baseDecision: {
+      runtimePreset: 'robust',
+      evaluatorLayered: true,
+      corpusSegment: 'medium',
+    },
+    providerName: 'deepseek',
+    rounds: 2,
+    explicitMode: 'hybrid',
+  });
+
+  assert.equal(decision.mode, 'standard');
+  assert.equal(decision.directorReviewInterval, 1);
+});
+
+test('training execution settings inherit hybrid governance for kimi', () => {
+  const settings = resolveTrainingExecutionSettings({
+    strategyDecision: {
+      runtimePreset: 'robust',
+      evaluatorLayered: true,
+      corpusSegment: 'medium',
+    },
+    providerName: 'kimi',
+    rounds: 2,
+    explicitKimiStabilityMode: 'hybrid',
+  });
+
+  assert.equal(settings.kimiStabilityMode, 'hybrid');
+  assert.equal(settings.runtimePreset, 'robust');
+  assert.equal(settings.evaluatorLayered, true);
+  assert.equal(settings.evaluatorDualReview, false);
+  assert.equal(settings.directorReviewInterval, 2);
 });
 
 test('manual overrides still win over auto resolution', () => {

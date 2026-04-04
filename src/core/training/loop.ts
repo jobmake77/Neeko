@@ -11,14 +11,23 @@ import { RoundObservability, TrainingProfile } from './types.js';
 import { settings } from '../../config/settings.js';
 import { computeCoverageByOrigin, loadSkillLibrary } from '../skills/library.js';
 import { PersonaSkillLibrary } from '../skills/types.js';
-import { getTrainingRuntimeConfig, TrainingRuntimePreset } from './runtime-tuning.js';
+import {
+  mergeTrainingRuntimeConfig,
+  TrainingRuntimeConfig,
+  TrainingRuntimeOverrides,
+  TrainingRuntimePreset,
+} from './runtime-tuning.js';
 
 export interface TrainingOptions {
   maxRounds?: number;
   questionsPerRound?: number;
   profile?: TrainingProfile;
   runtimePreset?: TrainingRuntimePreset;
+  runtimeOverrides?: TrainingRuntimeOverrides;
   evaluatorLayered?: boolean;
+  evaluatorDualReview?: boolean;
+  directorReviewInterval?: number;
+  directorAlwaysOnFinalRound?: boolean;
   onProgress?: (progress: TrainingProgress) => void;
 }
 
@@ -30,6 +39,13 @@ export interface TrainingProgress {
   avgQualityScore: number;
   convergenceState: ConvergenceState;
   observability: RoundObservability;
+  runtime: {
+    trainerMs: number;
+    dialogueEvalMs: number;
+    directorMs: number;
+    totalRoundMs: number;
+    directorDecisionSource: 'llm' | 'fallback' | 'heuristic_skip';
+  };
   status: 'running' | 'converged' | 'max_rounds_reached';
 }
 
@@ -72,10 +88,14 @@ export class TrainingLoop {
       questionsPerRound = 5,
       profile = 'full',
       runtimePreset = 'balanced',
+      runtimeOverrides,
       evaluatorLayered,
+      evaluatorDualReview,
+      directorReviewInterval = 1,
+      directorAlwaysOnFinalRound = true,
       onProgress,
     } = options;
-    const runtime = getTrainingRuntimeConfig(runtimePreset);
+    const runtime = mergeTrainingRuntimeConfig(runtimePreset, runtimeOverrides);
 
     const convergenceHistory: ConvergenceState[] = [];
     const allPreviousQuestions: string[] = [];
@@ -84,7 +104,10 @@ export class TrainingLoop {
     const history: TrainingProgress[] = [];
 
     for (let round = 1; round <= maxRounds; round++) {
+      const roundStartedAt = Date.now();
+
       // ── Step 1: Generate questions ─────────────────────────────────────────
+      const trainerStartedAt = Date.now();
       const gapHints = this.skillGapHints();
       const gapPressure = this.skillGapPressure();
       const plan = this.trainingPolicy.buildQuestionPlan(
@@ -116,8 +139,10 @@ export class TrainingLoop {
         questionSet.map((q) => q.question),
         gapHints
       );
+      const trainerMs = Date.now() - trainerStartedAt;
 
       // ── Step 2: Run conversations + evaluate ───────────────────────────────
+      const dialogueEvalStartedAt = Date.now();
       const roundEvaluations: Evaluation[] = [];
       const dimensionCoverage = new Set<string>();
       let nodesWrittenThisRound = 0;
@@ -150,7 +175,9 @@ export class TrainingLoop {
           qItem.strategy,
           {
             calibrationEnabled: profile !== 'baseline' && profile !== 'a1',
-            dualReview: profile === 'a2' || profile === 'a3' || profile === 'a4' || profile === 'full',
+            dualReview:
+              evaluatorDualReview ??
+              (profile === 'a2' || profile === 'a3' || profile === 'a4' || profile === 'full'),
             disagreementThreshold: 0.2,
             timeoutMs: runtime.evaluatorTimeoutMs,
             retries: runtime.evaluatorRetries,
@@ -238,6 +265,7 @@ export class TrainingLoop {
         }
         // 'discard' and 'flag_contradiction' → no action (contradiction flagging could be extended)
       }
+      const dialogueEvalMs = Date.now() - dialogueEvalStartedAt;
 
       // ── Step 4: Director review ─────────────────────────────────────────────
       const avgQuality =
@@ -261,6 +289,13 @@ export class TrainingLoop {
         previousRound: previousRoundObservability,
       });
 
+      const directorStartedAt = Date.now();
+      const shouldRunDirectorModel = this.shouldRunDirectorReview({
+        round,
+        maxRounds,
+        interval: directorReviewInterval,
+        alwaysOnFinalRound: directorAlwaysOnFinalRound,
+      });
       const directorDecision = await this.directorAgent.review(this.soul, {
         round,
         questions_asked: questionSet.length,
@@ -273,7 +308,9 @@ export class TrainingLoop {
         timeoutMs: runtime.directorTimeoutMs,
         retries: runtime.directorRetries,
         compactPrompt: runtime.directorCompactPrompt,
+        skipModel: !shouldRunDirectorModel,
       });
+      const directorMs = Date.now() - directorStartedAt;
 
       // Apply director's soul updates
       if (directorDecision.soul_updates.problem_solving_approach) {
@@ -310,6 +347,13 @@ export class TrainingLoop {
         avgQualityScore: avgQuality,
         convergenceState,
         observability,
+        runtime: {
+          trainerMs,
+          dialogueEvalMs,
+          directorMs,
+          totalRoundMs: Date.now() - roundStartedAt,
+          directorDecisionSource: directorDecision.decision_source,
+        },
         status: 'running',
       };
 
@@ -330,6 +374,17 @@ export class TrainingLoop {
     }
 
     return { soul: this.soul, totalRounds: this.soul.training_rounds_completed, history };
+  }
+
+  private shouldRunDirectorReview(input: {
+    round: number;
+    maxRounds: number;
+    interval: number;
+    alwaysOnFinalRound: boolean;
+  }): boolean {
+    const safeInterval = Math.max(1, input.interval);
+    if (input.alwaysOnFinalRound && input.round === input.maxRounds) return true;
+    return input.round % safeInterval === 0;
   }
 
   private buildObservability(input: {

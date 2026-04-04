@@ -630,6 +630,9 @@ const DirectorDecisionSchema = z.object({
 });
 
 export type DirectorDecision = z.infer<typeof DirectorDecisionSchema>;
+export type DirectorDecisionSource = 'llm' | 'fallback' | 'heuristic_skip';
+
+type ResolvedDirectorDecision = DirectorDecision & { decision_source: DirectorDecisionSource };
 
 export class DirectorAgent {
   private model = resolveModel();
@@ -649,12 +652,21 @@ export class DirectorAgent {
       timeoutMs?: number;
       retries?: number;
       compactPrompt?: boolean;
+      skipModel?: boolean;
     } = {}
-  ): Promise<DirectorDecision> {
+  ): Promise<ResolvedDirectorDecision> {
     const heuristicCoverage = estimateCoverageScore(soul, roundSummary);
     const prompt = options.compactPrompt
       ? this.buildCompactDirectorPrompt(soul, roundSummary)
       : this.buildFullDirectorPrompt(soul, roundSummary);
+    if (options.skipModel) {
+      return this.buildFallbackDecision(
+        soul,
+        roundSummary,
+        heuristicCoverage,
+        'heuristic_skip'
+      );
+    }
     try {
       const { object } = await withRetry(
         () =>
@@ -672,28 +684,50 @@ export class DirectorAgent {
       );
       return {
         ...object,
+        decision_source: 'llm',
         coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage, object.coverage_score),
       };
     } catch (error) {
       runtimeFallbackMetrics.directorFallbacks++;
       console.warn(`[DirectorAgent] schema fallback enabled: ${String(error)}`);
-      const contradictionRate = roundSummary.observability?.contradictionRate ?? 0;
-      const shouldContinue = computeDirectorFallbackShouldContinue(
-        roundSummary.round,
-        roundSummary.avg_quality_score,
-        contradictionRate
-      );
-      return {
-        should_continue: shouldContinue,
-        convergence_reason: shouldContinue ? undefined : 'fallback-director: quality and contradiction reached target',
-        soul_updates: {
-          knowledge_gaps_identified: contradictionRate > 0.12 ? ['consistency'] : [],
-          new_blind_spots: [],
-        },
-        coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage),
-        quality_summary: `fallback-director review; contradiction=${contradictionRate.toFixed(2)}`,
-      };
+      return this.buildFallbackDecision(soul, roundSummary, heuristicCoverage, 'fallback');
     }
+  }
+
+  private buildFallbackDecision(
+    soul: Soul,
+    roundSummary: {
+      round: number;
+      questions_asked: number;
+      nodes_written: number;
+      nodes_reinforced: number;
+      avg_quality_score: number;
+      evaluations: Evaluation[];
+      observability?: RoundObservability;
+    },
+    heuristicCoverage: number,
+    source: DirectorDecisionSource
+  ): ResolvedDirectorDecision {
+    const contradictionRate = roundSummary.observability?.contradictionRate ?? 0;
+    const shouldContinue = computeDirectorFallbackShouldContinue(
+      roundSummary.round,
+      roundSummary.avg_quality_score,
+      contradictionRate
+    );
+    return {
+      should_continue: shouldContinue,
+      convergence_reason: shouldContinue ? undefined : 'fallback-director: quality and contradiction reached target',
+      soul_updates: {
+        knowledge_gaps_identified: contradictionRate > 0.12 ? ['consistency'] : [],
+        new_blind_spots: [],
+      },
+      coverage_score: stabilizeCoverageScore(soul.coverage_score, heuristicCoverage),
+      quality_summary:
+        source === 'heuristic_skip'
+          ? `heuristic director skip; contradiction=${contradictionRate.toFixed(2)}`
+          : `fallback-director review; contradiction=${contradictionRate.toFixed(2)}`,
+      decision_source: source,
+    };
   }
 
   private buildFullDirectorPrompt(

@@ -21,6 +21,7 @@ import {
 } from '../../core/pipeline/evidence-routing.js';
 import { SoulAggregator, SoulExtractor } from '../../core/soul/extractor.js';
 import {
+  resolveTrainingExecutionSettings,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
 } from '../../core/training/strategy-resolver.js';
@@ -66,6 +67,7 @@ export async function runExperimentProfiles(
   profiles: TrainingProfile[],
   options?: {
     timeoutMs?: number;
+    kimiStabilityMode?: string;
   }
 ): Promise<ExperimentRunResult> {
   const dir = settings.getPersonaDir(slug);
@@ -88,6 +90,7 @@ export async function runExperimentProfiles(
   const rows: ExperimentSummaryRow[] = [];
   const roundHistories: Record<string, ExperimentRoundHistoryItem[]> = {};
   const failures: Array<{ profile: TrainingProfile; error: string }> = [];
+  const providerName = resolvePreferredProviderName();
 
   const profileTimeoutMs = Math.max(10_000, options?.timeoutMs ?? EXPERIMENT_PROFILE_TIMEOUT_MS);
 
@@ -105,10 +108,24 @@ export async function runExperimentProfiles(
     await store.ensureCollection(persona.memory_collection);
 
     const loop = new TrainingLoop(soul, persona, store);
+    const executionSettings = resolveTrainingExecutionSettings({
+      providerName,
+      rounds,
+      explicitKimiStabilityMode: options?.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
+    });
     let result: Awaited<ReturnType<TrainingLoop['run']>> | null = null;
     try {
       result = await withTimeout(
-        loop.run({ maxRounds: rounds, profile }),
+        loop.run({
+          maxRounds: rounds,
+          profile,
+          runtimePreset: executionSettings.runtimePreset,
+          runtimeOverrides: executionSettings.runtimeOverrides,
+          evaluatorLayered: executionSettings.evaluatorLayered,
+          evaluatorDualReview: executionSettings.evaluatorDualReview,
+          directorReviewInterval: executionSettings.directorReviewInterval,
+          directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
+        }),
         profileTimeoutMs,
         `experiment profile ${profile}`
       );
@@ -181,6 +198,7 @@ export async function cmdExperiment(
     maxDuplicationRise?: string;
     inputRouting?: string;
     compareInputRouting?: boolean;
+    kimiStabilityMode?: string;
   }
 ): Promise<void> {
   const rounds = Math.max(1, parseInt(options.rounds ?? '10', 10));
@@ -201,9 +219,14 @@ export async function cmdExperiment(
   console.log(chalk.dim(`Rounds per profile: ${rounds}`));
   console.log(chalk.dim(`Profiles: ${DEFAULT_EXPERIMENT_PROFILES.join(', ')}\n`));
 
-  const { rows, roundHistories, failures } = await runExperimentProfiles(slug, rounds, DEFAULT_EXPERIMENT_PROFILES);
+  const providerName = resolvePreferredProviderName();
+  const kimiStabilityMode = options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE;
+
+  const { rows, roundHistories, failures } = await runExperimentProfiles(slug, rounds, DEFAULT_EXPERIMENT_PROFILES, {
+    kimiStabilityMode,
+  });
   const inputRoutingComparison = options.compareInputRouting
-    ? await runInputRoutingComparison(slug, rounds, 'full')
+    ? await runInputRoutingComparison(slug, rounds, 'full', kimiStabilityMode)
     : [];
 
   const best = [...rows].sort((a, b) => {
@@ -238,6 +261,8 @@ export async function cmdExperiment(
     round_histories: roundHistories,
     failures: failures ?? [],
     input_routing_strategy: inputRouting,
+    provider: providerName,
+    kimi_stability_mode: kimiStabilityMode ?? 'auto',
     input_routing_comparison: inputRoutingComparison,
     gate_result: gateResult,
   };
@@ -289,7 +314,8 @@ export async function cmdExperiment(
 async function runInputRoutingComparison(
   slug: string,
   rounds: number,
-  profile: TrainingProfile
+  profile: TrainingProfile,
+  kimiStabilityMode?: string
 ): Promise<InputRoutingComparisonRow[]> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
@@ -311,6 +337,7 @@ async function runInputRoutingComparison(
   const aggregator = new SoulAggregator();
   const strategies: InputRoutingStrategy[] = ['legacy', 'v2'];
   const rows: InputRoutingComparisonRow[] = [];
+  const providerName = resolvePreferredProviderName();
 
   for (const strategy of strategies) {
     const routed = routeEvidenceDocuments(docs, {
@@ -321,7 +348,13 @@ async function runInputRoutingComparison(
       inputRoutingStrategy: strategy,
       observability: routed.observability,
       rawDocCount: docs.length,
-      providerName: resolvePreferredProviderName(),
+      providerName,
+    });
+    const executionSettings = resolveTrainingExecutionSettings({
+      strategyDecision,
+      providerName,
+      rounds,
+      explicitKimiStabilityMode: kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
     const persona: Persona = {
       ...basePersona,
@@ -354,8 +387,12 @@ async function runInputRoutingComparison(
       loop.run({
         maxRounds: rounds,
         profile,
-        runtimePreset: strategyDecision.runtimePreset,
-        evaluatorLayered: strategyDecision.evaluatorLayered,
+        runtimePreset: executionSettings.runtimePreset,
+        runtimeOverrides: executionSettings.runtimeOverrides,
+        evaluatorLayered: executionSettings.evaluatorLayered,
+        evaluatorDualReview: executionSettings.evaluatorDualReview,
+        directorReviewInterval: executionSettings.directorReviewInterval,
+        directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
       }),
       EXPERIMENT_PROFILE_TIMEOUT_MS,
       `input routing ${strategy}`

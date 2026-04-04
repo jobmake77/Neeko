@@ -38,6 +38,7 @@ program
   .option('--rounds <n>', 'Training rounds to run automatically (0 = skip training)', '0')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
   .option('--input-routing <strategy>', 'Input routing strategy: legacy | v2')
+  .option('--kimi-stability-mode <mode>', 'Kimi 2-round governance: standard | tight_runtime | sparse_director | hybrid')
   .action(async (target?: string, options?: {
     skill?: string;
     targetManifest?: string;
@@ -46,6 +47,7 @@ program
     rounds?: string;
     trainingProfile?: string;
     inputRouting?: string;
+    kimiStabilityMode?: string;
   }) => {
     await cmdCreate(target, options ?? {});
   });
@@ -121,6 +123,7 @@ program
   .option('--max-duplication-rise <n>', 'Allowed duplication rate rise for full vs baseline', '0.05')
   .option('--input-routing <strategy>', 'Input routing strategy for experiment preprocessing: legacy | v2')
   .option('--compare-input-routing', 'Run extra full-profile legacy vs v2 input routing comparison')
+  .option('--kimi-stability-mode <mode>', 'Kimi training governance: standard | tight_runtime | sparse_director | hybrid')
   .action(async (slug: string, options: {
     rounds?: string;
     outputDir?: string;
@@ -130,6 +133,7 @@ program
     maxDuplicationRise?: string;
     inputRouting?: string;
     compareInputRouting?: boolean;
+    kimiStabilityMode?: string;
   }) => {
     await cmdExperiment(slug, options);
   });
@@ -172,6 +176,7 @@ program
   .option('--input-routing <strategy>', 'Input routing strategy placeholder: legacy | v2')
   .option('--retries <n>', 'Retry count for transient model format errors', '2')
   .option('--from-checkpoint <id>', 'Resume from checkpoint id (or latest)')
+  .option('--kimi-stability-mode <mode>', 'Kimi 2-round governance: standard | tight_runtime | sparse_director | hybrid')
   .action(async (slug: string, options: {
     mode?: string;
     rounds?: string;
@@ -180,6 +185,7 @@ program
     inputRouting?: string;
     retries?: string;
     fromCheckpoint?: string;
+    kimiStabilityMode?: string;
   }) => {
     await cmdTrain(slug, options);
   });

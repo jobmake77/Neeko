@@ -21,6 +21,8 @@ export interface TrainingRuntimeConfig {
   evaluatorLayered: boolean;
 }
 
+export type TrainingRuntimeOverrides = Partial<TrainingRuntimeConfig>;
+
 const PRESETS: Record<TrainingRuntimePreset, TrainingRuntimeConfig> = {
   balanced: {
     preset: 'balanced',
@@ -113,4 +115,15 @@ export function resolveTrainingRuntimePreset(raw?: string): TrainingRuntimePrese
 export function getTrainingRuntimeConfig(raw?: string): TrainingRuntimeConfig {
   const preset = resolveTrainingRuntimePreset(raw);
   return PRESETS[preset];
+}
+
+export function mergeTrainingRuntimeConfig(
+  preset: TrainingRuntimePreset,
+  overrides?: TrainingRuntimeOverrides
+): TrainingRuntimeConfig {
+  return {
+    ...getTrainingRuntimeConfig(preset),
+    ...(overrides ?? {}),
+    preset,
+  };
 }

@@ -10,6 +10,8 @@ export default defineConfig({
     'src/testing/evidence-layer-test-entry.ts',
     'src/testing/training-strategy-test-entry.ts',
     'src/testing/input-routing-ab-entry.ts',
+    'src/testing/kimi-stability-entry.ts',
+    'src/testing/kimi-stability-suite-entry.ts',
   ],
   format: ['esm'],
   target: 'node18',

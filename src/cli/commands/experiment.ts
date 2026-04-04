@@ -21,6 +21,7 @@ import {
 } from '../../core/pipeline/evidence-routing.js';
 import { SoulAggregator, SoulExtractor } from '../../core/soul/extractor.js';
 import {
+  recommendInputRoutingStrategy,
   resolveTrainingExecutionSettings,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
@@ -57,6 +58,11 @@ interface InputRoutingComparisonRow {
   duplicationRate: number;
   coverage: number;
   observability: InputRoutingObservability;
+}
+
+interface InputRoutingComparisonSummary {
+  recommendation: ReturnType<typeof recommendInputRoutingStrategy> | null;
+  rows: InputRoutingComparisonRow[];
 }
 
 const EXPERIMENT_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_PROFILE_TIMEOUT_MS ?? 90_000);
@@ -227,7 +233,7 @@ export async function cmdExperiment(
   });
   const inputRoutingComparison = options.compareInputRouting
     ? await runInputRoutingComparison(slug, rounds, 'full', kimiStabilityMode)
-    : [];
+    : { rows: [], recommendation: null };
 
   const best = [...rows].sort((a, b) => {
     const scoreA = a.avgQuality - a.contradictionRate * 0.2 - a.duplicationRate * 0.1;
@@ -263,7 +269,8 @@ export async function cmdExperiment(
     input_routing_strategy: inputRouting,
     provider: providerName,
     kimi_stability_mode: kimiStabilityMode ?? 'auto',
-    input_routing_comparison: inputRoutingComparison,
+    input_routing_comparison: inputRoutingComparison.rows,
+    input_routing_recommendation: inputRoutingComparison.recommendation,
     gate_result: gateResult,
   };
   writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf-8');
@@ -285,9 +292,9 @@ export async function cmdExperiment(
 
   console.log(chalk.dim(`JSON report: ${jsonPath}`));
   console.log(chalk.dim(`CSV report:  ${csvPath}`));
-  if (inputRoutingComparison.length > 0) {
+  if (inputRoutingComparison.rows.length > 0) {
     console.log(chalk.dim('Input routing comparison:'));
-    for (const row of inputRoutingComparison) {
+    for (const row of inputRoutingComparison.rows) {
       console.log(
         chalk.dim(
           `  ${row.label.padEnd(12)} quality=${(row.avgQuality * 100).toFixed(1)}% ` +
@@ -296,6 +303,16 @@ export async function cmdExperiment(
           `preset=${row.runtime_preset} opt=${row.optimization_mode}`
         )
       );
+    }
+    if (inputRoutingComparison.recommendation) {
+      const rec = inputRoutingComparison.recommendation;
+      console.log(
+        chalk.cyan(
+          `Recommended input routing: ${rec.recommendedStrategy} ` +
+          `(shape=${rec.shape}, confidence=${rec.confidence.toFixed(2)})`
+        )
+      );
+      console.log(chalk.dim(`  reason: ${rec.reason}`));
     }
   }
 
@@ -316,16 +333,16 @@ async function runInputRoutingComparison(
   rounds: number,
   profile: TrainingProfile,
   kimiStabilityMode?: string
-): Promise<InputRoutingComparisonRow[]> {
+): Promise<InputRoutingComparisonSummary> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
-  if (!existsSync(personaPath)) return [];
+  if (!existsSync(personaPath)) return { rows: [], recommendation: null };
 
   const basePersona = JSON.parse(readFileSync(personaPath, 'utf-8')) as Persona;
   const docs = loadRawDocsCache(dir);
   if (docs.length === 0) {
     console.log(chalk.yellow('Skipping input routing comparison: raw-docs cache not found.'));
-    return [];
+    return { rows: [], recommendation: null };
   }
 
   const store = new MemoryStore({
@@ -338,12 +355,16 @@ async function runInputRoutingComparison(
   const strategies: InputRoutingStrategy[] = ['legacy', 'v2'];
   const rows: InputRoutingComparisonRow[] = [];
   const providerName = resolvePreferredProviderName();
+  let legacyObservability: InputRoutingObservability | undefined;
+  let v2Observability: InputRoutingObservability | undefined;
 
   for (const strategy of strategies) {
     const routed = routeEvidenceDocuments(docs, {
       strategy,
       targetSignals: [basePersona.name, basePersona.handle ?? '', ...basePersona.source_targets],
     });
+    if (strategy === 'legacy') legacyObservability = routed.observability;
+    if (strategy === 'v2') v2Observability = routed.observability;
     const strategyDecision = resolveTrainingStrategy({
       inputRoutingStrategy: strategy,
       observability: routed.observability,
@@ -423,7 +444,13 @@ async function runInputRoutingComparison(
     });
   }
 
-  return rows;
+  return {
+    rows,
+    recommendation: recommendInputRoutingStrategy({
+      legacyObservability,
+      v2Observability,
+    }),
+  };
 }
 
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {

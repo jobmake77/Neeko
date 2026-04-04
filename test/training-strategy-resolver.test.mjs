@@ -5,6 +5,7 @@ import {
   estimateExtractionStageTimeoutMs,
   normalizeKimiStabilityMode,
   normalizeOptimizationMode,
+  recommendInputRoutingStrategy,
   resolveTrainingExecutionSettings,
   resolveKimiStabilityDecision,
   resolveTrainingStrategy,
@@ -133,6 +134,46 @@ test('training execution settings inherit hybrid governance for kimi', () => {
   assert.equal(settings.evaluatorLayered, true);
   assert.equal(settings.evaluatorDualReview, false);
   assert.equal(settings.directorReviewInterval, 2);
+});
+
+test('routing recommendation prefers v2 for dense noisy streams', () => {
+  const recommendation = recommendInputRoutingStrategy({
+    legacyObservability: {
+      clean_docs: 223,
+      chunks: 224,
+    },
+    v2Observability: {
+      raw_docs: 337,
+      clean_docs: 223,
+      chunks: 119,
+      soul_docs: 59,
+      memory_docs: 59,
+      discard_docs: 219,
+    },
+  });
+
+  assert.equal(recommendation.recommendedStrategy, 'v2');
+  assert.equal(recommendation.shape, 'dense_noisy_stream');
+});
+
+test('routing recommendation prefers legacy for high-signal archives', () => {
+  const recommendation = recommendInputRoutingStrategy({
+    legacyObservability: {
+      clean_docs: 305,
+      chunks: 318,
+    },
+    v2Observability: {
+      raw_docs: 325,
+      clean_docs: 305,
+      chunks: 274,
+      soul_docs: 193,
+      memory_docs: 68,
+      discard_docs: 64,
+    },
+  });
+
+  assert.equal(recommendation.recommendedStrategy, 'legacy');
+  assert.equal(recommendation.shape, 'high_signal_archive');
 });
 
 test('manual overrides still win over auto resolution', () => {

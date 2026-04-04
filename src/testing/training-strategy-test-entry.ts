@@ -3,6 +3,7 @@ export {
   estimateExtractionStageTimeoutMs,
   normalizeKimiStabilityMode,
   normalizeOptimizationMode,
+  recommendInputRoutingStrategy,
   resolveTrainingExecutionSettings,
   resolveKimiStabilityDecision,
   resolveTrainingStrategy,

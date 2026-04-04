@@ -11,6 +11,7 @@ export type TrainingOptimizationModeInput = TrainingOptimizationMode | 'auto';
 export type TrainingCorpusSegment = 'unknown' | 'small' | 'medium' | 'large';
 export type KimiStabilityMode = 'standard' | 'tight_runtime' | 'sparse_director' | 'hybrid';
 export type KimiStabilityModeInput = KimiStabilityMode | 'auto';
+export type CorpusShape = 'unknown' | 'dense_noisy_stream' | 'high_signal_archive' | 'balanced_mixed';
 
 export interface TrainingStrategyDecision {
   runtimePreset: TrainingRuntimePreset;
@@ -47,6 +48,21 @@ export interface TrainingExecutionSettings {
   directorAlwaysOnFinalRound: boolean;
   kimiStabilityMode: KimiStabilityMode;
   kimiStabilityReason: string;
+}
+
+export interface InputRoutingRecommendation {
+  recommendedStrategy: InputRoutingStrategy;
+  shape: CorpusShape;
+  confidence: number;
+  reason: string;
+  metrics: {
+    legacyChunkLoad: number;
+    v2ChunkLoad: number;
+    v2SoulRetention: number;
+    v2MemoryRetention: number;
+    v2DiscardRatio: number;
+    v2ChunkCompression: number;
+  };
 }
 
 const SMALL_CORPUS_MAX = 120;
@@ -233,6 +249,91 @@ export function resolveTrainingExecutionSettings(options: {
   };
 }
 
+export function recommendInputRoutingStrategy(options: {
+  legacyObservability?: Partial<InputRoutingObservability> | null;
+  v2Observability?: Partial<InputRoutingObservability> | null;
+}): InputRoutingRecommendation {
+  const legacyCleanDocs = Math.max(0, options.legacyObservability?.clean_docs ?? options.v2Observability?.clean_docs ?? 0);
+  const legacyChunkLoad = safeRatio(options.legacyObservability?.chunks, legacyCleanDocs);
+  const v2CleanDocs = Math.max(0, options.v2Observability?.clean_docs ?? legacyCleanDocs);
+  const v2ChunkLoad = safeRatio(options.v2Observability?.chunks, v2CleanDocs);
+  const v2SoulRetention = safeRatio(options.v2Observability?.soul_docs, v2CleanDocs);
+  const v2MemoryRetention = safeRatio(options.v2Observability?.memory_docs, v2CleanDocs);
+  const v2DiscardRatio = safeRatio(options.v2Observability?.discard_docs, options.v2Observability?.raw_docs ?? v2CleanDocs);
+  const v2ChunkCompression = safeRatio(v2ChunkLoad, legacyChunkLoad || 1);
+
+  if (v2CleanDocs === 0 || legacyCleanDocs === 0) {
+    return {
+      recommendedStrategy: 'legacy',
+      shape: 'unknown',
+      confidence: 0.25,
+      reason: 'insufficient routing observability, keeping the conservative legacy default',
+      metrics: {
+        legacyChunkLoad,
+        v2ChunkLoad,
+        v2SoulRetention,
+        v2MemoryRetention,
+        v2DiscardRatio,
+        v2ChunkCompression,
+      },
+    };
+  }
+
+  if (v2SoulRetention <= 0.35 && v2DiscardRatio >= 0.5 && v2ChunkCompression <= 0.7) {
+    return {
+      recommendedStrategy: 'v2',
+      shape: 'dense_noisy_stream',
+      confidence: 0.86,
+      reason: 'v2 is filtering a large amount of noisy material and sharply reducing chunk load, which matches a dense short-form stream',
+      metrics: {
+        legacyChunkLoad,
+        v2ChunkLoad,
+        v2SoulRetention,
+        v2MemoryRetention,
+        v2DiscardRatio,
+        v2ChunkCompression,
+      },
+    };
+  }
+
+  if (v2SoulRetention >= 0.55 && v2DiscardRatio <= 0.25 && v2ChunkCompression >= 0.8) {
+    return {
+      recommendedStrategy: 'legacy',
+      shape: 'high_signal_archive',
+      confidence: 0.8,
+      reason: 'v2 is keeping most material anyway, so the corpus already looks high-signal and legacy is less likely to over-filter nuance',
+      metrics: {
+        legacyChunkLoad,
+        v2ChunkLoad,
+        v2SoulRetention,
+        v2MemoryRetention,
+        v2DiscardRatio,
+        v2ChunkCompression,
+      },
+    };
+  }
+
+  const v2AdvantageScore =
+    clamp((1 - v2SoulRetention) * 0.45 + v2DiscardRatio * 0.35 + (1 - v2ChunkCompression) * 0.2);
+  const recommendV2 = v2AdvantageScore >= 0.5;
+  return {
+    recommendedStrategy: recommendV2 ? 'v2' : 'legacy',
+    shape: 'balanced_mixed',
+    confidence: Math.max(0.52, Math.abs(v2AdvantageScore - 0.5) + 0.5),
+    reason: recommendV2
+      ? 'the corpus looks mixed, but v2 still removes enough low-signal load to be worth keeping'
+      : 'the corpus looks mixed, but the remaining signal does not justify the extra routing selectivity of v2',
+    metrics: {
+      legacyChunkLoad,
+      v2ChunkLoad,
+      v2SoulRetention,
+      v2MemoryRetention,
+      v2DiscardRatio,
+      v2ChunkCompression,
+    },
+  };
+}
+
 function resolveCorpusScale(
   observability?: Partial<InputRoutingObservability> | null,
   rawDocCount?: number
@@ -357,6 +458,13 @@ function getSafeTimeout(value?: number): number {
   return Math.max(1, value ?? 0);
 }
 
+function safeRatio(numerator?: number | null, denominator?: number | null): number {
+  const top = Math.max(0, numerator ?? 0);
+  const bottom = Math.max(0, denominator ?? 0);
+  if (bottom <= 0) return 0;
+  return top / bottom;
+}
+
 export function estimateExtractionStageTimeoutMs(
   decision: Pick<TrainingStrategyDecision, 'extractionConcurrency' | 'extractionRetries' | 'extractionTimeoutMs'>,
   chunkCount: number,
@@ -387,4 +495,5 @@ export const __trainingStrategyTestables = {
   classifyCorpusSegment,
   buildTightRuntimeOverrides,
   normalizeProviderName,
+  safeRatio,
 };

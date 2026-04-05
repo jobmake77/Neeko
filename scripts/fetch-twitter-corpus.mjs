@@ -235,7 +235,7 @@ function resolveSearchModes() {
 }
 
 function shouldRetryOpenCliError(message) {
-  return /Detached while handling command|Failed to start opencli daemon|Browser Bridge not connected|connection error|timed out|timeout/i.test(
+  return /Detached while handling command|Failed to start opencli daemon|Browser Bridge not connected|connection error|timed out|timeout|SPA navigation .*Final path: \/explore|Final path: \/explore/i.test(
     String(message || '')
   );
 }

@@ -75,6 +75,7 @@ const docs = rows
   }));
 
 fs.mkdirSync(outDir, { recursive: true });
+fs.writeFileSync(path.join(outDir, 'raw-docs.json'), JSON.stringify(docs, null, 2));
 
 const snapshot = buildCorpusSnapshot(docs, { personaSlug });
 const shardPlan = planCorpusShards(docs, {

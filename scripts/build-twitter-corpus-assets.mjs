@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import yaml from 'js-yaml';
 
 const [
   corpusPathArg,
@@ -52,7 +53,8 @@ if (!Array.isArray(rows)) {
 }
 
 const inferredHandle = inferHandle(rows);
-const personaSlug = `${inferredHandle}-corpus-validation`;
+const personaSlug = path.basename(outDir);
+const now = new Date().toISOString();
 const docs = rows
   .filter((tweet) => tweet && tweet.id && tweet.text && String(tweet.text).trim())
   .map((tweet) => ({
@@ -76,6 +78,25 @@ const docs = rows
 
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, 'raw-docs.json'), JSON.stringify(docs, null, 2));
+fs.writeFileSync(
+  path.join(outDir, 'persona.json'),
+  JSON.stringify(buildPersonaAsset({
+    handle: inferredHandle,
+    personaSlug,
+    corpusPath,
+    docCount: docs.length,
+    now,
+  }), null, 2)
+);
+fs.writeFileSync(
+  path.join(outDir, 'soul.yaml'),
+  yaml.dump(buildEmptySoulAsset({
+    handle: inferredHandle,
+    corpusPath,
+    now,
+  })),
+  'utf8'
+);
 
 const snapshot = buildCorpusSnapshot(docs, { personaSlug });
 const shardPlan = planCorpusShards(docs, {
@@ -109,6 +130,12 @@ const shardResults = distillCorpusShards(docs, shardPlan, {
 writeShardDistillationAssets(outDir, shardResults);
 const merged = mergeShardDistillationResults(shardResults, { strategy });
 writeGlobalMergeAssets(outDir, merged);
+const trainingSeedPath = path.join(outDir, 'training-seed.json');
+if (fs.existsSync(trainingSeedPath)) {
+  const trainingSeed = fs.readFileSync(trainingSeedPath, 'utf8');
+  fs.writeFileSync(path.join(outDir, 'training-seed-legacy.json'), trainingSeed);
+  fs.writeFileSync(path.join(outDir, 'training-seed-v2.json'), trainingSeed);
+}
 
 const summary = {
   corpus: corpusPath,
@@ -140,4 +167,72 @@ function inferHandle(rows) {
     if (match?.[1] && match[1].toLowerCase() !== 'i') return match[1].replace(/^@/, '').toLowerCase();
   }
   return 'twitter-user';
+}
+
+function buildPersonaAsset({ handle, personaSlug, corpusPath, docCount, now }) {
+  return {
+    id: crypto.randomUUID(),
+    name: handle,
+    slug: personaSlug,
+    handle: `@${handle}`,
+    mode: 'single',
+    source_targets: [handle, `@${handle}`, corpusPath],
+    soul_path: 'soul.yaml',
+    memory_collection: `nico_${personaSlug}`,
+    status: 'created',
+    training_rounds: 0,
+    memory_node_count: 0,
+    doc_count: docCount,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+function buildEmptySoulAsset({ handle, corpusPath, now }) {
+  return {
+    version: 1,
+    target_name: handle,
+    target_handle: `@${handle}`,
+    created_at: now,
+    updated_at: now,
+    data_sources: [corpusPath],
+    total_chunks_processed: 0,
+    language_style: {
+      vocabulary_preferences: [],
+      sentence_patterns: [],
+      formality_level: 0.5,
+      avg_sentence_length: 'medium',
+      punctuation_quirks: [],
+      frequent_phrases: [],
+      languages_used: [],
+    },
+    values: {
+      core_beliefs: [],
+      priorities: [],
+      known_stances: {},
+    },
+    thinking_patterns: {
+      reasoning_style: [],
+      decision_frameworks: [],
+      cognitive_biases: [],
+      problem_solving_approach: '',
+      first_principles_tendency: 0.5,
+      analogy_usage: 'occasional',
+    },
+    behavioral_traits: {
+      social_patterns: [],
+      stress_responses: [],
+      signature_behaviors: [],
+      humor_style: 'none',
+      controversy_handling: 'engages-carefully',
+    },
+    knowledge_domains: {
+      expert: [],
+      familiar: [],
+      blind_spots: [],
+    },
+    overall_confidence: 0,
+    coverage_score: 0,
+    training_rounds_completed: 0,
+  };
 }

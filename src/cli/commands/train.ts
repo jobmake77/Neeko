@@ -35,11 +35,31 @@ import { createFailureLedgerEntry, classifyFailure } from '../../core/training/f
 import { runTrainingOrchestrator } from '../../core/training/orchestrator.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
 import {
+  buildCorpusSnapshot,
+  buildInputRunManifest,
+  planCorpusShards,
+  writeCorpusPlanningAssets,
+  writeShardCorpusAssets,
+} from '../../core/pipeline/corpus-plan.js';
+import {
+  distillCorpusShards,
+  writeShardDistillationAssets,
+} from '../../core/pipeline/shard-distillation.js';
+import {
+  mergeShardDistillationResults,
+  writeGlobalMergeAssets,
+} from '../../core/pipeline/global-merge.js';
+import {
+  loadTrainingSeedHints,
+  normalizeTrainingSeedMode,
+} from '../../core/training/training-seed.js';
+import {
   loadInputRoutingReport,
   loadRawDocsCache,
   normalizeInputRoutingStrategy,
 } from '../../core/pipeline/evidence-routing.js';
 import {
+  recommendInputRoutingStrategy,
   resolveTrainingExecutionSettings,
   resolveTrainingStrategy,
   TrainingExecutionSettings,
@@ -68,6 +88,7 @@ interface TrainRuntimeContext {
   errorLedger: ErrorLedgerEntry[];
   strategyDecision: TrainingStrategyDecision;
   executionSettings: TrainingExecutionSettings;
+  trainingSeedHints: string[];
 }
 
 const TRACK_STAGE_TIMEOUT_MS = Number(process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? 180_000);
@@ -99,6 +120,7 @@ export async function cmdTrain(
     mode?: string;
     trainingProfile?: string;
     inputRouting?: string;
+    trainingSeedMode?: string;
     retries?: string;
     track?: string;
     fromCheckpoint?: string;
@@ -127,19 +149,60 @@ export async function cmdTrain(
     normalizeInputRoutingStrategy(String(settings.get('defaultInputRoutingStrategy') ?? 'legacy'))
   );
   const inputRoutingReport = loadInputRoutingReport(dir, inputRouting);
+  const legacyRoutingReport = loadInputRoutingReport(dir, 'legacy');
+  const v2RoutingReport = loadInputRoutingReport(dir, 'v2');
   const rawDocs = loadRawDocsCache(dir);
+  const providerName = resolvePreferredProviderName();
+  const trainingSeedMode = normalizeTrainingSeedMode(options.trainingSeedMode);
+  const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
   const strategyDecision = resolveTrainingStrategy({
     inputRoutingStrategy: inputRouting,
     observability: inputRoutingReport?.observability,
     rawDocCount: rawDocs.length,
-    providerName: resolvePreferredProviderName(),
+    providerName,
   });
   const executionSettings = resolveTrainingExecutionSettings({
     strategyDecision,
-    providerName: resolvePreferredProviderName(),
+    providerName,
     rounds,
     explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
   });
+  if (rawDocs.length > 0) {
+    const snapshot = buildCorpusSnapshot(rawDocs, { personaSlug: persona.slug });
+    const shardPlan = planCorpusShards(rawDocs, { personaSlug: persona.slug });
+    const recommendation =
+      legacyRoutingReport?.observability && v2RoutingReport?.observability
+        ? recommendInputRoutingStrategy({
+          legacyObservability: legacyRoutingReport.observability,
+          v2Observability: v2RoutingReport.observability,
+        })
+        : null;
+    const inputRunManifest = buildInputRunManifest({
+      personaSlug: persona.slug,
+      snapshot,
+      shardPlan,
+      selectedInputRouting: inputRouting,
+      selectedKimiStabilityMode: executionSettings.kimiStabilityMode,
+      provider: providerName,
+      requestedRounds: rounds,
+      trainingProfile: profile,
+      recommendation,
+    });
+    writeCorpusPlanningAssets(dir, {
+      snapshot,
+      shardPlan,
+      manifest: inputRunManifest,
+    });
+    writeShardCorpusAssets(dir, rawDocs, shardPlan);
+    const shardDistillationResults = distillCorpusShards(rawDocs, shardPlan, {
+      strategy: inputRouting,
+      strategyDecision,
+    });
+    writeShardDistillationAssets(dir, shardDistillationResults);
+    writeGlobalMergeAssets(dir, mergeShardDistillationResults(shardDistillationResults, {
+      strategy: inputRouting,
+    }));
+  }
 
   const spin = createTrainSpinner();
   const store = new MemoryStore({
@@ -182,6 +245,11 @@ export async function cmdTrain(
       `Kimi stability 已启用：mode=${executionSettings.kimiStabilityMode}，director_interval=${executionSettings.directorReviewInterval}`
     );
   }
+  if (trainingSeedSelection.mode !== 'off') {
+    spin.message(
+      `Training seed hints 已启用：mode=${trainingSeedSelection.mode}，hints=${trainingSeedSelection.hints.length}（${trainingSeedSelection.reason}）`
+    );
+  }
 
   writeTrainingContext(contextPath, {
     state: 'running',
@@ -216,6 +284,7 @@ export async function cmdTrain(
     errorLedger,
     strategyDecision,
     executionSettings,
+    trainingSeedHints: trainingSeedSelection.hints,
   };
 
   try {
@@ -361,6 +430,7 @@ async function runTrackLoop(
   const result = await loop.run({
     maxRounds: runtime.rounds,
     profile: perTrackProfile,
+    trainingSeedHints: runtime.trainingSeedHints,
     runtimePreset: runtime.executionSettings.runtimePreset,
     runtimeOverrides: runtime.executionSettings.runtimeOverrides,
     evaluatorLayered: runtime.executionSettings.evaluatorLayered,

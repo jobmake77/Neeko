@@ -38,6 +38,7 @@ program
   .option('--rounds <n>', 'Training rounds to run automatically (0 = skip training)', '0')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
   .option('--input-routing <strategy>', 'Input routing strategy: legacy | v2')
+  .option('--training-seed-mode <mode>', 'Gray training-seed hints: off | topics | signals', 'off')
   .option('--kimi-stability-mode <mode>', 'Kimi 2-round governance: standard | tight_runtime | sparse_director | hybrid')
   .action(async (target?: string, options?: {
     skill?: string;
@@ -47,6 +48,7 @@ program
     rounds?: string;
     trainingProfile?: string;
     inputRouting?: string;
+    trainingSeedMode?: string;
     kimiStabilityMode?: string;
   }) => {
     await cmdCreate(target, options ?? {});
@@ -115,24 +117,36 @@ program
 program
   .command('experiment <slug>')
   .description('Run A/B training profiles (baseline, a1-a4) for quality comparison')
+  .option('--profiles <csv>', 'Profiles to run, comma-separated: baseline,a1,a2,a3,a4,full')
   .option('--rounds <n>', 'Rounds per profile', '10')
+  .option('--questions-per-round <n>', 'Questions per round for experiment runs', '5')
   .option('--output-dir <dir>', 'Write JSON/CSV reports to this directory')
   .option('--gate', 'Enable quality gate: compare full vs baseline and fail on regression')
   .option('--max-quality-drop <n>', 'Allowed quality drop for full vs baseline', '0.02')
   .option('--max-contradiction-rise <n>', 'Allowed contradiction rate rise for full vs baseline', '0.03')
   .option('--max-duplication-rise <n>', 'Allowed duplication rate rise for full vs baseline', '0.05')
   .option('--input-routing <strategy>', 'Input routing strategy for experiment preprocessing: legacy | v2')
+  .option('--training-seed-mode <mode>', 'Gray training-seed hints for profile runs: off | topics | signals', 'off')
+  .option('--skip-profile-sweep', 'Skip profile sweep and only run extra comparison tracks')
   .option('--compare-input-routing', 'Run extra full-profile legacy vs v2 input routing comparison')
+  .option('--compare-training-seed', 'Run extra full-profile legacy/off vs v2/off/topics/signals comparison')
+  .option('--compare-variants <csv>', 'Override comparison variants, e.g. legacy:off,v2:off,v2:signals')
   .option('--kimi-stability-mode <mode>', 'Kimi training governance: standard | tight_runtime | sparse_director | hybrid')
   .action(async (slug: string, options: {
+    profiles?: string;
     rounds?: string;
+    questionsPerRound?: string;
     outputDir?: string;
     gate?: boolean;
     maxQualityDrop?: string;
     maxContradictionRise?: string;
     maxDuplicationRise?: string;
     inputRouting?: string;
+    trainingSeedMode?: string;
+    skipProfileSweep?: boolean;
     compareInputRouting?: boolean;
+    compareTrainingSeed?: boolean;
+    compareVariants?: string;
     kimiStabilityMode?: string;
   }) => {
     await cmdExperiment(slug, options);
@@ -174,6 +188,7 @@ program
   .option('--track <track>', 'Track: persona_extract | work_execute | full_serial', 'full_serial')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
   .option('--input-routing <strategy>', 'Input routing strategy placeholder: legacy | v2')
+  .option('--training-seed-mode <mode>', 'Gray training-seed hints: off | topics | signals', 'off')
   .option('--retries <n>', 'Retry count for transient model format errors', '2')
   .option('--from-checkpoint <id>', 'Resume from checkpoint id (or latest)')
   .option('--kimi-stability-mode <mode>', 'Kimi 2-round governance: standard | tight_runtime | sparse_director | hybrid')
@@ -183,6 +198,7 @@ program
     track?: string;
     trainingProfile?: string;
     inputRouting?: string;
+    trainingSeedMode?: string;
     retries?: string;
     fromCheckpoint?: string;
     kimiStabilityMode?: string;

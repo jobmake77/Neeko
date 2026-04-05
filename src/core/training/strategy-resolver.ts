@@ -253,6 +253,13 @@ export function recommendInputRoutingStrategy(options: {
   legacyObservability?: Partial<InputRoutingObservability> | null;
   v2Observability?: Partial<InputRoutingObservability> | null;
 }): InputRoutingRecommendation {
+  const corpusScale = Math.max(
+    0,
+    options.v2Observability?.clean_docs ??
+      options.v2Observability?.raw_docs ??
+      options.legacyObservability?.clean_docs ??
+      0
+  );
   const legacyCleanDocs = Math.max(0, options.legacyObservability?.clean_docs ?? options.v2Observability?.clean_docs ?? 0);
   const legacyChunkLoad = safeRatio(options.legacyObservability?.chunks, legacyCleanDocs);
   const v2CleanDocs = Math.max(0, options.v2Observability?.clean_docs ?? legacyCleanDocs);
@@ -297,6 +304,27 @@ export function recommendInputRoutingStrategy(options: {
   }
 
   if (v2SoulRetention >= 0.55 && v2DiscardRatio <= 0.25 && v2ChunkCompression >= 0.8) {
+    const largeCorpusMixedLift =
+      corpusScale >= 400 &&
+      v2MemoryRetention >= 0.18 &&
+      v2DiscardRatio >= 0.06 &&
+      v2ChunkCompression <= 0.96;
+    if (largeCorpusMixedLift) {
+      return {
+        recommendedStrategy: 'v2',
+        shape: 'balanced_mixed',
+        confidence: 0.74,
+        reason: 'the corpus is large and still preserves a meaningful memory/discard layer under v2, so the extra routing structure is worth keeping at scale',
+        metrics: {
+          legacyChunkLoad,
+          v2ChunkLoad,
+          v2SoulRetention,
+          v2MemoryRetention,
+          v2DiscardRatio,
+          v2ChunkCompression,
+        },
+      };
+    }
     return {
       recommendedStrategy: 'legacy',
       shape: 'high_signal_archive',
@@ -332,6 +360,10 @@ export function recommendInputRoutingStrategy(options: {
       v2ChunkCompression,
     },
   };
+}
+
+function clamp(value: number, min = 0, max = 1): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function resolveCorpusScale(

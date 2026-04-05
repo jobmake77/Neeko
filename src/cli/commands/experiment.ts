@@ -13,6 +13,11 @@ import { ExperimentSummaryRow, evaluateGate } from '../../core/training/ab-repor
 import { TrainingProfile } from '../../core/training/types.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
 import {
+  loadTrainingSeedHints,
+  normalizeTrainingSeedMode,
+  TrainingSeedMode,
+} from '../../core/training/training-seed.js';
+import {
   InputRoutingObservability,
   InputRoutingStrategy,
   loadRawDocsCache,
@@ -48,6 +53,8 @@ interface InputRoutingComparisonRow {
   label: string;
   profile: TrainingProfile;
   input_routing: InputRoutingStrategy;
+  training_seed_mode: TrainingSeedMode;
+  soul_source: 'training_seed' | 'extractor' | 'empty';
   runtime_preset: string;
   optimization_mode: string;
   corpus_segment: string;
@@ -74,6 +81,8 @@ export async function runExperimentProfiles(
   options?: {
     timeoutMs?: number;
     kimiStabilityMode?: string;
+    trainingSeedMode?: string;
+    questionsPerRound?: number;
   }
 ): Promise<ExperimentRunResult> {
   const dir = settings.getPersonaDir(slug);
@@ -97,6 +106,8 @@ export async function runExperimentProfiles(
   const roundHistories: Record<string, ExperimentRoundHistoryItem[]> = {};
   const failures: Array<{ profile: TrainingProfile; error: string }> = [];
   const providerName = resolvePreferredProviderName();
+  const trainingSeedMode = normalizeTrainingSeedMode(options?.trainingSeedMode);
+  const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
 
   const profileTimeoutMs = Math.max(10_000, options?.timeoutMs ?? EXPERIMENT_PROFILE_TIMEOUT_MS);
 
@@ -125,6 +136,8 @@ export async function runExperimentProfiles(
         loop.run({
           maxRounds: rounds,
           profile,
+          questionsPerRound: Math.max(1, options?.questionsPerRound ?? 5),
+          trainingSeedHints: trainingSeedSelection.hints,
           runtimePreset: executionSettings.runtimePreset,
           runtimeOverrides: executionSettings.runtimeOverrides,
           evaluatorLayered: executionSettings.evaluatorLayered,
@@ -196,22 +209,30 @@ export async function runExperimentProfiles(
 export async function cmdExperiment(
   slug: string,
   options: {
+    profiles?: string;
     rounds?: string;
+    questionsPerRound?: string;
     outputDir?: string;
     gate?: boolean;
     maxQualityDrop?: string;
     maxContradictionRise?: string;
     maxDuplicationRise?: string;
     inputRouting?: string;
+    trainingSeedMode?: string;
+    skipProfileSweep?: boolean;
     compareInputRouting?: boolean;
+    compareTrainingSeed?: boolean;
+    compareVariants?: string;
     kimiStabilityMode?: string;
   }
 ): Promise<void> {
   const rounds = Math.max(1, parseInt(options.rounds ?? '10', 10));
+  const questionsPerRound = Math.max(1, parseInt(options.questionsPerRound ?? '5', 10));
   const inputRouting = normalizeInputRoutingStrategy(
     options.inputRouting,
     normalizeInputRoutingStrategy(String(settings.get('defaultInputRoutingStrategy') ?? 'legacy'))
   );
+  const profiles = parseExperimentProfiles(options.profiles);
 
   const preflight = await runModelPreflight({
     timeoutMs: Number(process.env.NEEKO_PREFLIGHT_EXPERIMENT_TIMEOUT_MS ?? process.env.NEEKO_PREFLIGHT_TIMEOUT_MS ?? 15_000),
@@ -223,16 +244,40 @@ export async function cmdExperiment(
 
   console.log(chalk.bold.cyan(`\n✦ Training Experiment (${slug})\n`));
   console.log(chalk.dim(`Rounds per profile: ${rounds}`));
-  console.log(chalk.dim(`Profiles: ${DEFAULT_EXPERIMENT_PROFILES.join(', ')}\n`));
+  console.log(chalk.dim(`Questions per round: ${questionsPerRound}`));
+  console.log(chalk.dim(`Profiles: ${profiles.join(', ')}\n`));
 
   const providerName = resolvePreferredProviderName();
   const kimiStabilityMode = options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE;
+  const trainingSeedMode = normalizeTrainingSeedMode(options.trainingSeedMode);
 
-  const { rows, roundHistories, failures } = await runExperimentProfiles(slug, rounds, DEFAULT_EXPERIMENT_PROFILES, {
-    kimiStabilityMode,
-  });
-  const inputRoutingComparison = options.compareInputRouting
-    ? await runInputRoutingComparison(slug, rounds, 'full', kimiStabilityMode)
+  const { rows, roundHistories, failures } = options.skipProfileSweep
+    ? { rows: [], roundHistories: {}, failures: [] }
+    : await runExperimentProfiles(slug, rounds, profiles, {
+      kimiStabilityMode,
+      trainingSeedMode,
+      questionsPerRound,
+    });
+  const inputRoutingComparison = options.compareTrainingSeed
+    ? await runInputRoutingComparison(
+      slug,
+      rounds,
+      'full',
+      kimiStabilityMode,
+      true,
+      questionsPerRound,
+      parseComparisonVariants(options.compareVariants, true)
+    )
+    : options.compareInputRouting
+      ? await runInputRoutingComparison(
+        slug,
+        rounds,
+        'full',
+        kimiStabilityMode,
+        false,
+        questionsPerRound,
+        parseComparisonVariants(options.compareVariants, false)
+      )
     : { rows: [], recommendation: null };
 
   const best = [...rows].sort((a, b) => {
@@ -261,14 +306,16 @@ export async function cmdExperiment(
     generated_at: new Date().toISOString(),
     slug,
     rounds_per_profile: rounds,
-    profiles: DEFAULT_EXPERIMENT_PROFILES,
+    profiles,
+    questions_per_round: questionsPerRound,
     summary_rows: rows,
-    best_profile: best.profile,
+    best_profile: best?.profile ?? null,
     round_histories: roundHistories,
     failures: failures ?? [],
     input_routing_strategy: inputRouting,
     provider: providerName,
     kimi_stability_mode: kimiStabilityMode ?? 'auto',
+    training_seed_mode: trainingSeedMode,
     input_routing_comparison: inputRoutingComparison.rows,
     input_routing_recommendation: inputRoutingComparison.recommendation,
     gate_result: gateResult,
@@ -297,10 +344,10 @@ export async function cmdExperiment(
     for (const row of inputRoutingComparison.rows) {
       console.log(
         chalk.dim(
-          `  ${row.label.padEnd(12)} quality=${(row.avgQuality * 100).toFixed(1)}% ` +
+          `  ${row.label.padEnd(20)} quality=${(row.avgQuality * 100).toFixed(1)}% ` +
           `contra=${(row.contradictionRate * 100).toFixed(1)}% coverage=${(row.coverage * 100).toFixed(1)}% ` +
           `docs(s/m/d)=${row.observability.soul_docs}/${row.observability.memory_docs}/${row.observability.discard_docs} ` +
-          `preset=${row.runtime_preset} opt=${row.optimization_mode}`
+          `seed=${row.training_seed_mode} soul=${row.soul_source} preset=${row.runtime_preset} opt=${row.optimization_mode}`
         )
       );
     }
@@ -325,14 +372,21 @@ export async function cmdExperiment(
     }
   }
 
-  console.log(chalk.green(`\nRecommended default profile: ${best.profile}\n`));
+  if (best) {
+    console.log(chalk.green(`\nRecommended default profile: ${best.profile}\n`));
+  } else {
+    console.log(chalk.yellow('\nNo successful profile rows were produced.\n'));
+  }
 }
 
 async function runInputRoutingComparison(
   slug: string,
   rounds: number,
   profile: TrainingProfile,
-  kimiStabilityMode?: string
+  kimiStabilityMode?: string,
+  compareTrainingSeed = false,
+  questionsPerRound = 5,
+  explicitVariants?: Array<{ strategy: InputRoutingStrategy; trainingSeedMode: TrainingSeedMode }>
 ): Promise<InputRoutingComparisonSummary> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
@@ -352,19 +406,35 @@ async function runInputRoutingComparison(
   });
   const extractor = new SoulExtractor();
   const aggregator = new SoulAggregator();
-  const strategies: InputRoutingStrategy[] = ['legacy', 'v2'];
   const rows: InputRoutingComparisonRow[] = [];
   const providerName = resolvePreferredProviderName();
-  let legacyObservability: InputRoutingObservability | undefined;
-  let v2Observability: InputRoutingObservability | undefined;
+  const legacyBaseline = routeEvidenceDocuments(docs, {
+    strategy: 'legacy',
+    targetSignals: [basePersona.name, basePersona.handle ?? '', ...basePersona.source_targets],
+  });
+  const v2Baseline = routeEvidenceDocuments(docs, {
+    strategy: 'v2',
+    targetSignals: [basePersona.name, basePersona.handle ?? '', ...basePersona.source_targets],
+  });
+  let legacyObservability: InputRoutingObservability | undefined = legacyBaseline.observability;
+  let v2Observability: InputRoutingObservability | undefined = v2Baseline.observability;
+  const variants: Array<{ strategy: InputRoutingStrategy; trainingSeedMode: TrainingSeedMode }> = explicitVariants && explicitVariants.length > 0
+    ? explicitVariants
+    : compareTrainingSeed
+    ? [
+      { strategy: 'legacy', trainingSeedMode: 'off' },
+      { strategy: 'v2', trainingSeedMode: 'off' },
+      { strategy: 'v2', trainingSeedMode: 'topics' },
+      { strategy: 'v2', trainingSeedMode: 'signals' },
+    ]
+    : [
+      { strategy: 'legacy', trainingSeedMode: 'off' },
+      { strategy: 'v2', trainingSeedMode: 'off' },
+    ];
 
-  for (const strategy of strategies) {
-    const routed = routeEvidenceDocuments(docs, {
-      strategy,
-      targetSignals: [basePersona.name, basePersona.handle ?? '', ...basePersona.source_targets],
-    });
-    if (strategy === 'legacy') legacyObservability = routed.observability;
-    if (strategy === 'v2') v2Observability = routed.observability;
+  for (const variant of variants) {
+    const { strategy, trainingSeedMode } = variant;
+    const routed = strategy === 'legacy' ? legacyBaseline : v2Baseline;
     const strategyDecision = resolveTrainingStrategy({
       inputRoutingStrategy: strategy,
       observability: routed.observability,
@@ -377,30 +447,36 @@ async function runInputRoutingComparison(
       rounds,
       explicitKimiStabilityMode: kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
+    const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
     const persona: Persona = {
       ...basePersona,
       id: crypto.randomUUID(),
-      memory_collection: `${basePersona.memory_collection}_routing_${strategy}_${Date.now().toString(36)}`,
+      memory_collection: `${basePersona.memory_collection}_routing_${strategy}_${trainingSeedMode}_${Date.now().toString(36)}`,
       training_rounds: 0,
       updated_at: new Date().toISOString(),
     };
     await store.ensureCollection(persona.memory_collection);
     const soulSeed = createEmptySoul(basePersona.name, basePersona.handle);
-    let soul = soulSeed;
-    const selectedSoulChunks = selectSoulChunksForStrategy(
-      routed.soulChunks,
-      routed.routedDocs.map((item) => ({ document_id: item.doc.id, score: item.score })),
-      strategyDecision,
-      Math.min(routed.soulChunks.length, strategyDecision.maxSoulChunks)
-    );
-    if (selectedSoulChunks.length > 0) {
-      const extractions = await extractor.extractBatch(selectedSoulChunks, basePersona.name, strategyDecision.extractionConcurrency, {
-        cacheEnabled: strategyDecision.extractorCacheEnabled,
-        cachePath: `/tmp/neeko-soul-cache-${slug}-${strategy}.json`,
-        timeoutMs: strategyDecision.extractionTimeoutMs,
-        retries: strategyDecision.extractionRetries,
-      });
-      soul = aggregator.aggregate(soulSeed, extractions, selectedSoulChunks);
+    const precomputedSeed = loadComparisonTrainingSeed(dir, strategy);
+    let soul = precomputedSeed ? buildSyntheticSoulFromTrainingSeed(soulSeed, precomputedSeed) : soulSeed;
+    let soulSource: InputRoutingComparisonRow['soul_source'] = precomputedSeed ? 'training_seed' : 'empty';
+    if (!precomputedSeed) {
+      const selectedSoulChunks = selectSoulChunksForStrategy(
+        routed.soulChunks,
+        routed.routedDocs.map((item) => ({ document_id: item.doc.id, score: item.score })),
+        strategyDecision,
+        Math.min(routed.soulChunks.length, strategyDecision.maxSoulChunks)
+      );
+      if (selectedSoulChunks.length > 0) {
+        const extractions = await extractor.extractBatch(selectedSoulChunks, basePersona.name, strategyDecision.extractionConcurrency, {
+          cacheEnabled: strategyDecision.extractorCacheEnabled,
+          cachePath: `/tmp/neeko-soul-cache-${slug}-${strategy}.json`,
+          timeoutMs: strategyDecision.extractionTimeoutMs,
+          retries: strategyDecision.extractionRetries,
+        });
+        soul = aggregator.aggregate(soulSeed, extractions, selectedSoulChunks);
+        soulSource = 'extractor';
+      }
     }
 
     const loop = new TrainingLoop(soul, persona, store);
@@ -408,6 +484,8 @@ async function runInputRoutingComparison(
       loop.run({
         maxRounds: rounds,
         profile,
+        questionsPerRound: Math.max(1, questionsPerRound),
+        trainingSeedHints: trainingSeedSelection.hints,
         runtimePreset: executionSettings.runtimePreset,
         runtimeOverrides: executionSettings.runtimeOverrides,
         evaluatorLayered: executionSettings.evaluatorLayered,
@@ -428,9 +506,11 @@ async function runInputRoutingComparison(
       : history.reduce((sum, item) => sum + item.observability.duplicationRate, 0) / history.length;
 
     rows.push({
-      label: `${profile}+${strategy}`,
+      label: `${profile}+${strategy}+${trainingSeedMode}`,
       profile,
       input_routing: strategy,
+      training_seed_mode: trainingSeedMode,
+      soul_source: soulSource,
       runtime_preset: strategyDecision.runtimePreset,
       optimization_mode: strategyDecision.optimizationMode,
       corpus_segment: strategyDecision.corpusSegment,
@@ -450,6 +530,100 @@ async function runInputRoutingComparison(
       legacyObservability,
       v2Observability,
     }),
+  };
+}
+
+function parseExperimentProfiles(raw?: string): TrainingProfile[] {
+  if (!raw?.trim()) return DEFAULT_EXPERIMENT_PROFILES;
+  const allowed = new Set<TrainingProfile>(DEFAULT_EXPERIMENT_PROFILES);
+  const parsed = raw
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter((item): item is TrainingProfile => allowed.has(item as TrainingProfile));
+  return parsed.length > 0 ? parsed : DEFAULT_EXPERIMENT_PROFILES;
+}
+
+function parseComparisonVariants(
+  raw: string | undefined,
+  compareTrainingSeed: boolean
+): Array<{ strategy: InputRoutingStrategy; trainingSeedMode: TrainingSeedMode }> | undefined {
+  if (!raw?.trim()) return undefined;
+
+  const allowedStrategy = new Set<InputRoutingStrategy>(['legacy', 'v2']);
+  const allowedSeed = new Set<TrainingSeedMode>(compareTrainingSeed ? ['off', 'topics', 'signals'] : ['off']);
+  const parsed = raw
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .map((item) => {
+      const [strategyRaw, seedRaw = 'off'] = item.split(':');
+      const strategy = allowedStrategy.has(strategyRaw as InputRoutingStrategy)
+        ? strategyRaw as InputRoutingStrategy
+        : null;
+      const trainingSeedMode = allowedSeed.has(seedRaw as TrainingSeedMode)
+        ? seedRaw as TrainingSeedMode
+        : null;
+      return strategy && trainingSeedMode ? { strategy, trainingSeedMode } : null;
+    })
+    .filter((item): item is { strategy: InputRoutingStrategy; trainingSeedMode: TrainingSeedMode } => Boolean(item));
+
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+interface ComparisonTrainingSeedAsset {
+  stable_keywords?: string[];
+  stable_topics?: string[];
+  stable_signal_count?: number;
+  topic_cluster_count?: number;
+}
+
+function loadComparisonTrainingSeed(
+  dir: string,
+  strategy: InputRoutingStrategy
+): ComparisonTrainingSeedAsset | null {
+  const preferred = join(dir, `training-seed-${strategy}.json`);
+  const fallback = strategy === 'v2' ? join(dir, 'training-seed.json') : preferred;
+  const path = existsSync(preferred) ? preferred : fallback;
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as ComparisonTrainingSeedAsset;
+  } catch {
+    return null;
+  }
+}
+
+function buildSyntheticSoulFromTrainingSeed(base: Soul, seed: ComparisonTrainingSeedAsset): Soul {
+  const topics = (seed.stable_topics ?? []).filter(Boolean).slice(0, 4);
+  const keywords = (seed.stable_keywords ?? []).filter(Boolean).slice(0, 8);
+  const updated = new Date().toISOString();
+  return {
+    ...base,
+    updated_at: updated,
+    data_sources: Array.from(new Set([...base.data_sources, 'training-seed'])),
+    total_chunks_processed: Math.max(base.total_chunks_processed, seed.stable_signal_count ?? keywords.length),
+    language_style: {
+      ...base.language_style,
+      frequent_phrases: keywords.slice(0, 6),
+      vocabulary_preferences: keywords.slice(0, 4).map((value, index) => ({
+        value,
+        confidence: Math.max(0.35, 0.7 - index * 0.08),
+        evidence_count: Math.max(1, (seed.stable_signal_count ?? keywords.length) - index),
+      })),
+    },
+    values: {
+      ...base.values,
+      priorities: topics.slice(0, 3),
+    },
+    thinking_patterns: {
+      ...base.thinking_patterns,
+      problem_solving_approach: topics[0] ?? base.thinking_patterns.problem_solving_approach,
+    },
+    knowledge_domains: {
+      ...base.knowledge_domains,
+      expert: topics,
+      familiar: keywords.slice(0, 4),
+    },
+    overall_confidence: Math.max(base.overall_confidence, topics.length > 0 ? 0.35 : 0.2),
+    coverage_score: Math.max(base.coverage_score, Math.min(0.45, 0.12 + topics.length * 0.07 + keywords.length * 0.02)),
   };
 }
 

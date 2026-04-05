@@ -1,5 +1,10 @@
 # 架构设计文档
 
+相关实施文档：
+
+- [输入架构阶段总结](/Users/a77/Desktop/Neeko/docs/input-architecture-status.md)
+- [大语料稳定蒸馏实施方案](/Users/a77/Desktop/Neeko/docs/large-corpus-implementation-plan.md)
+
 ## 总体架构
 
 Neeko 采用三层架构：**输入层 → 炼化层 → 输出层**。
@@ -36,6 +41,23 @@ interface RawDocument {
   metadata?: Record<string, unknown>
 }
 ```
+
+在大语料路径下，`RawDocument` 不会直接进入训练，而是先进入 `Corpus Layer`：
+
+- `corpus-snapshot.json`
+- `shard-plan.json`
+- `input-run-manifest.json`
+- `shards/<id>/raw-docs.json`
+- `shards/<id>/meta.json`
+- `shards/<id>/shard-soul-summary.json`
+- `shards/<id>/shard-memory-summary.json`
+- `shards/<id>/shard-observability.json`
+- `global-soul-seed.json`
+- `global-memory-candidates.json`
+- `global-conflicts.json`
+- `training-seed.json`
+
+这层的职责是先冻结本轮输入边界、生成 shard 规划，并把每个 shard 的原始语料落盘，供后续 shard distillation 与恢复流程直接复用。
 
 | 适配器 | 文件 | 数据来源 | 技术 |
 |--------|------|---------|------|

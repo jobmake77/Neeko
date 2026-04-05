@@ -176,6 +176,46 @@ test('routing recommendation prefers legacy for high-signal archives', () => {
   assert.equal(recommendation.shape, 'high_signal_archive');
 });
 
+test('routing recommendation keeps v2 for large mixed corpora with meaningful memory layering', () => {
+  const recommendation = recommendInputRoutingStrategy({
+    legacyObservability: {
+      clean_docs: 427,
+      chunks: 430,
+    },
+    v2Observability: {
+      raw_docs: 427,
+      clean_docs: 427,
+      chunks: 360,
+      soul_docs: 296,
+      memory_docs: 99,
+      discard_docs: 32,
+    },
+  });
+
+  assert.equal(recommendation.recommendedStrategy, 'v2');
+  assert.equal(recommendation.shape, 'balanced_mixed');
+});
+
+test('routing recommendation keeps v2 for large corpora even when chunk compression is only modestly better', () => {
+  const recommendation = recommendInputRoutingStrategy({
+    legacyObservability: {
+      clean_docs: 420,
+      chunks: 445,
+    },
+    v2Observability: {
+      raw_docs: 427,
+      clean_docs: 420,
+      chunks: 420,
+      soul_docs: 296,
+      memory_docs: 99,
+      discard_docs: 32,
+    },
+  });
+
+  assert.equal(recommendation.recommendedStrategy, 'v2');
+  assert.equal(recommendation.shape, 'balanced_mixed');
+});
+
 test('manual overrides still win over auto resolution', () => {
   const decision = resolveTrainingStrategy({
     inputRoutingStrategy: 'v2',

@@ -54,6 +54,9 @@ function shouldRetryProviderError(error: unknown): boolean {
   return (
     message.includes('timeout') ||
     message.includes('timed out') ||
+    message.includes('connection error') ||
+    message.includes('connection aborted') ||
+    message.includes('connection reset') ||
     message.includes('429') ||
     message.includes('rate limit') ||
     message.includes('overloaded') ||
@@ -230,6 +233,7 @@ export class TrainerAgent {
       questionsPerRound?: number;
       skillHints?: string[];
       skillGapHints?: string[];
+      trainingSeedHints?: string[];
       timeoutMs?: number;
       retries?: number;
       compactPrompt?: boolean;
@@ -245,12 +249,35 @@ export class TrainerAgent {
     const questionCount = options.questionsPerRound ?? 5;
     const skillHints = options.skillHints ?? [];
     const skillGapHints = options.skillGapHints ?? [];
+    const trainingSeedHints = options.trainingSeedHints ?? [];
     const constraints = strategyTargets
       .map((s) => `${s.strategy}: ${s.count}`)
       .join(', ');
     const prompt = options.compactPrompt
-      ? this.buildCompactTrainerPrompt(soul.target_name, round, lowConfidence, previousQuestions, skillGapHints, skillHints, constraints, questionCount, options.previousRound)
-      : this.buildFullTrainerPrompt(soul.target_name, round, lowConfidence, previousQuestions, skillGapHints, skillHints, constraints, questionCount, options.previousRound);
+      ? this.buildCompactTrainerPrompt(
+        soul.target_name,
+        round,
+        lowConfidence,
+        previousQuestions,
+        skillGapHints,
+        skillHints,
+        trainingSeedHints,
+        constraints,
+        questionCount,
+        options.previousRound
+      )
+      : this.buildFullTrainerPrompt(
+        soul.target_name,
+        round,
+        lowConfidence,
+        previousQuestions,
+        skillGapHints,
+        skillHints,
+        trainingSeedHints,
+        constraints,
+        questionCount,
+        options.previousRound
+      );
 
     try {
       const { object } = await withRetry(
@@ -281,6 +308,7 @@ export class TrainerAgent {
     previousQuestions: string[],
     skillGapHints: string[],
     skillHints: string[],
+    trainingSeedHints: string[],
     constraints: string,
     questionCount: number,
     previousRound?: RoundObservability
@@ -294,6 +322,7 @@ Previous round contradiction rate: ${previousRound?.contradictionRate.toFixed(2)
 Previous round low-confidence coverage: ${previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
 Priority skill gaps (must prioritize if relevant): ${skillGapHints.slice(0, 8).join(' | ') || 'none'}
 Skill hints (prefer covering these, if relevant): ${skillHints.slice(0, 12).join(' | ') || 'none'}
+Optional training-seed priors (soft hints only, never force them if they do not fit): ${trainingSeedHints.slice(0, 8).join(' | ') || 'none'}
 
 Use curriculum constraints:
 - Required strategy mix: ${constraints}
@@ -315,6 +344,7 @@ Return exactly ${questionCount} questions spanning different target dimensions, 
     previousQuestions: string[],
     skillGapHints: string[],
     skillHints: string[],
+    trainingSeedHints: string[],
     constraints: string,
     questionCount: number,
     previousRound?: RoundObservability
@@ -322,6 +352,7 @@ Return exactly ${questionCount} questions spanning different target dimensions, 
     const recentQuestions = previousQuestions.slice(-4).join(' | ') || 'none';
     const gapSummary = skillGapHints.slice(0, 4).join(' | ') || 'none';
     const hintSummary = skillHints.slice(0, 5).join(' | ') || 'none';
+    const seedSummary = trainingSeedHints.slice(0, 4).join(' | ') || 'none';
     return `Design ${questionCount} training questions for "${targetName}".
 
 Round=${round}
@@ -331,6 +362,7 @@ Prev contradiction=${previousRound?.contradictionRate.toFixed(2) ?? 'n/a'}
 Prev low-confidence coverage=${previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
 Priority gaps=${gapSummary}
 Useful hints=${hintSummary}
+Optional priors=${seedSummary}
 Strategy mix=${constraints}
 
 Question types:

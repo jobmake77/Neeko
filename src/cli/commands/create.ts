@@ -22,7 +22,27 @@ import { TrainingProfile } from '../../core/training/types.js';
 import { buildTrainingRunReport, buildTrainingRunReportFromRounds, TrainingRoundSnapshot } from '../../core/training/report.js';
 import { EvidenceBatch, TargetManifest } from '../../core/models/evidence.js';
 import {
+  buildCorpusSnapshot,
+  buildInputRunManifest,
+  planCorpusShards,
+  writeCorpusPlanningAssets,
+  writeShardCorpusAssets,
+} from '../../core/pipeline/corpus-plan.js';
+import {
+  distillCorpusShards,
+  writeShardDistillationAssets,
+} from '../../core/pipeline/shard-distillation.js';
+import {
+  mergeShardDistillationResults,
+  writeGlobalMergeAssets,
+} from '../../core/pipeline/global-merge.js';
+import {
+  loadTrainingSeedHints,
+  normalizeTrainingSeedMode,
+} from '../../core/training/training-seed.js';
+import {
   resolveTrainingExecutionSettings,
+  recommendInputRoutingStrategy,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
 } from '../../core/training/strategy-resolver.js';
@@ -88,6 +108,7 @@ export async function cmdCreate(
     rounds?: string;
     trainingProfile?: string;
     inputRouting?: string;
+    trainingSeedMode?: string;
     kimiStabilityMode?: string;
   }
 ): Promise<void> {
@@ -250,6 +271,9 @@ export async function cmdCreate(
   let evidenceBatch: EvidenceBatch | undefined;
   const inputRouting = resolveInputRoutingStrategy(options.inputRouting);
   const personaDir = settings.getPersonaDir(persona.slug);
+  const requestedRounds = parseInt(options.rounds ?? '0', 10);
+  const profile = normalizeTrainingProfile(options.trainingProfile);
+  const providerName = resolvePreferredProviderName();
   persona.status = 'ingesting';
   persona.updated_at = new Date().toISOString();
   savePersona(persona, currentSoul);
@@ -319,18 +343,67 @@ export async function cmdCreate(
 
   // ── Clean + chunk ─────────────────────────────────────────────────────────
   spin.start('Cleaning and chunking content...');
-  const routed = routeEvidenceDocuments(allDocs, {
-    strategy: inputRouting,
-    targetSignals: [displayName, handle ? `@${handle}` : '', ...sourceTargets],
+  const targetSignals = [displayName, handle ? `@${handle}` : '', ...sourceTargets];
+  const legacyPreview = routeEvidenceDocuments(allDocs, {
+    strategy: 'legacy',
+    targetSignals,
     cleaner: new DataCleaner(),
     chunker: new SemanticChunker(),
+  });
+  const v2Preview = routeEvidenceDocuments(allDocs, {
+    strategy: 'v2',
+    targetSignals,
+    cleaner: new DataCleaner(),
+    chunker: new SemanticChunker(),
+  });
+  const routed = inputRouting === 'legacy' ? legacyPreview : v2Preview;
+  const routingRecommendation = recommendInputRoutingStrategy({
+    legacyObservability: legacyPreview.observability,
+    v2Observability: v2Preview.observability,
   });
   const strategyDecision = resolveTrainingStrategy({
     inputRoutingStrategy: inputRouting,
     observability: routed.observability,
     rawDocCount: allDocs.length,
-    providerName: resolvePreferredProviderName(),
+    providerName,
   });
+  let executionSettings = resolveTrainingExecutionSettings({
+    strategyDecision,
+    providerName,
+    rounds: Math.max(0, requestedRounds || 0),
+    explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
+  });
+  const corpusSnapshot = buildCorpusSnapshot(allDocs, { personaSlug: persona.slug });
+  const shardPlan = planCorpusShards(allDocs, { personaSlug: persona.slug });
+  const inputRunManifest = buildInputRunManifest({
+    personaSlug: persona.slug,
+    snapshot: corpusSnapshot,
+    shardPlan,
+    selectedInputRouting: inputRouting,
+    selectedKimiStabilityMode: executionSettings.kimiStabilityMode,
+    provider: providerName,
+    requestedRounds: Math.max(0, requestedRounds || 0),
+    trainingProfile: profile,
+    recommendation: routingRecommendation,
+  });
+  writeCorpusPlanningAssets(personaDir, {
+    snapshot: corpusSnapshot,
+    shardPlan,
+    manifest: inputRunManifest,
+  });
+  writeShardCorpusAssets(personaDir, allDocs, shardPlan);
+  const shardDistillationResults = distillCorpusShards(allDocs, shardPlan, {
+    strategy: inputRouting,
+    targetSignals,
+    strategyDecision,
+  });
+  writeShardDistillationAssets(personaDir, shardDistillationResults);
+  writeGlobalMergeAssets(personaDir, mergeShardDistillationResults(shardDistillationResults, {
+    strategy: inputRouting,
+  }));
+  spin.message(
+    `Corpus planned: shards=${shardPlan.totals.shard_count}, recommended_routing=${routingRecommendation.recommendedStrategy}, shape=${routingRecommendation.shape}`
+  );
   const cleanDocs = routed.cleanDocs;
   const chunks = routed.chunks;
   const routedSoulChunks = routed.soulChunks.length > 0 ? routed.soulChunks : routed.chunks;
@@ -403,8 +476,6 @@ export async function cmdCreate(
   );
 
   // ── Ask about training ────────────────────────────────────────────────────
-  const requestedRounds = parseInt(options.rounds ?? '0', 10);
-  const profile = normalizeTrainingProfile(options.trainingProfile);
   let runTraining = requestedRounds > 0 && qdrantAvailable;
 
   if (qdrantAvailable && !nonInteractive && !runTraining) {
@@ -438,9 +509,9 @@ export async function cmdCreate(
     }
 
     spin.start('Running cultivation loop...');
-    const executionSettings = resolveTrainingExecutionSettings({
+    executionSettings = resolveTrainingExecutionSettings({
       strategyDecision,
-      providerName: resolvePreferredProviderName(),
+      providerName,
       rounds: maxRounds,
       explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
@@ -454,6 +525,13 @@ export async function cmdCreate(
     }
     const loop = new TrainingLoop(currentSoul, persona, store);
     const contextPath = join(personaDir, 'training-context.json');
+    const trainingSeedMode = normalizeTrainingSeedMode(options.trainingSeedMode);
+    const trainingSeedSelection = loadTrainingSeedHints(personaDir, trainingSeedMode);
+    if (trainingSeedSelection.mode !== 'off') {
+      spin.message(
+        `Training seed hints: mode=${trainingSeedSelection.mode}, hints=${trainingSeedSelection.hints.length} (${trainingSeedSelection.reason})`
+      );
+    }
     const originSkillsAdded = skillLibrary.origin_skills.length;
     const distilledSkillsAdded = skillLibrary.distilled_skills.length;
     const covered = skillLibrary.origin_skills.filter(
@@ -479,6 +557,7 @@ export async function cmdCreate(
     const result = await loop.run({
       maxRounds,
       profile,
+      trainingSeedHints: trainingSeedSelection.hints,
       runtimePreset: executionSettings.runtimePreset,
       runtimeOverrides: executionSettings.runtimeOverrides,
       evaluatorLayered: executionSettings.evaluatorLayered,

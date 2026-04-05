@@ -1,5 +1,11 @@
 # 快速开始指南
 
+推荐先看：
+
+- [架构设计](/Users/a77/Desktop/Neeko/docs/architecture.md)
+- [输入架构阶段总结](/Users/a77/Desktop/Neeko/docs/input-architecture-status.md)
+- [大语料稳定蒸馏实施方案](/Users/a77/Desktop/Neeko/docs/large-corpus-implementation-plan.md)
+
 ## 第一步：环境准备
 
 ### 必须安装
@@ -123,10 +129,11 @@ node dist/cli/index.js create @elonmusk --rounds 3 --training-profile full
 
 流程说明：
 1. opencli 从 X.com 抓取该账号的推文（复用 Chrome 登录状态）
-2. 清洗 + 分块
-3. LLM 提炼 Soul 五个维度
-4. 写入 Qdrant 向量记忆库
-5. （可选）运行培养循环（5/10/20 轮）
+2. 生成 `corpus-snapshot.json`、`shard-plan.json`、`input-run-manifest.json`、`shards/<id>/raw-docs.json`、shard distillation summaries 与 global seed assets
+3. 清洗 + 分块
+4. LLM 提炼 Soul 五个维度
+5. 写入 Qdrant 向量记忆库
+6. （可选）运行培养循环（5/10/20 轮）
 
 ---
 

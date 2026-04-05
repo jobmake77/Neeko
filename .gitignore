@@ -27,6 +27,7 @@ Thumbs.db
 
 # Runtime data
 *.pid
+artifacts/
 
 # Lock files (keep package-lock.json, ignore yarn/pnpm)
 yarn.lock

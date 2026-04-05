@@ -22,6 +22,7 @@ export interface TrainingOptions {
   maxRounds?: number;
   questionsPerRound?: number;
   profile?: TrainingProfile;
+  trainingSeedHints?: string[];
   runtimePreset?: TrainingRuntimePreset;
   runtimeOverrides?: TrainingRuntimeOverrides;
   evaluatorLayered?: boolean;
@@ -87,6 +88,7 @@ export class TrainingLoop {
       maxRounds = 20,
       questionsPerRound = 5,
       profile = 'full',
+      trainingSeedHints = [],
       runtimePreset = 'balanced',
       runtimeOverrides,
       evaluatorLayered,
@@ -129,6 +131,7 @@ export class TrainingLoop {
           questionsPerRound,
           skillHints: this.skillHints(),
           skillGapHints: gapHints,
+          trainingSeedHints,
           timeoutMs: runtime.trainerTimeoutMs,
           retries: runtime.trainerRetries,
           compactPrompt: runtime.trainerCompactPrompt,

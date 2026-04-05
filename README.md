@@ -91,6 +91,9 @@ node dist/cli/index.js create @elonmusk --rounds 10 --training-profile full
 # 快速培养（3轮，先出结果）
 node dist/cli/index.js create @elonmusk --rounds 3 --training-profile full
 
+# 大语料预规划（create/train 会同步生成 corpus snapshot、shard assets 和 global seed assets）
+node dist/cli/index.js create @elonmusk --rounds 1 --training-profile full
+
 # 已创建后继续培养（可多次追加）
 node dist/cli/index.js train elonmusk --mode quick
 node dist/cli/index.js train elonmusk --mode full
@@ -135,6 +138,12 @@ node dist/cli/index.js experiment elonmusk --rounds 6 --gate
 
 ## 系统架构
 
+相关文档：
+- [快速开始](/Users/a77/Desktop/Neeko/docs/quickstart.md)
+- [架构设计](/Users/a77/Desktop/Neeko/docs/architecture.md)
+- [输入架构阶段总结](/Users/a77/Desktop/Neeko/docs/input-architecture-status.md)
+- [大语料稳定蒸馏实施方案](/Users/a77/Desktop/Neeko/docs/large-corpus-implementation-plan.md)
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    Neeko 系统                        │
@@ -153,6 +162,8 @@ node dist/cli/index.js experiment elonmusk --rounds 6 --gate
 ```
 原始内容
   → Source Adapter（twitter/article/video/chat）
+  → Corpus Snapshot / Shard Plan / Input Run Manifest
+  → Shard Distillation / Global Merge
   → Data Cleaner（去重 + 过滤）
   → Semantic Chunker（分块）
   → Soul Extractor（LLM 并行提取 5 维度）

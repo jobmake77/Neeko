@@ -26,6 +26,11 @@ const earliest = new Date(`${earliestRaw}T00:00:00Z`);
 const initialWindowDays = Math.max(1, parseInt(initialWindowDaysRaw, 10) || 7);
 const minWindowDays = Math.max(1, parseInt(minWindowDaysRaw, 10) || 1);
 const saturationThreshold = 18;
+const searchHorizonStopDays = Math.max(56, parseInt(process.env.NEEKO_FETCH_SEARCH_HORIZON_STOP_DAYS || '180', 10) || 180);
+const emptyWindowRetries = Math.max(0, parseInt(process.env.NEEKO_TWITTER_EMPTY_WINDOW_RETRIES || '1', 10) || 1);
+const maxQueriesPerRun = Math.max(0, parseInt(process.env.NEEKO_TWITTER_MAX_QUERIES_PER_RUN || '0', 10) || 0);
+const unhealthyFailureLimit = Math.max(1, parseInt(process.env.NEEKO_TWITTER_PROVIDER_UNHEALTHY_FAILURES || '3', 10) || 3);
+const fallbackProvider = String(process.env.NEEKO_TWITTER_FETCH_FALLBACK_PROVIDER || 'off').trim().toLowerCase();
 const env = {
   ...process.env,
   PATH: `/Users/a77/.npm-global/bin:/usr/local/bin:${process.env.PATH || ''}`,
@@ -46,9 +51,115 @@ function sleep(ms) {
 }
 
 function runWindow(since, until) {
+  const attempts = [];
+  const primary = runOpenCliWindow(since, until);
+  attempts.push(...primary.attempts);
+  if (primary.rows.length > 0 || fallbackProvider === 'off') {
+    return { rows: primary.rows, provider: primary.meta.provider, attempts };
+  }
+
+  if (fallbackProvider === 'snscrape') {
+    const secondary = runSnscrapeWindow(since, until);
+    attempts.push(secondary.meta);
+    if (secondary.rows.length > 0) {
+      return { rows: secondary.rows, provider: secondary.meta.provider, attempts };
+    }
+  }
+
+  return { rows: primary.rows, provider: primary.meta.provider, attempts };
+}
+
+function runOpenCliWindow(since, until) {
   const query = `from:${handle} since:${fmt(since)} until:${fmt(until)}`;
-  const cmd = `opencli twitter search \"${query}\" --filter live --limit 100 --format json`;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  const attempts = [];
+  const live = runOpenCliSearchWindow(query, 'live', 100);
+  attempts.push(live.meta);
+  if (live.rows.length > 0) {
+    return { rows: live.rows, provider: live.meta.provider, meta: live.meta, attempts };
+  }
+
+  if (isStructuralOpenCliError(live.meta.error)) {
+    const top = runOpenCliSearchWindow(query, 'top', 100);
+    attempts.push(top.meta);
+    if (top.rows.length > 0 || !isStructuralOpenCliError(top.meta.error)) {
+      return { rows: top.rows, provider: top.meta.provider, meta: top.meta, attempts };
+    }
+
+    const timeline = runOpenCliTimelineWindow(since, until);
+    attempts.push(timeline.meta);
+    return { rows: timeline.rows, provider: timeline.meta.provider, meta: timeline.meta, attempts };
+  }
+
+  return { rows: live.rows, provider: live.meta.provider, meta: live.meta, attempts };
+}
+
+function runOpenCliSearchWindow(query, filter, limit) {
+  const cmd = `opencli twitter search \"${query}\" --filter ${filter} --limit ${limit} --format json`;
+  for (let emptyAttempt = 0; emptyAttempt <= emptyWindowRetries; emptyAttempt++) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const output = execSync(cmd, {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env,
+          timeout: 120000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+        const parsed = JSON.parse(output);
+        const rows = Array.isArray(parsed) ? parsed : [];
+        if (rows.length === 0 && emptyAttempt < emptyWindowRetries) {
+          sleep(1200 * (emptyAttempt + 1));
+          break;
+        }
+        return {
+          rows,
+          meta: {
+            provider: 'opencli',
+            ok: true,
+            mode: `search:${filter}`,
+            rows: rows.length,
+            attempt,
+            emptyVerificationPasses: emptyAttempt,
+          },
+        };
+      } catch (error) {
+        const message = String(error?.stderr || error?.message || error);
+        if (attempt < 3 && shouldRetryOpenCliError(message)) {
+          sleep(1500 * attempt);
+          continue;
+        }
+        return {
+          rows: [],
+          meta: {
+            provider: 'opencli',
+            ok: false,
+            mode: `search:${filter}`,
+            rows: 0,
+            attempt,
+            emptyVerificationPasses: emptyAttempt,
+            error: message.slice(0, 240),
+          },
+        };
+      }
+    }
+  }
+  return {
+    rows: [],
+    meta: {
+      provider: 'opencli',
+      ok: false,
+      mode: `search:${filter}`,
+      rows: 0,
+      attempt: 3,
+      emptyVerificationPasses: emptyWindowRetries,
+      error: 'opencli exhausted retries',
+    },
+  };
+}
+
+function runOpenCliTimelineWindow(since, until) {
+  const cmd = 'opencli twitter timeline --type following --limit 120 --format json';
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const output = execSync(cmd, {
         encoding: 'utf8',
@@ -58,17 +169,118 @@ function runWindow(since, until) {
         maxBuffer: 10 * 1024 * 1024,
       });
       const parsed = JSON.parse(output);
-      return Array.isArray(parsed) ? parsed : [];
+      const rows = (Array.isArray(parsed) ? parsed : [])
+        .filter((row) => normalizeAuthor(row?.author) === handle.toLowerCase())
+        .filter((row) => withinWindow(row?.created_at, since, until));
+      return {
+        rows,
+        meta: {
+          provider: 'opencli',
+          ok: true,
+          mode: 'timeline:following',
+          rows: rows.length,
+          attempt,
+        },
+      };
     } catch (error) {
       const message = String(error?.stderr || error?.message || error);
-      if (attempt < 3 && /Detached while handling command|Failed to start opencli daemon|Browser Bridge not connected/i.test(message)) {
-        sleep(1500 * attempt);
+      if (attempt < 2 && shouldRetryOpenCliError(message)) {
+        sleep(1200 * attempt);
         continue;
       }
-      return [];
+      return {
+        rows: [],
+        meta: {
+          provider: 'opencli',
+          ok: false,
+          mode: 'timeline:following',
+          rows: 0,
+          attempt,
+          error: message.slice(0, 240),
+        },
+      };
     }
   }
-  return [];
+
+  return {
+    rows: [],
+    meta: {
+      provider: 'opencli',
+      ok: false,
+      mode: 'timeline:following',
+      rows: 0,
+      attempt: 2,
+      error: 'timeline fallback exhausted retries',
+    },
+  };
+}
+
+function shouldRetryOpenCliError(message) {
+  return /Detached while handling command|Failed to start opencli daemon|Browser Bridge not connected|connection error|timed out|timeout/i.test(
+    String(message || '')
+  );
+}
+
+function isStructuralOpenCliError(message) {
+  const error = String(message || '').toLowerCase();
+  return (
+    error.includes('selector not found') ||
+    error.includes('page structure may have changed')
+  );
+}
+
+function normalizeAuthor(value) {
+  return String(value || '').trim().replace(/^@/, '').toLowerCase();
+}
+
+function withinWindow(value, since, until) {
+  const time = Date.parse(String(value || ''));
+  if (!Number.isFinite(time)) return false;
+  return time >= since.getTime() && time < until.getTime();
+}
+
+function runSnscrapeWindow(since, until) {
+  const query = `from:${handle} since:${fmt(since)} until:${fmt(until)}`;
+  const cmd = `snscrape --jsonl --max-results 100 twitter-search \"${query}\"`;
+  const snscrapeEnv = {
+    ...env,
+    PATH: `${path.join(process.env.HOME || '', 'Library/Python/3.9/bin')}:${env.PATH}`,
+  };
+  try {
+    const output = execSync(cmd, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: snscrapeEnv,
+      timeout: 120000,
+      maxBuffer: 12 * 1024 * 1024,
+    });
+    const rows = output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return {
+      rows,
+      meta: {
+        provider: 'snscrape',
+        ok: true,
+        rows: rows.length,
+        attempt: 1,
+      },
+    };
+  } catch (error) {
+    const message = String(error?.stderr || error?.message || error);
+    return {
+      rows: [],
+      meta: {
+        provider: 'snscrape',
+        ok: false,
+        rows: 0,
+        attempt: 1,
+        error: message.slice(0, 240),
+      },
+    };
+  }
 }
 
 function loadExisting(filePath) {
@@ -101,9 +313,75 @@ function persistState(filePath, state) {
   fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
 }
 
+function parseCreatedAt(value) {
+  const time = Date.parse(String(value || ''));
+  return Number.isFinite(time) ? new Date(time) : null;
+}
+
+function findOldestSeenDate(rows) {
+  let oldest = null;
+  for (const row of rows.values()) {
+    const parsed = parseCreatedAt(row?.created_at);
+    if (!parsed) continue;
+    if (!oldest || parsed < oldest) oldest = parsed;
+  }
+  return oldest;
+}
+
+function createProviderStats(savedState) {
+  const initial = savedState?.providerStats && typeof savedState.providerStats === 'object'
+    ? savedState.providerStats
+    : {};
+  return {
+    opencli: {
+      windows: Number(initial.opencli?.windows) || 0,
+      nonEmptyWindows: Number(initial.opencli?.nonEmptyWindows) || 0,
+      rows: Number(initial.opencli?.rows) || 0,
+      failures: Number(initial.opencli?.failures) || 0,
+      lastError: typeof initial.opencli?.lastError === 'string' ? initial.opencli.lastError : undefined,
+    },
+    snscrape: {
+      windows: Number(initial.snscrape?.windows) || 0,
+      nonEmptyWindows: Number(initial.snscrape?.nonEmptyWindows) || 0,
+      rows: Number(initial.snscrape?.rows) || 0,
+      failures: Number(initial.snscrape?.failures) || 0,
+      lastError: typeof initial.snscrape?.lastError === 'string' ? initial.snscrape.lastError : undefined,
+    },
+  };
+}
+
+function updateProviderStats(stats, attempts) {
+  for (const attempt of attempts) {
+    const bucket = stats[attempt.provider];
+    if (!bucket) continue;
+    bucket.windows += 1;
+    bucket.rows += Number(attempt.rows) || 0;
+    if (attempt.rows > 0) bucket.nonEmptyWindows += 1;
+    if (attempt.ok === false) {
+      bucket.failures += 1;
+      if (attempt.error) bucket.lastError = attempt.error;
+    }
+  }
+}
+
+function isPrimaryProviderFatal(meta) {
+  const error = String(meta?.error || '');
+  return (
+    isStructuralOpenCliError(error) ||
+    /browser bridge not connected|failed to start opencli daemon/i.test(error)
+  );
+}
+
 const existing = loadExisting(out);
 const seen = new Map(existing.filter((row) => row?.id).map((row) => [row.id, row]));
 const savedState = loadState(statePath);
+let oldestSeenDate = findOldestSeenDate(seen);
+let emptyDaysPastOldest = Number(savedState?.emptyDaysPastOldest) > 0 ? savedState.emptyDaysPastOldest : 0;
+const providerStats = createProviderStats(savedState);
+let consecutivePrimaryProviderFailures =
+  Number(savedState?.consecutivePrimaryProviderFailures) > 0
+    ? savedState.consecutivePrimaryProviderFailures
+    : 0;
 
 let until = savedState?.handle === handle && savedState?.out === out && savedState?.until
   ? new Date(savedState.until)
@@ -111,18 +389,40 @@ let until = savedState?.handle === handle && savedState?.out === out && savedSta
 let windowDays = Number(savedState?.windowDays) > 0 ? savedState.windowDays : initialWindowDays;
 let zeroStreak = Number(savedState?.zeroStreak) > 0 ? savedState.zeroStreak : 0;
 let queryCount = Number(savedState?.queryCount) > 0 ? savedState.queryCount : 0;
+const queryCountAtStart = queryCount;
+let stoppedReason = 'completed';
 
 while (until > earliest && seen.size < target) {
+  if (maxQueriesPerRun > 0 && queryCount - queryCountAtStart >= maxQueriesPerRun) {
+    stoppedReason = 'query_budget_reached';
+    break;
+  }
   const since = subDays(until, windowDays);
-  const rows = runWindow(since, until);
+  const windowResult = runWindow(since, until);
+  const rows = windowResult.rows;
   queryCount += 1;
+  updateProviderStats(providerStats, windowResult.attempts);
+  const primaryMeta = windowResult.attempts[0];
+  if (primaryMeta?.ok === false) {
+    consecutivePrimaryProviderFailures += 1;
+  } else if ((primaryMeta?.rows ?? 0) > 0) {
+    consecutivePrimaryProviderFailures = 0;
+  }
 
   for (const row of rows) {
     if (row?.id && !seen.has(row.id)) seen.set(row.id, row);
   }
+  oldestSeenDate = findOldestSeenDate(seen);
 
   zeroStreak = rows.length === 0 ? zeroStreak + 1 : 0;
-  console.error(`${fmt(since)}..${fmt(until)} days=${windowDays} rows=${rows.length} total=${seen.size} queries=${queryCount}`);
+  if (rows.length === 0 && oldestSeenDate && since < oldestSeenDate) {
+    emptyDaysPastOldest += Math.max(1, Math.round((until.getTime() - since.getTime()) / 86_400_000));
+  } else if (rows.length > 0) {
+    emptyDaysPastOldest = 0;
+  }
+  console.error(
+    `${fmt(since)}..${fmt(until)} days=${windowDays} rows=${rows.length} total=${seen.size} queries=${queryCount} provider=${windowResult.provider}`
+  );
   persistCorpus(out, seen);
 
   if (rows.length >= saturationThreshold && windowDays > minWindowDays) {
@@ -133,6 +433,9 @@ while (until > earliest && seen.size < target) {
       until: until.toISOString(),
       windowDays,
       zeroStreak,
+      emptyDaysPastOldest,
+      consecutivePrimaryProviderFailures,
+      providerStats,
       queryCount,
       count: seen.size,
       updated_at: new Date().toISOString(),
@@ -152,14 +455,38 @@ while (until > earliest && seen.size < target) {
     until: until.toISOString(),
     windowDays,
     zeroStreak,
+    emptyDaysPastOldest,
+    consecutivePrimaryProviderFailures,
+    providerStats,
     queryCount,
     count: seen.size,
     updated_at: new Date().toISOString(),
   });
+
+  if (
+    primaryMeta?.ok === false &&
+    consecutivePrimaryProviderFailures >= unhealthyFailureLimit &&
+    isPrimaryProviderFatal(primaryMeta)
+  ) {
+    stoppedReason = 'provider_unhealthy';
+    console.error(
+      `provider unhealthy: ${primaryMeta.provider} failed ${consecutivePrimaryProviderFailures} consecutive windows (${primaryMeta.error ?? 'unknown error'})`
+    );
+    break;
+  }
+
+  if (emptyDaysPastOldest >= searchHorizonStopDays) {
+    stoppedReason = 'search_horizon_reached';
+    console.error(
+      `search-horizon reached: no additional tweets found for ${emptyDaysPastOldest} days before oldest seen tweet (${oldestSeenDate?.toISOString() ?? 'unknown'})`
+    );
+    break;
+  }
 }
 
 const data = persistCorpus(out, seen);
-if (fs.existsSync(statePath)) {
+const shouldClearState = stoppedReason === 'completed' || stoppedReason === 'search_horizon_reached';
+if (shouldClearState && fs.existsSync(statePath)) {
   fs.unlinkSync(statePath);
 }
 console.log(JSON.stringify({
@@ -169,4 +496,12 @@ console.log(JSON.stringify({
   newest: data[0]?.created_at,
   oldest: data[data.length - 1]?.created_at,
   queries: queryCount,
+  queries_this_run: queryCount - queryCountAtStart,
+  stopped_reason: stoppedReason,
+  search_horizon_stop_days: searchHorizonStopDays,
+  max_queries_per_run: maxQueriesPerRun,
+  unhealthy_failure_limit: unhealthyFailureLimit,
+  fallback_provider: fallbackProvider,
+  consecutive_primary_provider_failures: consecutivePrimaryProviderFailures,
+  provider_stats: providerStats,
 }, null, 2));

@@ -25,6 +25,7 @@ import {
   routeEvidenceDocuments,
 } from '../../core/pipeline/evidence-routing.js';
 import { SoulAggregator, SoulExtractor } from '../../core/soul/extractor.js';
+import { snapshotAndResetAgentFallbackMetrics } from '../../core/agents/index.js';
 import {
   recommendInputRoutingStrategy,
   resolveTrainingExecutionSettings,
@@ -65,6 +66,13 @@ interface InputRoutingComparisonRow {
   duplicationRate: number;
   coverage: number;
   observability: InputRoutingObservability;
+  runtime_observability: {
+    kimi_stability_mode: string;
+    trainer_fallbacks: number;
+    persona_fallbacks: number;
+    evaluator_fallbacks: number;
+    director_fallbacks: number;
+  };
 }
 
 interface InputRoutingComparisonSummary {
@@ -347,7 +355,8 @@ export async function cmdExperiment(
           `  ${row.label.padEnd(20)} quality=${(row.avgQuality * 100).toFixed(1)}% ` +
           `contra=${(row.contradictionRate * 100).toFixed(1)}% coverage=${(row.coverage * 100).toFixed(1)}% ` +
           `docs(s/m/d)=${row.observability.soul_docs}/${row.observability.memory_docs}/${row.observability.discard_docs} ` +
-          `seed=${row.training_seed_mode} soul=${row.soul_source} preset=${row.runtime_preset} opt=${row.optimization_mode}`
+          `seed=${row.training_seed_mode} soul=${row.soul_source} preset=${row.runtime_preset} opt=${row.optimization_mode} ` +
+          `fb(e/d)=${row.runtime_observability.evaluator_fallbacks}/${row.runtime_observability.director_fallbacks}`
         )
       );
     }
@@ -480,6 +489,7 @@ async function runInputRoutingComparison(
     }
 
     const loop = new TrainingLoop(soul, persona, store);
+    snapshotAndResetAgentFallbackMetrics();
     const result = await withTimeout(
       loop.run({
         maxRounds: rounds,
@@ -496,6 +506,7 @@ async function runInputRoutingComparison(
       EXPERIMENT_PROFILE_TIMEOUT_MS,
       `input routing ${strategy}`
     );
+    const fallbackMetrics = snapshotAndResetAgentFallbackMetrics();
     const history = result.history;
     const avgQuality = history.length === 0 ? 0 : history.reduce((sum, item) => sum + item.avgQualityScore, 0) / history.length;
     const contradictionRate = history.length === 0
@@ -521,6 +532,13 @@ async function runInputRoutingComparison(
       duplicationRate,
       coverage: result.soul.coverage_score,
       observability: routed.observability,
+      runtime_observability: {
+        kimi_stability_mode: executionSettings.kimiStabilityMode,
+        trainer_fallbacks: fallbackMetrics.trainerFallbacks,
+        persona_fallbacks: fallbackMetrics.personaFallbacks,
+        evaluator_fallbacks: fallbackMetrics.evaluatorFallbacks,
+        director_fallbacks: fallbackMetrics.directorFallbacks,
+      },
     });
   }
 

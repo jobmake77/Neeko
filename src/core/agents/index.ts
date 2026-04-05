@@ -253,7 +253,19 @@ export class TrainerAgent {
     const constraints = strategyTargets
       .map((s) => `${s.strategy}: ${s.count}`)
       .join(', ');
-    const prompt = options.compactPrompt
+    const prompt = options.compactPrompt && questionCount === 1
+      ? this.buildSingleQuestionTrainerPrompt(
+        soul.target_name,
+        round,
+        lowConfidence,
+        previousQuestions,
+        skillGapHints,
+        skillHints,
+        trainingSeedHints,
+        constraints,
+        options.previousRound
+      )
+      : options.compactPrompt
       ? this.buildCompactTrainerPrompt(
         soul.target_name,
         round,
@@ -372,6 +384,34 @@ Question types:
 - scenario = practical decision-making
 
 Return exactly ${questionCount} items with strict strategy counts and diverse target dimensions.`;
+  }
+
+  private buildSingleQuestionTrainerPrompt(
+    targetName: string,
+    round: number,
+    lowConfidence: TargetDimension[],
+    previousQuestions: string[],
+    skillGapHints: string[],
+    skillHints: string[],
+    trainingSeedHints: string[],
+    constraints: string,
+    previousRound?: RoundObservability
+  ): string {
+    const recentQuestions = previousQuestions.slice(-2).join(' | ') || 'none';
+    const gapSummary = skillGapHints.slice(0, 2).join(' | ') || 'none';
+    const hintSummary = skillHints.slice(0, 3).join(' | ') || 'none';
+    const seedSummary = trainingSeedHints.slice(0, 2).join(' | ') || 'none';
+    return `Return JSON with exactly one training question for "${targetName}".
+round=${round}
+low_conf=${lowConfidence.join(', ') || 'none'}
+avoid=${recentQuestions}
+gaps=${gapSummary}
+hints=${hintSummary}
+priors=${seedSummary}
+prev_contra=${previousRound?.contradictionRate.toFixed(2) ?? 'n/a'}
+prev_low_conf=${previousRound?.lowConfidenceCoverage.toFixed(2) ?? 'n/a'}
+mix=${constraints}
+Pick one high-value question only. Keep strategy count valid and target a useful dimension.`;
   }
 
   private lowConfidenceDimensions(soul: Soul): TargetDimension[] {

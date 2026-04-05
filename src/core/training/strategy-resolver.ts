@@ -465,6 +465,27 @@ function buildDecision(
 
 function buildTightRuntimeOverrides(runtimePreset: TrainingRuntimePreset): TrainingRuntimeOverrides {
   if (runtimePreset === 'fast') return {};
+  if (runtimePreset === 'robust') {
+    return {
+      trainerTimeoutMs: 28_000,
+      trainerRetries: 0,
+      trainerCompactPrompt: true,
+      personaMaxTokens: 320,
+      personaTimeoutMs: 32_000,
+      personaRetries: 1,
+      personaCompactPrompt: true,
+      personaMemoryLimit: 3,
+      personaMemoryMaxChars: 760,
+      directorTimeoutMs: 24_000,
+      directorRetries: 0,
+      directorCompactPrompt: true,
+      evaluatorTimeoutMs: 28_000,
+      evaluatorRetries: 1,
+      evaluatorMaxResponseChars: 980,
+      evaluatorCompactPrompt: true,
+      evaluatorLayered: true,
+    };
+  }
   return {
     trainerTimeoutMs: 22_000,
     trainerRetries: 0,

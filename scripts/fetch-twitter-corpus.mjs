@@ -31,6 +31,8 @@ const emptyWindowRetries = Math.max(0, parseInt(process.env.NEEKO_TWITTER_EMPTY_
 const maxQueriesPerRun = Math.max(0, parseInt(process.env.NEEKO_TWITTER_MAX_QUERIES_PER_RUN || '0', 10) || 0);
 const unhealthyFailureLimit = Math.max(1, parseInt(process.env.NEEKO_TWITTER_PROVIDER_UNHEALTHY_FAILURES || '3', 10) || 3);
 const fallbackProvider = String(process.env.NEEKO_TWITTER_FETCH_FALLBACK_PROVIDER || 'off').trim().toLowerCase();
+const searchMode = String(process.env.NEEKO_TWITTER_SEARCH_MODE || 'live_then_top').trim().toLowerCase();
+const queryTimeoutMs = Math.max(15_000, parseInt(process.env.NEEKO_TWITTER_QUERY_TIMEOUT_MS || '120000', 10) || 120_000);
 const env = {
   ...process.env,
   PATH: `/Users/a77/.npm-global/bin:/usr/local/bin:${process.env.PATH || ''}`,
@@ -72,25 +74,35 @@ function runWindow(since, until) {
 function runOpenCliWindow(since, until) {
   const query = `from:${handle} since:${fmt(since)} until:${fmt(until)}`;
   const attempts = [];
-  const live = runOpenCliSearchWindow(query, 'live', 100);
-  attempts.push(live.meta);
-  if (live.rows.length > 0) {
-    return { rows: live.rows, provider: live.meta.provider, meta: live.meta, attempts };
-  }
+  const modes = resolveSearchModes();
 
-  if (isStructuralOpenCliError(live.meta.error)) {
-    const top = runOpenCliSearchWindow(query, 'top', 100);
-    attempts.push(top.meta);
-    if (top.rows.length > 0 || !isStructuralOpenCliError(top.meta.error)) {
-      return { rows: top.rows, provider: top.meta.provider, meta: top.meta, attempts };
+  for (const mode of modes) {
+    const result = runOpenCliSearchWindow(query, mode, 100);
+    attempts.push(result.meta);
+
+    if (result.rows.length > 0) {
+      return { rows: result.rows, provider: result.meta.provider, meta: result.meta, attempts };
     }
 
+    if (isStructuralOpenCliError(result.meta.error)) {
+      continue;
+    }
+  }
+
+  if (attempts.some((attempt) => isStructuralOpenCliError(attempt.error))) {
     const timeline = runOpenCliTimelineWindow(since, until);
     attempts.push(timeline.meta);
     return { rows: timeline.rows, provider: timeline.meta.provider, meta: timeline.meta, attempts };
   }
 
-  return { rows: live.rows, provider: live.meta.provider, meta: live.meta, attempts };
+  const lastAttempt = attempts[attempts.length - 1] ?? {
+    provider: 'opencli',
+    ok: false,
+    rows: 0,
+    mode: 'search:unknown',
+    error: 'no opencli search attempt executed',
+  };
+  return { rows: [], provider: lastAttempt.provider, meta: lastAttempt, attempts };
 }
 
 function runOpenCliSearchWindow(query, filter, limit) {
@@ -102,7 +114,7 @@ function runOpenCliSearchWindow(query, filter, limit) {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           env,
-          timeout: 120000,
+          timeout: queryTimeoutMs,
           maxBuffer: 10 * 1024 * 1024,
         });
         const parsed = JSON.parse(output);
@@ -165,7 +177,7 @@ function runOpenCliTimelineWindow(since, until) {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
         env,
-        timeout: 120000,
+        timeout: queryTimeoutMs,
         maxBuffer: 10 * 1024 * 1024,
       });
       const parsed = JSON.parse(output);
@@ -215,6 +227,13 @@ function runOpenCliTimelineWindow(since, until) {
   };
 }
 
+function resolveSearchModes() {
+  if (searchMode === 'top_only') return ['top'];
+  if (searchMode === 'top_then_live') return ['top', 'live'];
+  if (searchMode === 'live_only') return ['live'];
+  return ['live', 'top'];
+}
+
 function shouldRetryOpenCliError(message) {
   return /Detached while handling command|Failed to start opencli daemon|Browser Bridge not connected|connection error|timed out|timeout/i.test(
     String(message || '')
@@ -251,7 +270,7 @@ function runSnscrapeWindow(since, until) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: snscrapeEnv,
-      timeout: 120000,
+      timeout: queryTimeoutMs,
       maxBuffer: 12 * 1024 * 1024,
     });
     const rows = output
@@ -501,6 +520,7 @@ console.log(JSON.stringify({
   search_horizon_stop_days: searchHorizonStopDays,
   max_queries_per_run: maxQueriesPerRun,
   unhealthy_failure_limit: unhealthyFailureLimit,
+  query_timeout_ms: queryTimeoutMs,
   fallback_provider: fallbackProvider,
   consecutive_primary_provider_failures: consecutivePrimaryProviderFailures,
   provider_stats: providerStats,

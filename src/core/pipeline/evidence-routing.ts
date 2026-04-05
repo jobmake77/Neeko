@@ -58,9 +58,11 @@ export interface InputRoutingReport {
 }
 
 interface CorpusRoutingHints {
+  docCount: number;
   medianLength: number;
   shortDocRatio: number;
   shortFormDominant: boolean;
+  largeCorpus: boolean;
 }
 
 export function normalizeInputRoutingStrategy(raw?: string, fallback: InputRoutingStrategy = 'legacy'): InputRoutingStrategy {
@@ -239,6 +241,9 @@ function scoreDocument(doc: RawDocument, targetSignals: string[], corpusHints: C
     return buildRoutedDoc(doc, 'discard', score, 'non-target evidence discarded from cultivation routing', flags, attribution, stability, clarity);
   }
 
+  const blockedByEphemeralNoise = looksEphemeral(normalizedContent, clarity);
+  const blockedByCorpusPressure = shouldKeepAsMemoryInLargeCorpus(doc, normalizedContent, score, clarity, corpusHints);
+
   const canShapeSoul =
     attribution >= 0.58 &&
     stability >= 0.52 &&
@@ -246,7 +251,8 @@ function scoreDocument(doc: RawDocument, targetSignals: string[], corpusHints: C
       (clarity >= 0.5 && normalizedContent.length >= 100) ||
       qualifiesAsShortFormSoulSignal(doc, normalizedContent, attribution, stability, clarity, corpusHints)
     ) &&
-    !looksEphemeral(normalizedContent) &&
+    !blockedByEphemeralNoise &&
+    !blockedByCorpusPressure &&
     canSceneShapeSoul(evidence);
 
   if (canShapeSoul && score >= 0.62) {
@@ -336,8 +342,15 @@ function scoreClarity(content: string, evidence?: EvidenceRoutingMetadata): numb
   return clamp(score);
 }
 
-function looksEphemeral(content: string): boolean {
-  return /\b(today|tonight|this week|just now|lol|lmao|omg)\b/i.test(content);
+function looksEphemeral(content: string, clarity = scoreClarity(content)): boolean {
+  if (/\b(lol|lmao|omg|just now)\b/i.test(content)) return true;
+
+  const hasTemporalAnchor = /\b(today|tonight|this week|yesterday|this morning|last night|weekend)\b/i.test(content);
+  if (!hasTemporalAnchor) return false;
+
+  // Long, clear posts can mention a time anchor while still expressing a durable belief
+  // or pattern. We only block temporal language when the evidence is still lightweight.
+  return content.length < 220 || clarity < 0.52;
 }
 
 function looksLinkOnly(content: string): boolean {
@@ -349,9 +362,11 @@ function looksLinkOnly(content: string): boolean {
 function deriveCorpusRoutingHints(docs: RawDocument[]): CorpusRoutingHints {
   if (docs.length === 0) {
     return {
+      docCount: 0,
       medianLength: 0,
       shortDocRatio: 0,
       shortFormDominant: false,
+      largeCorpus: false,
     };
   }
 
@@ -360,9 +375,11 @@ function deriveCorpusRoutingHints(docs: RawDocument[]): CorpusRoutingHints {
   const shortDocRatio = docs.filter((doc) => doc.content.length < 100).length / docs.length;
 
   return {
+    docCount: docs.length,
     medianLength,
     shortDocRatio,
     shortFormDominant: medianLength < 80 || shortDocRatio >= 0.55,
+    largeCorpus: docs.length >= 300,
   };
 }
 
@@ -389,6 +406,30 @@ function canSceneShapeSoul(evidence?: EvidenceRoutingMetadata): boolean {
     );
   }
   return true;
+}
+
+function shouldKeepAsMemoryInLargeCorpus(
+  doc: RawDocument,
+  content: string,
+  score: number,
+  clarity: number,
+  corpusHints: CorpusRoutingHints
+): boolean {
+  if (!corpusHints.largeCorpus || doc.source_type !== 'twitter') return false;
+
+  const trimmed = content.trim();
+  const replyStyle = trimmed.startsWith('@');
+  if (!replyStyle) return false;
+
+  const engagement = scoreEngagement(doc);
+  const isLongEnough = trimmed.length >= 160;
+  const hasStrongEngagement = engagement >= 0.05;
+  const hasReasoningCue = /\b(because|should|need to|important|interesting|exactly|agree|disagree|love|think|believe)\b/i.test(trimmed);
+
+  if (!isLongEnough && !hasStrongEngagement) return true;
+  if (trimmed.length < 120 && !hasReasoningCue) return true;
+  if (clarity < 0.58 && score < 0.84) return true;
+  return false;
 }
 
 function qualifiesAsShortFormSoulSignal(
@@ -489,6 +530,7 @@ export const __evidenceRoutingTestables = {
   scoreStability,
   scoreClarity,
   looksEphemeral,
+  shouldKeepAsMemoryInLargeCorpus,
   qualifiesAsShortFormSoulSignal,
   desiredSoulDocCount,
 };

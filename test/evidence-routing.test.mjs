@@ -14,6 +14,7 @@ const {
   looksEphemeral,
   desiredSoulDocCount,
   qualifiesAsShortFormSoulSignal,
+  shouldKeepAsMemoryInLargeCorpus,
 } = __evidenceRoutingTestables;
 
 function doc(overrides = {}) {
@@ -74,6 +75,10 @@ test('v2 routing discards low-context noisy fragments', () => {
 
 test('helper scoring reflects clarity and ephemeral cues', () => {
   assert.equal(looksEphemeral('lol this week we will see'), true);
+  assert.equal(
+    looksEphemeral('Today I think the long-term direction matters more than short-term convenience because durable systems compound through careful choices, repeated standards, and a team culture that keeps documenting tradeoffs instead of improvising every important decision under deadline pressure.'),
+    false
+  );
   assert.ok(scoreClarity('This is a reasonably complete sentence with enough context and a clear ending.') > scoreClarity('a'));
 });
 
@@ -136,6 +141,40 @@ test('short-form soul promotion stays off for long-form dominant corpora', () =>
     ),
     false
   );
+});
+
+test('large corpora keep lightweight reply tweets in memory even when they are clear', () => {
+  const corpus = Array.from({ length: 320 }, (_, index) => doc({
+    id: `${String(index + 1).padStart(12, '0')}-1111-4111-8111-111111111111`,
+    content: `Long-form training note ${index}. I believe stable engineering taste compounds when teams repeat the same standards across projects and explain the tradeoffs clearly every time.`,
+  }));
+  const replyTweet = doc({
+    id: '99999999-9999-4999-8999-999999999999',
+    content: '@someone yeah exactly, love this direction a lot and I think it is pretty exciting overall.',
+    metadata: { likes: 3, views: 1200 },
+  });
+  const hints = deriveCorpusRoutingHints([...corpus, replyTweet]);
+
+  assert.equal(shouldKeepAsMemoryInLargeCorpus(replyTweet, replyTweet.content, 0.86, 0.7, hints), true);
+
+  const result = routeEvidenceDocuments([...corpus, replyTweet], {
+    strategy: 'v2',
+    targetSignals: ['target', '@target'],
+  });
+  assert.equal(result.soulDocs.some((item) => item.id === replyTweet.id), false);
+  assert.equal(result.memoryDocs.some((item) => item.id === replyTweet.id), true);
+});
+
+test('large clear temporal essays are still allowed into soul', () => {
+  const result = routeEvidenceDocuments([
+    doc({
+      content: 'Today I spent a few hours revisiting the training stack, and the main lesson still seems durable: strong systems come from insisting on clean interfaces, clear ownership, and repeated first-principles reasoning even when the schedule is tight.',
+    }),
+  ], {
+    strategy: 'v2',
+    targetSignals: ['target', '@target'],
+  });
+  assert.equal(result.soulDocs.length, 1);
 });
 
 test('routeEvidenceItems keeps private target evidence in memory and blocks conflict soul writes', () => {

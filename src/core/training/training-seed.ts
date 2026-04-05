@@ -34,7 +34,7 @@ export function loadTrainingSeedHints(
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as StoredTrainingSeed;
     const hints = mode === 'topics'
       ? selectTopicHints(parsed.stable_topics ?? [], limit)
-      : selectSignalHints(parsed.stable_keywords ?? [], limit);
+      : selectCombinedSignalHints(parsed.stable_topics ?? [], parsed.stable_keywords ?? [], limit);
     return {
       mode,
       hints,
@@ -48,17 +48,25 @@ export function loadTrainingSeedHints(
 }
 
 function selectTopicHints(values: string[], limit: number): string[] {
-  return dedupeHints(values)
-    .sort((left, right) => scoreTopicHint(right) - scoreTopicHint(left) || right.length - left.length)
-    .slice(0, limit);
+  return dedupeHints(values).slice(0, limit);
+}
+
+function selectCombinedSignalHints(topics: string[], signals: string[], limit: number): string[] {
+  const topicBudget = Math.min(Math.max(2, Math.ceil(limit / 3)), limit);
+  const topicHints = selectTopicHints(topics, topicBudget);
+  const signalHints = selectSignalHints(signals, Math.max(0, limit - topicHints.length));
+  return dedupeHints([...topicHints, ...signalHints]).slice(0, limit);
 }
 
 function selectSignalHints(values: string[], limit: number): string[] {
   const deduped = dedupeHints(values);
   const selected: string[] = [];
   const usedRoots = new Set<string>();
+  const sorted = [...deduped]
+    .filter((hint) => isUsableSignalHint(hint))
+    .sort((left, right) => scoreSignalHint(right) - scoreSignalHint(left) || right.length - left.length);
 
-  for (const hint of [...deduped].sort((left, right) => scoreSignalHint(right) - scoreSignalHint(left) || right.length - left.length)) {
+  for (const hint of sorted) {
     const root = normalizeSignalRoot(hint);
     const isPhrase = /\s/.test(hint);
     if (root && usedRoots.has(root) && !isPhrase) continue;
@@ -84,17 +92,29 @@ function dedupeHints(values: string[]): string[] {
   return cleaned;
 }
 
-function scoreTopicHint(value: string): number {
-  const tokenCount = value.split(/\s+/).filter(Boolean).length;
-  return tokenCount * 1.5 + Math.min(12, value.length) * 0.05;
-}
-
 function scoreSignalHint(value: string): number {
   const tokenCount = value.split(/\s+/).filter(Boolean).length;
   const multiWordBonus = tokenCount >= 2 ? 4 : 0;
   const specificityBonus = Math.min(10, value.length) * 0.08;
   const tersePenalty = value.length <= 3 ? 1.5 : 0;
   return multiWordBonus + tokenCount * 0.7 + specificityBonus - tersePenalty;
+}
+
+function isUsableSignalHint(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (SIGNAL_HINT_BLOCKLIST.has(normalized)) return false;
+
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (tokens.length >= 2) {
+    return tokens.every((token) => !SIGNAL_HINT_BLOCKLIST.has(token) && token.length >= 3);
+  }
+
+  const token = tokens[0] ?? '';
+  if (token.length < 5) return false;
+  if (token.endsWith('ie')) return false;
+  if (!/[a-z]/i.test(token)) return false;
+  return true;
 }
 
 function normalizeSignalRoot(value: string): string {
@@ -105,3 +125,20 @@ function normalizeSignalRoot(value: string): string {
     .filter((token) => token.length >= 4);
   return tokens[0] ?? value.toLowerCase();
 }
+
+const SIGNAL_HINT_BLOCKLIST = new Set([
+  'usually',
+  'people',
+  'during',
+  'anymore',
+  'asking',
+  'example',
+  'content',
+  'clearly',
+  'biggest',
+  'thought',
+  'looking',
+  'forward',
+  'backward',
+  'human',
+]);

@@ -51,7 +51,7 @@ test('loadTrainingSeedHints loads stable topics and signals safely', () => {
     assert.equal(topics.reason, 'loaded 2 topic clusters');
 
     const signals = loadTrainingSeedHints(dir, 'signals');
-    assert.deepEqual(signals.hints, ['llm training', 'attention']);
+    assert.deepEqual(signals.hints, ['model scaling', 'data quality', 'llm training', 'attention']);
     assert.equal(signals.reason, 'loaded 2 stable signals');
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -65,6 +65,7 @@ test('loadTrainingSeedHints prioritizes more specific signal hints and dedupes r
     writeFileSync(
       join(dir, 'training-seed.json'),
       JSON.stringify({
+        stable_topics: ['llm training', 'prompt design', 'model behavior'],
         stable_keywords: [
           'model',
           'agent systems',
@@ -74,6 +75,7 @@ test('loadTrainingSeedHints prioritizes more specific signal hints and dedupes r
           'data flywheel',
           'data',
           'agent systems',
+          'usually',
         ],
         stable_signal_count: 8,
       }, null, 2),
@@ -82,10 +84,10 @@ test('loadTrainingSeedHints prioritizes more specific signal hints and dedupes r
 
     const signals = loadTrainingSeedHints(dir, 'signals', 4);
     assert.deepEqual(signals.hints, [
+      'llm training',
+      'prompt design',
       'context engineering',
       'agent systems',
-      'data flywheel',
-      'model',
     ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });

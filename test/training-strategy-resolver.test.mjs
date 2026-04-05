@@ -103,10 +103,14 @@ test('kimi stability resolver exposes multiple governance modes', () => {
 
 test('tight runtime overrides stay less aggressive on robust preset', () => {
   const overrides = __trainingStrategyTestables.buildTightRuntimeOverrides('robust');
-  assert.equal(overrides.trainerTimeoutMs, 28000);
-  assert.equal(overrides.directorTimeoutMs, 24000);
-  assert.equal(overrides.evaluatorTimeoutMs, 28000);
-  assert.equal(overrides.evaluatorMaxResponseChars, 980);
+  assert.equal(overrides.trainerTimeoutMs, 30000);
+  assert.equal(overrides.personaTimeoutMs, 36000);
+  assert.equal(overrides.personaRetries, 2);
+  assert.equal(overrides.directorTimeoutMs, 28000);
+  assert.equal(overrides.directorRetries, 1);
+  assert.equal(overrides.evaluatorTimeoutMs, 34000);
+  assert.equal(overrides.evaluatorRetries, 2);
+  assert.equal(overrides.evaluatorMaxResponseChars, 1040);
 });
 
 test('non-kimi provider stays on standard stability mode', () => {

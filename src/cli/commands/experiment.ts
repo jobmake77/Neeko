@@ -293,6 +293,12 @@ export async function cmdExperiment(
     const scoreB = b.avgQuality - b.contradictionRate * 0.2 - b.duplicationRate * 0.1;
     return scoreB - scoreA;
   })[0];
+  const primaryComparisonRow = rows.length === 0 && inputRoutingComparison.rows.length === 1
+    ? inputRoutingComparison.rows[0]
+    : null;
+  const effectiveInputRouting = primaryComparisonRow?.input_routing ?? inputRouting;
+  const effectiveTrainingSeedMode = primaryComparisonRow?.training_seed_mode ?? trainingSeedMode;
+  const effectiveBestProfile = best?.profile ?? primaryComparisonRow?.profile ?? null;
 
   const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
   mkdirSync(outputDir, { recursive: true });
@@ -317,13 +323,13 @@ export async function cmdExperiment(
     profiles,
     questions_per_round: questionsPerRound,
     summary_rows: rows,
-    best_profile: best?.profile ?? null,
+    best_profile: effectiveBestProfile,
     round_histories: roundHistories,
     failures: failures ?? [],
-    input_routing_strategy: inputRouting,
+    input_routing_strategy: effectiveInputRouting,
     provider: providerName,
     kimi_stability_mode: kimiStabilityMode ?? 'auto',
-    training_seed_mode: trainingSeedMode,
+    training_seed_mode: effectiveTrainingSeedMode,
     input_routing_comparison: inputRoutingComparison.rows,
     input_routing_recommendation: inputRoutingComparison.recommendation,
     gate_result: gateResult,

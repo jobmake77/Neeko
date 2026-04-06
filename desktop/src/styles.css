@@ -367,6 +367,10 @@ select:focus {
   gap: 8px;
 }
 
+.compact-field {
+  min-width: 0;
+}
+
 .checkbox-field {
   flex-direction: row;
   align-items: center;
@@ -463,6 +467,12 @@ pre {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.writeback-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
 }
 
 .candidate-actions {

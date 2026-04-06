@@ -88,6 +88,7 @@
 14. Create / Train / Experiment / Export 参数面板扩展，已覆盖更多 CLI 真实参数
 15. Settings 支持手动刷新 service 健康状态并展示本地启动命令
 16. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
+17. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
 
 ### 3.2 默认写回规则
 

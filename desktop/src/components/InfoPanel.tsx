@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
 import { ConversationBundle } from '../lib/types';
 
@@ -28,10 +29,27 @@ export function InfoPanel({
   onReviewCandidate,
   runReport,
 }: InfoPanelProps) {
+  const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected'>('all');
+  const [candidateSort, setCandidateSort] = useState<'newest' | 'oldest' | 'confidence_desc' | 'confidence_asc'>('newest');
   const latestAssistant = [...(bundle?.messages ?? [])].reverse().find((item) => item.role === 'assistant');
   const pendingCount = candidates.filter((item) => item.status === 'pending').length;
   const acceptedCount = candidates.filter((item) => item.status === 'accepted').length;
   const rejectedCount = candidates.filter((item) => item.status === 'rejected').length;
+  const filteredCandidates = useMemo(() => {
+    const base = candidateFilter === 'all'
+      ? [...candidates]
+      : candidates.filter((item) => item.status === candidateFilter);
+    if (candidateSort === 'oldest') {
+      return base.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    }
+    if (candidateSort === 'confidence_desc') {
+      return base.sort((a, b) => b.confidence - a.confidence);
+    }
+    if (candidateSort === 'confidence_asc') {
+      return base.sort((a, b) => a.confidence - b.confidence);
+    }
+    return base.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }, [candidateFilter, candidateSort, candidates]);
 
   return (
     <aside className="panel info-panel">
@@ -97,11 +115,31 @@ export function InfoPanel({
             <span className="badge success">{acceptedCount} accepted</span>
             <span className="badge warning">{rejectedCount} rejected</span>
           </div>
-          {candidates.map((item) => (
+          <div className="writeback-controls">
+            <label className="field compact-field">
+              <span>Status</span>
+              <select value={candidateFilter} onChange={(event) => setCandidateFilter(event.target.value as typeof candidateFilter)}>
+                <option value="all">all</option>
+                <option value="pending">pending</option>
+                <option value="accepted">accepted</option>
+                <option value="rejected">rejected</option>
+              </select>
+            </label>
+            <label className="field compact-field">
+              <span>Sort</span>
+              <select value={candidateSort} onChange={(event) => setCandidateSort(event.target.value as typeof candidateSort)}>
+                <option value="newest">newest</option>
+                <option value="oldest">oldest</option>
+                <option value="confidence_desc">confidence desc</option>
+                <option value="confidence_asc">confidence asc</option>
+              </select>
+            </label>
+          </div>
+          {filteredCandidates.map((item) => (
             <article key={item.id} className="mini-card">
               <strong>{item.candidate_type}</strong>
               <p>{item.content}</p>
-              <small>{Math.round(item.confidence * 100)}% · {item.status}</small>
+              <small>{Math.round(item.confidence * 100)}% · {item.status} · {new Date(item.created_at).toLocaleString()}</small>
               <div className="candidate-actions">
                 <button
                   type="button"
@@ -131,6 +169,9 @@ export function InfoPanel({
             </article>
           ))}
           {candidates.length === 0 ? <div className="empty-state">No memory candidates yet.</div> : null}
+          {candidates.length > 0 && filteredCandidates.length === 0 ? (
+            <div className="empty-state">No candidates match the current filter.</div>
+          ) : null}
         </div>
       ) : null}
 

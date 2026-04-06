@@ -192,6 +192,36 @@ button {
   background: rgba(248, 245, 239, 0.92);
 }
 
+.workflow-card {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(247, 244, 237, 0.9);
+}
+
+.workflow-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.workflow-stage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(31, 36, 48, 0.08);
+}
+
+.workflow-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .training-card-stack {
   display: flex;
   flex-direction: column;

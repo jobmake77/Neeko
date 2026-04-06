@@ -67,6 +67,13 @@ export function InfoPanel({
       : null;
   const runPresentation = deriveRunPresentation(runReport);
   const runSummary = deriveRunSummary(runReport?.report);
+  const writebackFlow = deriveWritebackFlow({
+    pendingCount,
+    acceptedCount,
+    readyCount,
+    selectedHandoff,
+    selectedPrep,
+  });
   const filteredCandidates = useMemo(() => {
     const base =
       candidateFilter === 'all'
@@ -145,6 +152,30 @@ export function InfoPanel({
 
       {activeTab === 'Writeback' ? (
         <div className="inspector-section">
+          <article className="mini-card workflow-card">
+            <div className="list-card-top">
+              <strong>Pipeline Status</strong>
+              <span className={writebackFlow.tone === 'good' ? 'badge success' : writebackFlow.tone === 'warning' ? 'badge warning' : 'badge'}>
+                {writebackFlow.statusLabel}
+              </span>
+            </div>
+            <p>{writebackFlow.summary}</p>
+            <div className="workflow-stage-grid">
+              {writebackFlow.stages.map((stage) => (
+                <div key={stage.label} className="workflow-stage-card">
+                  <strong>{stage.label}</strong>
+                  <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
+                    {stage.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="workflow-step-list">
+              {writebackFlow.actions.map((item) => (
+                <small key={item}>{item}</small>
+              ))}
+            </div>
+          </article>
           <div className="writeback-summary">
             <span className="badge">{pendingCount} pending</span>
             <span className="badge success">{acceptedCount} accepted</span>
@@ -174,6 +205,19 @@ export function InfoPanel({
                 <span className="badge">{selectedHandoff.candidate_ids.length} ids</span>
                 <span className="badge">{selectedHandoff.persona_slug}</span>
               </div>
+              <article className="workflow-card">
+                <div className="list-card-top">
+                  <strong>Handoff Guidance</strong>
+                  <span className={selectedHandoff.status === 'queued' ? 'badge success' : 'badge'}>
+                    {selectedHandoff.status === 'queued' ? 'ready for prep' : 'draft review'}
+                  </span>
+                </div>
+                <p>
+                  {selectedHandoff.status === 'queued'
+                    ? 'This handoff is queued and ready to turn into a training prep artifact.'
+                    : 'Review the draft handoff, then queue it or export it before building training prep.'}
+                </p>
+              </article>
               <div className="candidate-actions">
                 <button
                   type="button"
@@ -378,6 +422,13 @@ export function InfoPanel({
                       Copy Prep JSON
                     </button>
                   </div>
+                  <article className="workflow-card">
+                    <div className="list-card-top">
+                      <strong>Prep Guidance</strong>
+                      <span className="badge success">train ready</span>
+                    </div>
+                    <p>This prep artifact is ready to attach to the train form or export for external review.</p>
+                  </article>
                   <code>{selectedPrep.documents_path}</code>
                   <code>{selectedPrep.evidence_index_path}</code>
                 </article>
@@ -555,4 +606,105 @@ function deriveRunSummary(report: unknown): Array<{ label: string; value: string
     items.push({ label: 'Duplication', value: `${(summary.avg_duplication_rate * 100).toFixed(1)}%` });
   }
   return items.length > 0 ? items : null;
+}
+
+function deriveWritebackFlow(input: {
+  pendingCount: number;
+  acceptedCount: number;
+  readyCount: number;
+  selectedHandoff: PromotionHandoff | null;
+  selectedPrep: TrainingPrepArtifact | null;
+}): {
+  tone: 'good' | 'warning' | 'neutral';
+  statusLabel: string;
+  summary: string;
+  actions: string[];
+  stages: Array<{ label: string; status: string; tone: 'good' | 'warning' | 'neutral' }>;
+} {
+  const stages = [
+    {
+      label: 'Candidate Review',
+      status: input.acceptedCount > 0 ? `${input.acceptedCount} accepted` : input.pendingCount > 0 ? `${input.pendingCount} pending` : 'not started',
+      tone: input.acceptedCount > 0 ? 'good' as const : input.pendingCount > 0 ? 'warning' as const : 'neutral' as const,
+    },
+    {
+      label: 'Promotion Queue',
+      status: input.readyCount > 0 ? `${input.readyCount} ready` : 'empty',
+      tone: input.readyCount > 0 ? 'good' as const : 'neutral' as const,
+    },
+    {
+      label: 'Handoff',
+      status: input.selectedHandoff ? input.selectedHandoff.status : 'none',
+      tone: input.selectedHandoff?.status === 'queued' ? 'good' as const : input.selectedHandoff ? 'warning' as const : 'neutral' as const,
+    },
+    {
+      label: 'Training Prep',
+      status: input.selectedPrep ? input.selectedPrep.status : 'none',
+      tone: input.selectedPrep ? 'good' as const : 'neutral' as const,
+    },
+  ];
+
+  if (!input.selectedHandoff && input.readyCount === 0 && input.pendingCount > 0) {
+    return {
+      tone: 'warning',
+      statusLabel: 'review candidates',
+      summary: 'You already have candidate signals, but they still need review before this thread can move into handoff and prep.',
+      actions: [
+        'Accept or reject the current candidates.',
+        'Queue the strongest accepted items so a handoff can be created cleanly.',
+      ],
+      stages,
+    };
+  }
+
+  if (input.readyCount > 0 && !input.selectedHandoff) {
+    return {
+      tone: 'good',
+      statusLabel: 'create handoff',
+      summary: 'The queue is ready. This thread can move into a promotion handoff now.',
+      actions: [
+        'Create a handoff from the ready queue.',
+        'Review the handoff summary before building training prep.',
+      ],
+      stages,
+    };
+  }
+
+  if (input.selectedHandoff && !input.selectedPrep) {
+    return {
+      tone: input.selectedHandoff.status === 'queued' ? 'good' : 'neutral',
+      statusLabel: input.selectedHandoff.status === 'queued' ? 'build prep' : 'review handoff',
+      summary: input.selectedHandoff.status === 'queued'
+        ? 'The handoff is queued and ready to become a training prep artifact.'
+        : 'A handoff exists, but it should be reviewed or queued before prep creation.',
+      actions: input.selectedHandoff.status === 'queued'
+        ? ['Create a training prep from this handoff.', 'Attach the prep to Train when you are ready to run.']
+        : ['Review the handoff content.', 'Queue it when the summary looks clean, then create training prep.'],
+      stages,
+    };
+  }
+
+  if (input.selectedPrep) {
+    return {
+      tone: 'good',
+      statusLabel: 'ready for training',
+      summary: 'A training prep artifact is already available for this thread.',
+      actions: [
+        'Use the prep artifact to populate the Train form.',
+        'Run smoke first if you want a low-risk verification before a longer train run.',
+      ],
+      stages,
+    };
+  }
+
+  return {
+    tone: 'neutral',
+    statusLabel: 'collect signal',
+    summary: 'This thread has not moved into the writeback pipeline yet.',
+    actions: [
+      'Continue the conversation or import evidence to generate stronger candidates.',
+      'Review the next batch of candidates once they appear.',
+    ],
+    stages,
+  };
 }

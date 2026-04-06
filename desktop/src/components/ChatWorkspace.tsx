@@ -104,6 +104,7 @@ export function ChatWorkspace({
     Object.entries(value)
       .sort((a, b) => b[1] - a[1])
       .slice(0, limit);
+  const intakeGuidance = selectedEvidenceImport ? deriveIntakeGuidance(selectedEvidenceImport) : null;
 
   return (
     <section className="workspace panel">
@@ -216,6 +217,22 @@ export function ChatWorkspace({
                   <span className="badge success">{selectedEvidenceImport.stats.cross_session_stable_items} stable</span>
                   <span className="badge warning">{selectedEvidenceImport.stats.blocked_scene_items} blocked</span>
                 </div>
+                {intakeGuidance ? (
+                  <article className="workflow-card">
+                    <div className="list-card-top">
+                      <strong>Suggested Next Step</strong>
+                      <span className={intakeGuidance.tone === 'good' ? 'badge success' : intakeGuidance.tone === 'warning' ? 'badge warning' : 'badge'}>
+                        {intakeGuidance.statusLabel}
+                      </span>
+                    </div>
+                    <p>{intakeGuidance.summary}</p>
+                    <div className="workflow-step-list">
+                      {intakeGuidance.actions.map((item) => (
+                        <small key={item}>{item}</small>
+                      ))}
+                    </div>
+                  </article>
+                ) : null}
                 <div className="evidence-metric-grid">
                   <div className="metric-group">
                     <strong>Speaker Roles</strong>
@@ -329,4 +346,59 @@ export function ChatWorkspace({
       </form>
     </section>
   );
+}
+
+function deriveIntakeGuidance(item: WorkbenchEvidenceImport): {
+  tone: 'good' | 'warning' | 'neutral';
+  statusLabel: string;
+  summary: string;
+  actions: string[];
+} {
+  const stats = item.stats;
+
+  if (stats.target_windows === 0) {
+    return {
+      tone: 'warning',
+      statusLabel: 'check manifest',
+      summary: 'No target-centered windows were extracted from this intake yet.',
+      actions: [
+        'Review the target manifest aliases and speaker mapping first.',
+        'Re-import after confirming the target can be identified in the source file.',
+      ],
+    };
+  }
+
+  if (stats.cross_session_stable_items === 0 && stats.windows <= 8) {
+    return {
+      tone: 'warning',
+      statusLabel: 'thin signal',
+      summary: 'This intake completed, but it does not contain much stable evidence yet.',
+      actions: [
+        'Import a larger slice of the same corpus before training.',
+        'Keep this thread as context, but prefer a stronger intake for formal training runs.',
+      ],
+    };
+  }
+
+  if (stats.blocked_scene_items > stats.cross_session_stable_items && stats.blocked_scene_items >= 3) {
+    return {
+      tone: 'neutral',
+      statusLabel: 'review scenes',
+      summary: 'A meaningful share of the evidence was blocked or downgraded by scene policy.',
+      actions: [
+        'Inspect whether the source file is dominated by private, intimate, or conflict-heavy content.',
+        'Use this intake carefully and prefer handoff review before promoting it into training prep.',
+      ],
+    };
+  }
+
+  return {
+    tone: 'good',
+    statusLabel: 'ready for train',
+    summary: 'This intake looks healthy enough to attach directly to training or turn into a prep artifact.',
+    actions: [
+      'Use For Training if you want to test the current corpus immediately.',
+      'If you want more control, review memory candidates and create a handoff first.',
+    ],
+  };
 }

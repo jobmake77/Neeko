@@ -82,6 +82,7 @@
 8. thread 卡片最近消息预览
 9. 聊天主区显式展示 session summary
 10. run report 附带 log tail，可在客户端内直接查看最近运行输出
+11. 线程基础管理：rename / delete / refresh summary
 
 ### 3.2 默认写回规则
 

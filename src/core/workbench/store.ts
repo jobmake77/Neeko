@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { settings } from '../../config/settings.js';
 import {
@@ -106,6 +106,19 @@ export class WorkbenchStore {
       .filter((item): item is Conversation => Boolean(item))
       .filter((item) => !personaSlug || item.persona_slug === personaSlug)
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  updateConversation(id: string, patch: Partial<Conversation>): Conversation | null {
+    const current = this.getConversation(id);
+    if (!current) return null;
+    return this.saveConversation({ ...current, ...patch });
+  }
+
+  deleteConversation(id: string): boolean {
+    const dir = this.getConversationDir(id);
+    if (!existsSync(dir)) return false;
+    rmSync(dir, { recursive: true, force: true });
+    return true;
   }
 
   saveMessages(conversationId: string, messages: ConversationMessage[]): ConversationMessage[] {

@@ -115,6 +115,27 @@ export async function cmdWorkbenchServer(
         writeJson(res, 200, bundle);
         return;
       }
+      if (req.method === 'PATCH' && conversationMatch) {
+        const body = await readBody(req);
+        const title = getString(body.title);
+        if (!title) throw new Error('title is required');
+        const conversation = service.renameConversation(decodeURIComponent(conversationMatch[1]), title);
+        if (!conversation) {
+          writeJson(res, 404, { error: 'Conversation not found' });
+          return;
+        }
+        writeJson(res, 200, conversation);
+        return;
+      }
+      if (req.method === 'DELETE' && conversationMatch) {
+        const deleted = service.deleteConversation(decodeURIComponent(conversationMatch[1]));
+        if (!deleted) {
+          writeJson(res, 404, { error: 'Conversation not found' });
+          return;
+        }
+        writeJson(res, 200, { ok: true });
+        return;
+      }
 
       const conversationMessageMatch = path.match(/^\/api\/conversations\/([^/]+)\/messages$/);
       if (req.method === 'POST' && conversationMessageMatch) {
@@ -132,6 +153,17 @@ export async function cmdWorkbenchServer(
       const candidatesMatch = path.match(/^\/api\/conversations\/([^/]+)\/writeback-candidates$/);
       if (req.method === 'GET' && candidatesMatch) {
         writeJson(res, 200, service.listMemoryCandidates(decodeURIComponent(candidatesMatch[1])));
+        return;
+      }
+
+      const refreshSummaryMatch = path.match(/^\/api\/conversations\/([^/]+)\/refresh-summary$/);
+      if (req.method === 'POST' && refreshSummaryMatch) {
+        const bundle = service.refreshConversationSummary(decodeURIComponent(refreshSummaryMatch[1]));
+        if (!bundle) {
+          writeJson(res, 404, { error: 'Conversation not found' });
+          return;
+        }
+        writeJson(res, 200, bundle);
         return;
       }
 

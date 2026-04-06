@@ -198,6 +198,50 @@ export default function App() {
     }
   }
 
+  async function handleRenameConversation() {
+    if (!selectedConversationId) return;
+    const current = threads.find((item) => item.id === selectedConversationId);
+    const nextTitle = window.prompt('Rename thread', current?.title ?? '');
+    if (!nextTitle || !nextTitle.trim()) return;
+    try {
+      await api.renameConversation(selectedConversationId, nextTitle.trim());
+      if (selectedPersonaSlug) await refreshThreads(selectedPersonaSlug);
+      await refreshConversation(selectedConversationId);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleDeleteConversation() {
+    if (!selectedConversationId || !selectedPersonaSlug) return;
+    const confirmed = window.confirm('Delete this thread and its local conversation assets?');
+    if (!confirmed) return;
+    try {
+      await api.deleteConversation(selectedConversationId);
+      await refreshThreads(selectedPersonaSlug);
+      setBundle(null);
+      setCandidates([]);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleRefreshSummary() {
+    if (!selectedConversationId || !selectedPersonaSlug) return;
+    try {
+      const nextBundle = await api.refreshConversationSummary(selectedConversationId);
+      const nextCandidates = await api.listMemoryCandidates(selectedConversationId);
+      setBundle(nextBundle);
+      setCandidates(nextCandidates);
+      await refreshThreads(selectedPersonaSlug);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function handleSendMessage(message: string) {
     if (!selectedPersonaSlug) return;
     setChatLoading(true);
@@ -263,6 +307,9 @@ export default function App() {
         selectedId={selectedConversationId}
         onSelect={setSelectedConversationId}
         onCreate={handleCreateConversation}
+        onRename={handleRenameConversation}
+        onDelete={handleDeleteConversation}
+        onRefreshSummary={handleRefreshSummary}
       />
       <main className="workspace-container">
         {activeView === 'Chat' ? (

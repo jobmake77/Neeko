@@ -5,9 +5,21 @@ interface ThreadColumnProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onRefreshSummary: () => void;
 }
 
-export function ThreadColumn({ threads, selectedId, onSelect, onCreate }: ThreadColumnProps) {
+export function ThreadColumn({
+  threads,
+  selectedId,
+  onSelect,
+  onCreate,
+  onRename,
+  onDelete,
+  onRefreshSummary,
+}: ThreadColumnProps) {
+  const hasSelection = Boolean(selectedId);
   return (
     <section className="panel column thread-column">
       <div className="panel-header">
@@ -15,9 +27,20 @@ export function ThreadColumn({ threads, selectedId, onSelect, onCreate }: Thread
           <p className="eyebrow">Threads</p>
           <h2>Conversations</h2>
         </div>
-        <button type="button" className="action-button" onClick={onCreate}>
-          New
-        </button>
+        <div className="thread-actions">
+          <button type="button" className="action-button secondary" onClick={onRefreshSummary} disabled={!hasSelection}>
+            Refresh
+          </button>
+          <button type="button" className="action-button secondary" onClick={onRename} disabled={!hasSelection}>
+            Rename
+          </button>
+          <button type="button" className="action-button danger" onClick={onDelete} disabled={!hasSelection}>
+            Delete
+          </button>
+          <button type="button" className="action-button" onClick={onCreate}>
+            New
+          </button>
+        </div>
       </div>
       <div className="thread-list">
         {threads.map((thread) => (

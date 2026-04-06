@@ -164,6 +164,39 @@ export class WorkbenchService {
     return this.store.getConversationBundle(conversationId);
   }
 
+  renameConversation(conversationId: string, title: string): Conversation | null {
+    const nextTitle = title.trim();
+    if (!nextTitle) throw new Error('title is required');
+    return this.store.updateConversation(conversationId, {
+      title: nextTitle,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  deleteConversation(conversationId: string): boolean {
+    return this.store.deleteConversation(conversationId);
+  }
+
+  refreshConversationSummary(conversationId: string): ConversationBundle | null {
+    const bundle = this.store.getConversationBundle(conversationId);
+    if (!bundle) return null;
+    const candidateList = this.store.listMemoryCandidates(conversationId);
+    const updatedAt = new Date().toISOString();
+    this.store.saveSessionSummary({
+      conversation_id: conversationId,
+      summary: buildSessionSummary(bundle.messages, candidateList),
+      updated_at: updatedAt,
+      message_count: bundle.messages.length,
+      candidate_count: candidateList.length,
+    });
+    const latestMessage = bundle.messages[bundle.messages.length - 1];
+    this.store.updateConversation(conversationId, {
+      updated_at: latestMessage?.created_at ?? updatedAt,
+      last_message_preview: latestMessage ? toPreview(latestMessage.content) : '',
+    });
+    return this.store.getConversationBundle(conversationId);
+  }
+
   createConversation(personaSlug: string, title = 'New Thread'): Conversation {
     this.loadPersonaAssets(personaSlug);
     const now = new Date().toISOString();

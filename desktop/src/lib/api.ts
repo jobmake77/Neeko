@@ -45,6 +45,15 @@ export const api = {
       body: JSON.stringify({ title }),
     }),
   getConversation: (id: string) => request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}`),
+  renameConversation: (id: string, title: string) =>
+    request<Conversation>(`/api/conversations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
+  deleteConversation: (id: string) =>
+    request<{ ok: boolean }>(`/api/conversations/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
   sendMessage: (id: string, message: string) =>
     request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/messages`, {
       method: 'POST',
@@ -52,6 +61,10 @@ export const api = {
     }),
   listMemoryCandidates: (id: string) =>
     request<MemoryCandidate[]>(`/api/conversations/${encodeURIComponent(id)}/writeback-candidates`),
+  refreshConversationSummary: (id: string) =>
+    request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/refresh-summary`, {
+      method: 'POST',
+    }),
   createPersona: (payload: Record<string, unknown>) =>
     request<WorkbenchRun>('/api/personas', { method: 'POST', body: JSON.stringify(payload) }),
   startTraining: (payload: Record<string, unknown>) =>

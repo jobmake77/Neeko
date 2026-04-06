@@ -95,12 +95,41 @@ test('buildInputRunManifest freezes routing runtime and shard metadata', () => {
         v2ChunkCompression: 0.5,
       },
     },
+    dynamicScalingRecommendation: {
+      schema_version: 1,
+      generated_at: '2026-04-05T00:00:00.000Z',
+      persona_slug: 'tester',
+      state: 'stabilize',
+      recommended_action: 'merge_and_canonicalize',
+      confidence: 0.72,
+      reason: 'stable topics are consolidating',
+      metrics_snapshot: {
+        stable_topic_growth: 0.41,
+        marginal_coverage_gain: 0.45,
+        duplication_pressure: 0.3,
+        conflict_pressure: 0.22,
+        runtime_pressure: 0.28,
+        seed_maturity: 0.68,
+      },
+      shard_snapshot: {
+        shard_count: 2,
+        pack_count: 4,
+        avg_packs_per_shard: 2,
+        avg_tokens_per_shard: 1200,
+        avg_topical_entropy: 0.42,
+        avg_dominant_topic_concentration: 0.66,
+        avg_runtime_cost_hint: 0.7,
+        max_days_span: 40,
+      },
+    },
   });
 
   assert.equal(manifest.selected_input_routing, 'v2');
   assert.equal(manifest.selected_kimi_stability_mode, 'hybrid');
   assert.equal(manifest.shard_plan.shard_count, shardPlan.shards.length);
   assert.equal(manifest.recommendation?.strategy, 'v2');
+  assert.equal(manifest.dynamic_scaling_recommendation?.state, 'stabilize');
+  assert.equal(manifest.dynamic_scaling_recommendation?.action, 'merge_and_canonicalize');
 });
 
 test('materializeShardDocs keeps shard boundaries aligned with plan order', () => {

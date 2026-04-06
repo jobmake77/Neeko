@@ -51,6 +51,10 @@ const DEFAULT_EVIDENCE_STATS: EvidenceStats = {
   downgraded_scene_items: 0,
   blocked_scene_items: 0,
   cross_session_stable_items: 0,
+  speaker_role_counts: {},
+  scene_counts: {},
+  modality_counts: {},
+  source_type_counts: {},
 };
 
 export class SpeakerResolver {
@@ -298,6 +302,19 @@ export function writeEvidenceArtifacts(
   };
 }
 
+export function loadEvidenceItemsFromFile(filePath: string): EvidenceItem[] {
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    return content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as EvidenceItem);
+  } catch {
+    return [];
+  }
+}
+
 export function loadTargetManifest(filePath: string): TargetManifest {
   const parsed = JSON.parse(readFileSync(filePath, 'utf-8'));
   return TargetManifestSchema.parse(parsed);
@@ -384,6 +401,10 @@ function buildEvidenceStats(
   items: EvidenceItem[],
   base: Pick<EvidenceStats, 'raw_messages' | 'sessions'>
 ): EvidenceStats {
+  const speakerRoleCounts = countBy(items, (item) => item.speaker_role);
+  const sceneCounts = countBy(items, (item) => item.scene);
+  const modalityCounts = countBy(items, (item) => item.modality);
+  const sourceTypeCounts = countBy(items, (item) => item.source_type);
   return {
     ...DEFAULT_EVIDENCE_STATS,
     raw_messages: base.raw_messages,
@@ -394,6 +415,10 @@ function buildEvidenceStats(
     downgraded_scene_items: items.filter((item) => item.scene === 'private').length,
     blocked_scene_items: items.filter((item) => item.scene === 'intimate' || item.scene === 'conflict').length,
     cross_session_stable_items: items.filter((item) => item.stability_hints.cross_session_stable).length,
+    speaker_role_counts: speakerRoleCounts,
+    scene_counts: sceneCounts,
+    modality_counts: modalityCounts,
+    source_type_counts: sourceTypeCounts,
   };
 }
 
@@ -410,6 +435,15 @@ function summarizeScenes(items: EvidenceItem[]): Record<string, number> {
   const summary: Record<string, number> = {};
   for (const item of items) {
     summary[item.scene] = (summary[item.scene] ?? 0) + 1;
+  }
+  return summary;
+}
+
+function countBy<T>(items: T[], pick: (item: T) => string): Record<string, number> {
+  const summary: Record<string, number> = {};
+  for (const item of items) {
+    const key = pick(item);
+    summary[key] = (summary[key] ?? 0) + 1;
   }
   return summary;
 }

@@ -66,6 +66,22 @@ import {
   TrainingStrategyDecision,
 } from '../../core/training/strategy-resolver.js';
 import { resolvePreferredProviderName } from '../../config/model.js';
+import {
+  buildStandaloneEvidenceBatch,
+  loadEvidenceItemsFromFile,
+} from '../../core/pipeline/evidence-layer.js';
+import {
+  buildEvidencePacks,
+  writeEvidencePackAssets,
+} from '../../core/pipeline/pack-builder.js';
+import {
+  planAdaptiveShards,
+  writeAdaptiveShardPlanAssets,
+} from '../../core/pipeline/adaptive-shard-plan.js';
+import {
+  recommendDynamicScaling,
+  writeDynamicScalingRecommendationAssets,
+} from '../../core/pipeline/dynamic-scaling-recommendation.js';
 
 interface TrainRuntimeContext {
   dir: string;
@@ -168,6 +184,21 @@ export async function cmdTrain(
     explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
   });
   if (rawDocs.length > 0) {
+    const evidenceItems = loadEvidenceItemsFromFile(join(dir, 'evidence-index.jsonl'));
+    const packSourceItems = evidenceItems.length > 0
+      ? evidenceItems
+      : buildStandaloneEvidenceBatch(rawDocs).items;
+    let dynamicScalingRecommendation = null;
+    if (packSourceItems.length > 0) {
+      const packBuild = buildEvidencePacks(packSourceItems, { personaSlug: persona.slug });
+      writeEvidencePackAssets(dir, packBuild);
+      const adaptiveShardPlan = planAdaptiveShards(packBuild.packs, { personaSlug: persona.slug });
+      writeAdaptiveShardPlanAssets(dir, adaptiveShardPlan);
+      dynamicScalingRecommendation = recommendDynamicScaling(packBuild.metrics, adaptiveShardPlan, {
+        personaSlug: persona.slug,
+      });
+      writeDynamicScalingRecommendationAssets(dir, dynamicScalingRecommendation);
+    }
     const snapshot = buildCorpusSnapshot(rawDocs, { personaSlug: persona.slug });
     const shardPlan = planCorpusShards(rawDocs, { personaSlug: persona.slug });
     const recommendation =
@@ -187,6 +218,7 @@ export async function cmdTrain(
       requestedRounds: rounds,
       trainingProfile: profile,
       recommendation,
+      dynamicScalingRecommendation,
     });
     writeCorpusPlanningAssets(dir, {
       snapshot,
@@ -247,7 +279,7 @@ export async function cmdTrain(
   }
   if (trainingSeedSelection.mode !== 'off') {
     spin.message(
-      `Training seed hints 已启用：mode=${trainingSeedSelection.mode}，hints=${trainingSeedSelection.hints.length}（${trainingSeedSelection.reason}）`
+      `Training seed hints 已启用：requested=${trainingSeedSelection.requested_mode}，effective=${trainingSeedSelection.mode}，hints=${trainingSeedSelection.hints.length}（${trainingSeedSelection.reason}）`
     );
   }
 

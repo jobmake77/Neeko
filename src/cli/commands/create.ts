@@ -51,9 +51,22 @@ import {
   buildStandaloneEvidenceBatch,
   buildVideoTranscriptEvidenceBatch,
   convertEvidenceItemsToDocuments,
+  loadEvidenceItemsFromFile,
   loadTargetManifest,
   writeEvidenceArtifacts,
 } from '../../core/pipeline/evidence-layer.js';
+import {
+  buildEvidencePacks,
+  writeEvidencePackAssets,
+} from '../../core/pipeline/pack-builder.js';
+import {
+  planAdaptiveShards,
+  writeAdaptiveShardPlanAssets,
+} from '../../core/pipeline/adaptive-shard-plan.js';
+import {
+  recommendDynamicScaling,
+  writeDynamicScalingRecommendationAssets,
+} from '../../core/pipeline/dynamic-scaling-recommendation.js';
 import {
   buildSkillLibraryFromSources,
   loadSkillLibrary,
@@ -340,6 +353,18 @@ export async function cmdCreate(
   }
 
   writeRawDocsCache(personaDir, allDocs);
+  let dynamicScalingRecommendation = null;
+  const packSourceItems = evidenceBatch?.items ?? loadEvidenceItemsFromFile(join(personaDir, 'evidence-index.jsonl'));
+  if (packSourceItems.length > 0) {
+    const packBuild = buildEvidencePacks(packSourceItems, { personaSlug: persona.slug });
+    writeEvidencePackAssets(personaDir, packBuild);
+    const adaptiveShardPlan = planAdaptiveShards(packBuild.packs, { personaSlug: persona.slug });
+    writeAdaptiveShardPlanAssets(personaDir, adaptiveShardPlan);
+    dynamicScalingRecommendation = recommendDynamicScaling(packBuild.metrics, adaptiveShardPlan, {
+      personaSlug: persona.slug,
+    });
+    writeDynamicScalingRecommendationAssets(personaDir, dynamicScalingRecommendation);
+  }
 
   // ── Clean + chunk ─────────────────────────────────────────────────────────
   spin.start('Cleaning and chunking content...');
@@ -385,6 +410,7 @@ export async function cmdCreate(
     requestedRounds: Math.max(0, requestedRounds || 0),
     trainingProfile: profile,
     recommendation: routingRecommendation,
+    dynamicScalingRecommendation,
   });
   writeCorpusPlanningAssets(personaDir, {
     snapshot: corpusSnapshot,
@@ -529,7 +555,7 @@ export async function cmdCreate(
     const trainingSeedSelection = loadTrainingSeedHints(personaDir, trainingSeedMode);
     if (trainingSeedSelection.mode !== 'off') {
       spin.message(
-        `Training seed hints: mode=${trainingSeedSelection.mode}, hints=${trainingSeedSelection.hints.length} (${trainingSeedSelection.reason})`
+        `Training seed hints: requested=${trainingSeedSelection.requested_mode}, effective=${trainingSeedSelection.mode}, hints=${trainingSeedSelection.hints.length} (${trainingSeedSelection.reason})`
       );
     }
     const originSkillsAdded = skillLibrary.origin_skills.length;

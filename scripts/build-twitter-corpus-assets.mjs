@@ -35,6 +35,14 @@ const {
   writeShardCorpusAssets,
 } = await import('../dist/testing/corpus-plan-test-entry.js');
 const {
+  buildEvidencePacks,
+  planAdaptiveShards,
+  recommendDynamicScaling,
+  writeAdaptiveShardPlanAssets,
+  writeDynamicScalingRecommendationAssets,
+  writeEvidencePackAssets,
+} = await import('../dist/testing/dynamic-scaling-test-entry.js');
+const {
   distillCorpusShards,
   writeShardDistillationAssets,
 } = await import('../dist/testing/shard-distillation-test-entry.js');
@@ -104,6 +112,35 @@ const shardPlan = planCorpusShards(docs, {
   targetDocsPerShard,
   maxDocsPerShard,
 });
+const evidenceItems = docs.map((doc) => ({
+  id: crypto.randomUUID(),
+  raw_document_id: doc.id,
+  source_type: doc.source_type,
+  modality: 'text',
+  content: doc.content,
+  speaker_role: 'target',
+  speaker_name: inferredHandle,
+  target_confidence: 0.98,
+  scene: 'public',
+  window_role: 'standalone',
+  timestamp_start: doc.published_at,
+  timestamp_end: doc.published_at,
+  context_before: [],
+  context_after: [],
+  evidence_kind: 'statement',
+  stability_hints: {},
+  metadata: {
+    source_platform: doc.source_platform,
+  },
+}));
+const packBuild = buildEvidencePacks(evidenceItems, { personaSlug });
+writeEvidencePackAssets(outDir, packBuild);
+const adaptiveShardPlan = planAdaptiveShards(packBuild.packs, { personaSlug });
+writeAdaptiveShardPlanAssets(outDir, adaptiveShardPlan);
+const dynamicScalingRecommendation = recommendDynamicScaling(packBuild.metrics, adaptiveShardPlan, {
+  personaSlug,
+});
+writeDynamicScalingRecommendationAssets(outDir, dynamicScalingRecommendation);
 const manifest = buildInputRunManifest({
   personaSlug,
   snapshot,
@@ -114,6 +151,7 @@ const manifest = buildInputRunManifest({
   requestedRounds,
   trainingProfile,
   recommendation: null,
+  dynamicScalingRecommendation,
 });
 
 writeCorpusPlanningAssets(outDir, { snapshot, shardPlan, manifest });
@@ -145,6 +183,8 @@ const summary = {
   shards: shardPlan.totals.shard_count,
   strategy,
   provider,
+  dynamic_scaling_state: dynamicScalingRecommendation.state,
+  dynamic_scaling_action: dynamicScalingRecommendation.recommended_action,
   stable_signal_count: merged.soulSeed.stable_signal_count,
   topic_cluster_count: merged.soulSeed.topic_cluster_count,
   memory_candidate_count: merged.memoryCandidates.candidate_count,

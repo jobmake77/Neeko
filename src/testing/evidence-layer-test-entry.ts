@@ -5,6 +5,7 @@ export {
   buildStandaloneEvidenceBatch,
   buildVideoTranscriptEvidenceBatch,
   convertEvidenceItemsToDocuments,
+  loadEvidenceItemsFromFile,
   loadTargetManifest,
   writeEvidenceArtifacts,
 } from '../core/pipeline/evidence-layer.js';

@@ -37,6 +37,8 @@ const env = {
   ...process.env,
   PATH: `/Users/a77/.npm-global/bin:/usr/local/bin:${process.env.PATH || ''}`,
 };
+let snscrapeBlockedInRun = false;
+let snscrapeBlockedReason = null;
 
 function fmt(d) {
   return d.toISOString().slice(0, 10);
@@ -60,12 +62,25 @@ function runWindow(since, until) {
     return { rows: primary.rows, provider: primary.meta.provider, attempts };
   }
 
-  if (fallbackProvider === 'snscrape') {
+  if (fallbackProvider === 'snscrape' && !snscrapeBlockedInRun) {
     const secondary = runSnscrapeWindow(since, until);
     attempts.push(secondary.meta);
+    if (secondary.meta.ok === false && isSnscrapeBlockedError(secondary.meta.error)) {
+      snscrapeBlockedInRun = true;
+      snscrapeBlockedReason = secondary.meta.error ?? 'snscrape blocked';
+    }
     if (secondary.rows.length > 0) {
       return { rows: secondary.rows, provider: secondary.meta.provider, attempts };
     }
+  } else if (fallbackProvider === 'snscrape' && snscrapeBlockedInRun) {
+    attempts.push({
+      provider: 'snscrape',
+      ok: false,
+      rows: 0,
+      attempt: 0,
+      skipped: true,
+      error: snscrapeBlockedReason ?? 'snscrape blocked earlier in this run',
+    });
   }
 
   return { rows: primary.rows, provider: primary.meta.provider, attempts };
@@ -264,6 +279,7 @@ function runSnscrapeWindow(since, until) {
   const snscrapeEnv = {
     ...env,
     PATH: `${path.join(process.env.HOME || '', 'Library/Python/3.9/bin')}:${env.PATH}`,
+    PYTHONWARNINGS: 'ignore::urllib3.exceptions.NotOpenSSLWarning',
   };
   try {
     const output = execSync(cmd, {
@@ -288,7 +304,7 @@ function runSnscrapeWindow(since, until) {
       },
     };
   } catch (error) {
-    const message = String(error?.stderr || error?.message || error);
+    const message = sanitizeSnscrapeError(error);
     return {
       rows: [],
       meta: {
@@ -300,6 +316,29 @@ function runSnscrapeWindow(since, until) {
       },
     };
   }
+}
+
+function sanitizeSnscrapeError(error) {
+  const raw = String(error?.stderr || error?.message || error || '');
+  const cleanedLines = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/NotOpenSSLWarning|warnings\.warn\(/i.test(line));
+
+  const priorityLine =
+    cleanedLines.find((line) => /ScraperException:/i.test(line)) ||
+    cleanedLines.find((line) => /CRITICAL\s+.*Errors:/i.test(line)) ||
+    cleanedLines.find((line) => /blocked \(404\)/i.test(line)) ||
+    cleanedLines.find((line) => /Error retrieving/i.test(line)) ||
+    cleanedLines[0] ||
+    raw.trim();
+
+  return priorityLine.slice(0, 240);
+}
+
+function isSnscrapeBlockedError(message) {
+  return /blocked \(404\)|ScraperException: .*failed, giving up|Error retrieving .* blocked \(404\)/i.test(String(message || ''));
 }
 
 function loadExisting(filePath) {
@@ -419,6 +458,7 @@ while (until > earliest && seen.size < target) {
   const since = subDays(until, windowDays);
   const windowResult = runWindow(since, until);
   const rows = windowResult.rows;
+  let uniqueRowsAdded = 0;
   queryCount += 1;
   updateProviderStats(providerStats, windowResult.attempts);
   const primaryMeta = windowResult.attempts[0];
@@ -429,22 +469,25 @@ while (until > earliest && seen.size < target) {
   }
 
   for (const row of rows) {
-    if (row?.id && !seen.has(row.id)) seen.set(row.id, row);
+    if (row?.id && !seen.has(row.id)) {
+      seen.set(row.id, row);
+      uniqueRowsAdded += 1;
+    }
   }
   oldestSeenDate = findOldestSeenDate(seen);
 
-  zeroStreak = rows.length === 0 ? zeroStreak + 1 : 0;
-  if (rows.length === 0 && oldestSeenDate && since < oldestSeenDate) {
+  zeroStreak = uniqueRowsAdded === 0 ? zeroStreak + 1 : 0;
+  if (uniqueRowsAdded === 0 && oldestSeenDate && since < oldestSeenDate) {
     emptyDaysPastOldest += Math.max(1, Math.round((until.getTime() - since.getTime()) / 86_400_000));
-  } else if (rows.length > 0) {
+  } else if (uniqueRowsAdded > 0) {
     emptyDaysPastOldest = 0;
   }
   console.error(
-    `${fmt(since)}..${fmt(until)} days=${windowDays} rows=${rows.length} total=${seen.size} queries=${queryCount} provider=${windowResult.provider}`
+    `${fmt(since)}..${fmt(until)} days=${windowDays} rows=${rows.length} unique=${uniqueRowsAdded} total=${seen.size} queries=${queryCount} provider=${windowResult.provider}`
   );
   persistCorpus(out, seen);
 
-  if (rows.length >= saturationThreshold && windowDays > minWindowDays) {
+  if (uniqueRowsAdded >= saturationThreshold && windowDays > minWindowDays) {
     windowDays = Math.max(minWindowDays, Math.floor(windowDays / 2));
     persistState(statePath, {
       handle,
@@ -462,7 +505,7 @@ while (until > earliest && seen.size < target) {
     continue;
   }
 
-  if (rows.length === 0 && zeroStreak >= 6 && windowDays < 28) {
+  if (uniqueRowsAdded === 0 && zeroStreak >= 6 && windowDays < 28) {
     windowDays = Math.min(28, windowDays * 2);
     zeroStreak = 0;
   }

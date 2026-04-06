@@ -1,10 +1,14 @@
 # 输入架构与训练优化阶段总结
 
-更新时间：2026-04-04
+更新时间：2026-04-06
 
 关联文档：
 
+- [Neeko 系统 V1 正式定义](/Users/a77/Desktop/Neeko/docs/system-v1.md)
 - [大语料稳定蒸馏实施方案](/Users/a77/Desktop/Neeko/docs/large-corpus-implementation-plan.md)
+- [大语料扩展优化路线图](/Users/a77/Desktop/Neeko/docs/large-corpus-roadmap.md)
+- [Dynamic Evidence Scaling Framework](/Users/a77/Desktop/Neeko/docs/dynamic-evidence-scaling-framework.md)
+- [账号分型与阶段分型路由框架](/Users/a77/Desktop/Neeko/docs/account-stage-routing-framework.md)
 
 ## 1. 当前阶段结论
 
@@ -19,6 +23,140 @@
 - `V2 routing` 解决“标准化输入进入培养前，哪些该进 soul、哪些只该进 memory、哪些该丢弃”。
 
 当前判断：这个方向是成立的，不需要回退到旧架构；但在真正扩大到更大语料前，需要先把稳定性和观测继续收紧。
+
+补充收口结论：
+
+- 安全默认仍保持 `legacy + off`
+- 当前推荐灰度实验线收口为 `v2 + off`
+- `v2 + topics` 暂未稳定优于 `off`
+- `v2 + signals` 已接入 readiness gate，不达标时会自动降到 `topics`
+- `890 / 909 / 1048` 三组真实样本当前都给出同一条动态扩容建议：`explore -> continue_expand`
+- `1126 / 1188 / 1227 / 1250 / 1350 / 1400 / 1500 / 1600 / 1800 / 2000 / 2406 / 3002 / 3501 / 4000 / 4335` 十五个本地阶梯快照仍然保持 `explore -> continue_expand`
+- [karpathy-2406-validation 两轮 PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/karpathy-2406-pk-aggregate.json) 说明当前最佳结论仍是“双轨并存”：`legacy + off` 更稳，`v2 + off` 覆盖更高，`signals` 继续 gated
+- [karpathy-3002-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/karpathy-3002-pk-aggregate.json) 进一步说明：`v2 + off` 在 `3000+` 规模上仍成立，但需要更宽松的实验 timeout 治理
+- [karpathy-4000-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/karpathy-4000-pk-aggregate.json) 说明：`v2 + off` 已在单轮干净运行中给出最强质量，但 `legacy` 仍受 provider 噪声影响，需要多轮解释
+- [karpathy-4335-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/karpathy-4335-pk-aggregate.json) 说明：在当前 provider 可达的大样本边界附近，`v2 + off` 首次以干净单轮结果同时领先质量与覆盖
+- [paulg-1296-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/paulg-1296-pk-aggregate.json) 说明：第二高密度账号并没有稳定复现 `v2 + off` 优势，`legacy + off` 仍略占上风
+- [paulg-1503-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/paulg-1503-pk-aggregate.json) 说明：扩大到 `1503` 后，第二账号仍未支持 `v2 + off` 普适升级；并且出现过一次需要隔离的 timeout 异常值
+- 这项治理现在已经正式进入代码，而不是继续依赖手工环境变量：
+  - [experiment.ts](/Users/a77/Desktop/Neeko/src/cli/commands/experiment.ts)
+
+## 1.1 2026-04-05 阶段性真实验证结论
+
+本轮新增了三组真实样本，目的是确认：
+
+1. `v2 + off` 是否仍然是当前最稳灰度路径
+2. `dynamic scaling recommendation` 在 `900+ -> 1000+` 语料段是否保持稳定
+3. provider 抖动下，轻量 experiment 是否仍能稳定产出正式报告
+
+代表性结果如下：
+
+| Persona | Docs | 结果 | 说明 |
+|---|---:|---|---|
+| `karpathy-890-main-validation` | 890 | `v2 + off`；`explore -> continue_expand` | 轻量 experiment 成功，出现 1 次 director fallback |
+| `karpathy-909-main-validation` | 909 | `v2 + off`；`explore -> continue_expand` | 轻量 experiment 成功，无 director fallback |
+| `karpathy-1044-validation` | 1048 | `v2 + off`；`explore -> continue_expand` | 由 `909 + pre2024` 补档合并得到的第一份 `1000+` 验证样本 |
+| `karpathy-2406-validation` | 2406 | 安全默认 `legacy + off`；推荐灰度 `v2 + off` | 两轮真实 PK 显示 `v2 + off` 覆盖更高，但质量方差仍大于 `legacy + off` |
+| `karpathy-3002-validation` | 3002 | 安全默认 `legacy + off`；推荐灰度 `v2 + off` | `v2 + off` 在默认 `180000ms` timeout 下超时，放宽到 `300000ms` 后跑出 `92.0% / 53.4%` |
+| `karpathy-4000-validation` | 4000 | 安全默认 `legacy + off`；推荐灰度 `v2 + off` | `v2 + off` 在干净单轮中拿到 `94.0% / 53.6%`，`legacy` 有一轮被 provider fallback 污染到 `0.66` |
+| `karpathy-4335-validation` | 4335 | 安全默认 `legacy + off`；推荐灰度 `v2 + off` | 三轮干净真实 PK：`legacy + off` 均值 `0.9167 / 0.5340`，`v2 + off` 均值 `0.9233 / 0.5347`，`signals` 继续无优势 |
+| `paulg-1296-validation` | 1296 | 安全默认 `legacy + off`；推荐灰度 `v2 + off` | 三轮真实 PK 显示 `legacy + off` 与 `signals` 持平，`v2 + off` 略弱，说明第二账号尚未复现 `karpathy` 的优势趋势 |
+| `paulg-1503-validation` | 1503 | 安全默认 `legacy + off`；推荐灰度 `v2 + off` | 当前首轮与隔离异常后的重跑显示 `legacy/off` 与 `v2/off` 基本接近，但还没有出现明确的 `v2` 普适优势 |
+
+对应报告：
+
+- [890 动态报告](/Users/a77/Desktop/Neeko/artifacts/experiment-karpathy-890-dynamic-report-lite/experiment-karpathy-890-main-validation-2026-04-05T13-45-39-284Z.json)
+- [909 动态报告](/Users/a77/Desktop/Neeko/artifacts/experiment-karpathy-909-dynamic-report-lite/experiment-karpathy-909-main-validation-2026-04-05T13-50-38-915Z.json)
+- [1048 动态报告](/Users/a77/Desktop/Neeko/artifacts/experiment-karpathy-1048-dynamic-report-lite/experiment-karpathy-1044-validation-2026-04-05T13-59-57-720Z.json)
+
+当前阶段性判断：
+
+1. `900+ -> 1000+` 这一步还没有进入 `stabilize` 或 `compress`
+2. 当前更像是“仍有明显新增覆盖，但 provider 时延治理还要继续做”
+3. 所以下一阶段的重点不是回退架构，而是继续把语料扩容到更大规模，再观察何时从 `explore` 切到 `stabilize`
+4. `1000+` 之后已经出现稳定的平台期信号，但还没有出现足以要求全局收敛的压力信号
+
+补充说明：
+
+- 本轮还新增了一份阶梯验证报告：[karpathy-1044-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1044-scaling-ladder.json)
+- 使用 `250 / 500 / 750 / 1000 / 1048` 五个检查点做纯本地 recommendation 验证
+- 五个检查点全部返回 `explore -> continue_expand`
+- 随后又补跑了 [karpathy-1126-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1126-scaling-ladder.json)、[karpathy-1188-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1188-scaling-ladder.json)、[karpathy-1227-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1227-scaling-ladder.json)、[karpathy-1250-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1250-scaling-ladder.json)、[karpathy-1350-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1350-scaling-ladder.json)、[karpathy-1400-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1400-scaling-ladder.json)、[karpathy-1500-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1500-scaling-ladder.json)、[karpathy-1600-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1600-scaling-ladder.json)、[karpathy-1800-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-1800-scaling-ladder.json)、[karpathy-2000-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-2000-scaling-ladder.json) 和 [karpathy-2400-scaling-ladder.json](/Users/a77/Desktop/Neeko/artifacts/karpathy-2400-scaling-ladder.json)
+- `2406` 仍返回 `explore -> continue_expand`，且 `duplication_pressure = 0.113839`、`runtime_pressure = 0.323591`，尚未触发需要压缩的压力区间
+- `3002` 仍返回 `explore -> continue_expand`，且 `duplication_pressure = 0.129055`、`runtime_pressure = 0.340999`，尚未触发需要压缩的压力区间
+- `4000` 仍返回 `explore -> continue_expand`，且 `duplication_pressure = 0.131363`、`runtime_pressure = 0.314133`，没有进入需要压缩的高压区
+- `4335` 仍返回 `explore -> continue_expand`，且 `duplication_pressure = 0.131387`、`runtime_pressure = 0.312936`，说明本地 recommendation 仍不支持“因为条数大就直接收敛”
+- 这说明在当前可用真实语料范围内，系统还没有出现“应该立即压缩或收敛”的阶段切换信号
+- 这也说明 `4500` 这档没有达到目标数，不是因为 routing 或 provider 崩掉，而是当前 provider 可抓到的 `karpathy` 历史大约止于 `2015-01-07`
+
+但监控也已经暴露出第一批扩容问题：
+
+1. `500` 左右开始出现 `shard_granularity_tight`
+2. `750` 左右开始出现 `stable_signal_growth_plateau`
+3. `1000+` 开始出现 `no_new_stable_signals`
+4. 到 `3002` 为止，`no_new_stable_signals` 仍然持续，说明接下来的扩容判断必须更多依赖边际收益与压力组合，而不能只看总条数
+
+这组信号的含义不是“该回退”，而是：
+
+- 当前推荐仍然是继续扩容
+- 但从 `750+` 开始，应该重点观察“新增语料是否真的继续产出新的 stable signals”
+- 后续扩容阶段要优先盯住边际收益，而不是只盯总条数
+
+补充本轮抓取治理结论：
+
+- `1188` 的短暂停滞并不是公开语料天然上限
+- 真正的问题在抓取层：重复窗口被当成有效进展，失效 `snscrape` fallback 又持续拖慢窗口推进
+- 收紧这两个点之后，live corpus 已继续扩到 `2000+`
+- 继续把查询治理改成“短超时 + 小批次 + 多轮补档”之后，`karpathy-2400-live.json` 最终稳定推进到了 `2406`
+
+补充边界观察：
+
+- 在达到 `1800` 之后继续外推到 `2400` 目标时，系统最终不是停在 `1836/2113`，而是完整补到了 `2406`
+- 最新 live corpus 时间范围已经从 `2026-04-03` 回填到了 `2020-07-16`
+- 这说明当前的真实瓶颈并不是固定条数上限，而是深历史窗口的抓取效率与 provider 时延治理
+
+最新追加观察：
+
+- [karpathy-2406-validation 两轮 PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/karpathy-2406-pk-aggregate.json)
+- 两轮轻量 PK 的均值表现：
+  - `legacy + off`：`quality = 0.92`，`coverage = 0.53435`
+  - `v2 + off`：`quality = 0.91`，`coverage = 0.55070`
+  - `v2 + signals`：`quality = 0.90`，`coverage = 0.53225`
+- 当前阶段更准确的解释是：
+  - `legacy + off` 仍是更稳的安全默认
+  - `v2 + off` 在大语料上已经证明“覆盖补全能力更强，且没有引入 contradiction / duplication 回归”
+  - `v2 + signals` 仍未证明稳定增益
+- 到 `3002` 这一档，新的关键信号是：
+  - `v2 + off` 首次不是质量回归，而是先撞上了 `180000ms` 的 runtime timeout
+  - 在代码里接入动态 comparison timeout 治理后，`3002` 的默认实验路径已经可以直接跑通 `v2 + off`
+  - 当前 `3002` 汇总结果显示：
+    - `legacy + off`：2 次均值 `quality = 0.91`，`coverage = 0.5333`
+    - `v2 + off`：4 次均值 `quality = 0.9075`，`coverage = 0.5506625`
+    - `v2 + signals`：2 次均值 `quality = 0.90`，`coverage = 0.549875`
+  - 这说明 `3000+` 阶段要优先治理 runtime 上限，而不是错误地把 timeout 当成 routing 退化
+- 到 `4335` 这一档，新的关键信号是：
+  - 当前抓取边界已经从 `2026-04-03` 回填到 `2015-01-07`
+  - `4500` 目标没有完成，不是流程性失败，而是当前 provider 下已接近账号可达历史边界
+  - [karpathy-4335-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/karpathy-4335-pk-aggregate.json) 显示三轮干净结果：
+    - `legacy + off`：均值 `quality = 0.9167`，`coverage = 0.5340`
+    - `v2 + off`：均值 `quality = 0.9233`，`coverage = 0.5347`
+    - `v2 + signals`：均值 `quality = 0.9033`，`coverage = 0.5326`
+  - 这说明在当前更大的真实样本边界上，`v2 + off` 已经开始形成稳定均值优势，但幅度还没有大到足以直接替换全局安全默认
+  - [paulg-1296-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/paulg-1296-pk-aggregate.json) 显示三轮结果：
+    - `legacy + off`：均值 `quality = 0.9033`，`coverage = 0.5326`
+    - `v2 + off`：均值 `quality = 0.8967`，`coverage = 0.5319`
+    - `v2 + signals`：均值 `quality = 0.9033`，`coverage = 0.5326`
+  - [paulg-1503-validation PK 汇总](/Users/a77/Desktop/Neeko/artifacts/experiments/paulg-1503-pk-aggregate.json) 在当前 aggregate 口径下显示：
+    - `legacy + off`：四轮 clean 均值 `quality = 0.888`，`coverage = 0.548`
+    - `v2 + off`：四轮 clean 均值 `quality = 0.895`，`coverage = 0.541`
+    - `v2 + signals`：四轮 clean 均值 `quality = 0.895`，`coverage = 0.532`
+    - `v2 + off` 的一次 `persona respond timeout after 36000ms` 污染异常值 `0.15 / 0.3135` 已被 aggregate 层正确隔离
+  - 这说明当前更准确的阶段判断是：
+    - `v2 + off` 在 `karpathy` 上有稳定增强信号
+    - 但在第二高密度账号 `paulg` 上，这个优势还没有稳定复现
+    - `v2 + off` 和 `signals` 都能在 `paulg-1503` 上拿到局部质量优势，但覆盖仍落后于 `legacy/off`
+    - 因此这类账号更接近“局部最优随 provider/runtime 摆动”的状态，而不是可以直接做全局默认切换
+    - 因此更合理的策略不是全局切默认，而是继续维持“安全默认 legacy、灰度观察 v2”的双轨结构
 
 ## 2. 已经完成的步骤
 
@@ -155,6 +293,15 @@
 - 中间资产落盘
 
 V1 的真实定位不是“完整多模态理解”，而是先把复杂输入变成统一、可观测、可回溯的证据层。
+
+补充进展：
+
+- `EvidenceStats` 已经补上 `speaker_role_counts / scene_counts / modality_counts / source_type_counts`
+- 这意味着聊天与视频输入在不改训练核心的前提下，已经可以先从“观测层”看清：
+  - 目标说话占比
+  - 场景分布
+  - transcript 占比
+  - 不同 source type 的混合情况
 
 ### 2.4 训练时运行时治理
 

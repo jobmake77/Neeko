@@ -3,6 +3,7 @@ import { join } from 'path';
 import { RawDocument } from '../models/memory.js';
 import { InputRoutingStrategy } from './evidence-routing.js';
 import { InputRoutingRecommendation, KimiStabilityMode } from '../training/strategy-resolver.js';
+import { DynamicScalingAction, DynamicScalingRecommendation, DynamicScalingState } from './dynamic-scaling-recommendation.js';
 
 export interface CorpusSnapshot {
   schema_version: 1;
@@ -64,6 +65,12 @@ export interface InputRunManifest {
   recommendation?: {
     strategy: InputRoutingStrategy;
     shape: string;
+    confidence: number;
+    reason: string;
+  };
+  dynamic_scaling_recommendation?: {
+    state: DynamicScalingState;
+    action: DynamicScalingAction;
     confidence: number;
     reason: string;
   };
@@ -235,6 +242,7 @@ export function buildInputRunManifest(options: {
   requestedRounds?: number;
   trainingProfile?: string;
   recommendation?: InputRoutingRecommendation | null;
+  dynamicScalingRecommendation?: DynamicScalingRecommendation | null;
 }): InputRunManifest {
   return {
     schema_version: 1,
@@ -255,6 +263,14 @@ export function buildInputRunManifest(options: {
         reason: options.recommendation.reason,
       }
       : undefined,
+    dynamic_scaling_recommendation: options.dynamicScalingRecommendation
+      ? {
+        state: options.dynamicScalingRecommendation.state,
+        action: options.dynamicScalingRecommendation.recommended_action,
+        confidence: options.dynamicScalingRecommendation.confidence,
+        reason: options.dynamicScalingRecommendation.reason,
+      }
+      : undefined,
     shard_plan: {
       shard_count: options.shardPlan.totals.shard_count,
       planner_version: options.shardPlan.planner_version,
@@ -269,6 +285,7 @@ export function buildInputRunManifest(options: {
       'corpus_snapshot',
       'selected_input_routing',
       'selected_kimi_stability_mode',
+      'dynamic_scaling_recommendation',
       'shard_plan',
       'provider',
       'version_pins',

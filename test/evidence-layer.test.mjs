@@ -58,6 +58,9 @@ test('buildChatEvidenceBatchFromFile creates target-centered windows with contex
   assert.equal(batch.stats.sessions, 1);
   assert.equal(batch.stats.target_windows, 2);
   assert.equal(batch.items.length, 2);
+  assert.equal(batch.stats.speaker_role_counts.target, 2);
+  assert.equal(batch.stats.scene_counts.private, 2);
+  assert.equal(batch.stats.modality_counts.chat, 2);
   assert.equal(batch.items[0].context_before.length, 1);
   assert.equal(batch.items[0].context_after.length, 1);
   assert.equal(batch.items[1].content.includes('document tradeoffs'), true);
@@ -109,6 +112,8 @@ test('standalone and video evidence batches convert into routable documents', ()
   const batch = buildVideoTranscriptEvidenceBatch(docs, manifest());
   const routedDocs = convertEvidenceItemsToDocuments(batch.items, docs);
   assert.equal(batch.items[0].modality, 'transcript');
+  assert.equal(batch.stats.modality_counts.transcript, 1);
+  assert.equal(batch.stats.source_type_counts.video, 1);
   assert.equal(routedDocs[0].metadata.evidence.modality, 'transcript');
 });
 

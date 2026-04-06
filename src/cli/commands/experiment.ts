@@ -24,6 +24,13 @@ import {
   normalizeInputRoutingStrategy,
   routeEvidenceDocuments,
 } from '../../core/pipeline/evidence-routing.js';
+import {
+  buildStandaloneEvidenceBatch,
+  loadEvidenceItemsFromFile,
+} from '../../core/pipeline/evidence-layer.js';
+import { buildEvidencePacks } from '../../core/pipeline/pack-builder.js';
+import { planAdaptiveShards } from '../../core/pipeline/adaptive-shard-plan.js';
+import { recommendDynamicScaling } from '../../core/pipeline/dynamic-scaling-recommendation.js';
 import { SoulAggregator, SoulExtractor } from '../../core/soul/extractor.js';
 import { snapshotAndResetAgentFallbackMetrics } from '../../core/agents/index.js';
 import {
@@ -32,6 +39,7 @@ import {
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
 } from '../../core/training/strategy-resolver.js';
+import { buildRoutingDecisionRecord, RoutingDecisionRecord } from '../../core/training/routing-decision.js';
 
 export const DEFAULT_EXPERIMENT_PROFILES: TrainingProfile[] = ['baseline', 'a1', 'a2', 'a3', 'a4', 'full'];
 
@@ -54,7 +62,15 @@ interface InputRoutingComparisonRow {
   label: string;
   profile: TrainingProfile;
   input_routing: InputRoutingStrategy;
+  requested_training_seed_mode: TrainingSeedMode;
   training_seed_mode: TrainingSeedMode;
+  training_seed_gate?: {
+    applied: boolean;
+    ready: boolean;
+    readiness_score: number;
+    fallback_mode?: TrainingSeedMode;
+    summary: string;
+  };
   soul_source: 'training_seed' | 'extractor' | 'empty';
   runtime_preset: string;
   optimization_mode: string;
@@ -66,6 +82,20 @@ interface InputRoutingComparisonRow {
   duplicationRate: number;
   coverage: number;
   observability: InputRoutingObservability;
+  scaling_observability?: {
+    pack_count: number;
+    avg_pack_tokens: number;
+    stable_topic_growth: number;
+    duplication_pressure: number;
+    seed_maturity: number;
+    adaptive_shard_count: number;
+    adaptive_avg_pack_per_shard: number;
+    adaptive_avg_tokens_per_shard: number;
+    dynamic_scaling_state: string;
+    dynamic_scaling_action: string;
+    dynamic_scaling_confidence: number;
+    dynamic_scaling_reason: string;
+  };
   runtime_observability: {
     kimi_stability_mode: string;
     trainer_fallbacks: number;
@@ -77,10 +107,35 @@ interface InputRoutingComparisonRow {
 
 interface InputRoutingComparisonSummary {
   recommendation: ReturnType<typeof recommendInputRoutingStrategy> | null;
+  dynamicScalingRecommendation: ReturnType<typeof recommendDynamicScaling> | null;
+  routingDecisionRecord: RoutingDecisionRecord | null;
   rows: InputRoutingComparisonRow[];
 }
 
+interface CurrentGrayPathRecommendation {
+  version: string;
+  safe_default: {
+    input_routing: InputRoutingStrategy;
+    training_seed_mode: TrainingSeedMode;
+  };
+  recommended_gray_path: {
+    input_routing: InputRoutingStrategy;
+    training_seed_mode: TrainingSeedMode;
+  };
+  summary: string;
+  observed_best_variant?: {
+    label: string;
+    input_routing: InputRoutingStrategy;
+    training_seed_mode: TrainingSeedMode;
+    avg_quality: number;
+    coverage: number;
+    contradiction_rate: number;
+    duplication_rate: number;
+  };
+}
+
 const EXPERIMENT_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_PROFILE_TIMEOUT_MS ?? 90_000);
+const EXPERIMENT_COMPARISON_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_COMPARISON_TIMEOUT_MS ?? 0);
 
 export async function runExperimentProfiles(
   slug: string,
@@ -286,7 +341,7 @@ export async function cmdExperiment(
         questionsPerRound,
         parseComparisonVariants(options.compareVariants, false)
       )
-    : { rows: [], recommendation: null };
+    : { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
 
   const best = [...rows].sort((a, b) => {
     const scoreA = a.avgQuality - a.contradictionRate * 0.2 - a.duplicationRate * 0.1;
@@ -299,6 +354,7 @@ export async function cmdExperiment(
   const effectiveInputRouting = primaryComparisonRow?.input_routing ?? inputRouting;
   const effectiveTrainingSeedMode = primaryComparisonRow?.training_seed_mode ?? trainingSeedMode;
   const effectiveBestProfile = best?.profile ?? primaryComparisonRow?.profile ?? null;
+  const currentGrayPathRecommendation = buildCurrentGrayPathRecommendation(inputRoutingComparison.rows);
 
   const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
   mkdirSync(outputDir, { recursive: true });
@@ -332,6 +388,9 @@ export async function cmdExperiment(
     training_seed_mode: effectiveTrainingSeedMode,
     input_routing_comparison: inputRoutingComparison.rows,
     input_routing_recommendation: inputRoutingComparison.recommendation,
+    dynamic_scaling_recommendation: inputRoutingComparison.dynamicScalingRecommendation,
+    routing_decision_record: inputRoutingComparison.routingDecisionRecord,
+    current_gray_path_recommendation: currentGrayPathRecommendation,
     gate_result: gateResult,
   };
   writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf-8');
@@ -361,7 +420,10 @@ export async function cmdExperiment(
           `  ${row.label.padEnd(20)} quality=${(row.avgQuality * 100).toFixed(1)}% ` +
           `contra=${(row.contradictionRate * 100).toFixed(1)}% coverage=${(row.coverage * 100).toFixed(1)}% ` +
           `docs(s/m/d)=${row.observability.soul_docs}/${row.observability.memory_docs}/${row.observability.discard_docs} ` +
-          `seed=${row.training_seed_mode} soul=${row.soul_source} preset=${row.runtime_preset} opt=${row.optimization_mode} ` +
+          `packs=${row.scaling_observability?.pack_count ?? 0} shards=${row.scaling_observability?.adaptive_shard_count ?? 0} ` +
+          `scale=${row.scaling_observability?.dynamic_scaling_state ?? 'n/a'}/${row.scaling_observability?.dynamic_scaling_action ?? 'n/a'} ` +
+          `seed=${row.requested_training_seed_mode === row.training_seed_mode ? row.training_seed_mode : `${row.requested_training_seed_mode}->${row.training_seed_mode}`} ` +
+          `soul=${row.soul_source} preset=${row.runtime_preset} opt=${row.optimization_mode} ` +
           `fb(e/d)=${row.runtime_observability.evaluator_fallbacks}/${row.runtime_observability.director_fallbacks}`
         )
       );
@@ -376,6 +438,54 @@ export async function cmdExperiment(
       );
       console.log(chalk.dim(`  reason: ${rec.reason}`));
     }
+    if (inputRoutingComparison.dynamicScalingRecommendation) {
+      const rec = inputRoutingComparison.dynamicScalingRecommendation;
+      console.log(
+        chalk.cyan(
+          `Dynamic scaling recommendation: ${rec.state} -> ${rec.recommended_action} ` +
+          `(confidence=${rec.confidence.toFixed(2)})`
+        )
+      );
+      console.log(chalk.dim(`  reason: ${rec.reason}`));
+    }
+    if (inputRoutingComparison.routingDecisionRecord) {
+      const record = inputRoutingComparison.routingDecisionRecord;
+      console.log(
+        chalk.cyan(
+          `Local account/stage decision: account=${record.account_type} stage=${record.stage_type} ` +
+          `recommend=${record.recommended_routing.input_routing}+${record.recommended_routing.training_seed_mode} ` +
+          `(confidence=${record.confidence.toFixed(2)})`
+        )
+      );
+      console.log(chalk.dim(`  reason: ${record.reason}`));
+      if (record.excluded_runs.length > 0) {
+        console.log(
+          chalk.dim(
+            `  excluded runs: ${record.excluded_runs.map((item) => `${item.label} (${item.reason})`).join('; ')}`
+          )
+        );
+      }
+    }
+    console.log(
+      chalk.green(
+        `Global recommended gray path: ${currentGrayPathRecommendation.recommended_gray_path.input_routing} + ${currentGrayPathRecommendation.recommended_gray_path.training_seed_mode}`
+      )
+    );
+    console.log(
+      chalk.dim(
+        `  safe default remains ${currentGrayPathRecommendation.safe_default.input_routing} + ${currentGrayPathRecommendation.safe_default.training_seed_mode}`
+      )
+    );
+    console.log(chalk.dim(`  summary: ${currentGrayPathRecommendation.summary}`));
+    if (currentGrayPathRecommendation.observed_best_variant) {
+      const bestVariant = currentGrayPathRecommendation.observed_best_variant;
+      console.log(
+        chalk.dim(
+          `  observed best in this run: ${bestVariant.label} ` +
+          `quality=${(bestVariant.avg_quality * 100).toFixed(1)}% coverage=${(bestVariant.coverage * 100).toFixed(1)}%`
+        )
+      );
+    }
   }
 
   if (gateResult.enabled) {
@@ -389,6 +499,8 @@ export async function cmdExperiment(
 
   if (best) {
     console.log(chalk.green(`\nRecommended default profile: ${best.profile}\n`));
+  } else if (inputRoutingComparison.rows.length > 0) {
+    console.log(chalk.dim('\nProfile sweep skipped; input routing comparison completed successfully.\n'));
   } else {
     console.log(chalk.yellow('\nNo successful profile rows were produced.\n'));
   }
@@ -405,13 +517,15 @@ async function runInputRoutingComparison(
 ): Promise<InputRoutingComparisonSummary> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
-  if (!existsSync(personaPath)) return { rows: [], recommendation: null };
+  if (!existsSync(personaPath)) {
+    return { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
+  }
 
   const basePersona = JSON.parse(readFileSync(personaPath, 'utf-8')) as Persona;
   const docs = loadRawDocsCache(dir);
   if (docs.length === 0) {
     console.log(chalk.yellow('Skipping input routing comparison: raw-docs cache not found.'));
-    return { rows: [], recommendation: null };
+    return { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
   }
 
   const store = new MemoryStore({
@@ -423,6 +537,14 @@ async function runInputRoutingComparison(
   const aggregator = new SoulAggregator();
   const rows: InputRoutingComparisonRow[] = [];
   const providerName = resolvePreferredProviderName();
+  const comparisonTimeoutMs = resolveComparisonTimeoutMs(docs.length, rounds);
+  const evidenceItems = loadEvidenceItemsFromFile(join(dir, 'evidence-index.jsonl'));
+  const packSourceItems = evidenceItems.length > 0 ? evidenceItems : buildStandaloneEvidenceBatch(docs).items;
+  const packBuild = buildEvidencePacks(packSourceItems, { personaSlug: basePersona.slug });
+  const adaptiveShardPlan = planAdaptiveShards(packBuild.packs, { personaSlug: basePersona.slug });
+  const dynamicScalingRecommendation = recommendDynamicScaling(packBuild.metrics, adaptiveShardPlan, {
+    personaSlug: basePersona.slug,
+  });
   const legacyBaseline = routeEvidenceDocuments(docs, {
     strategy: 'legacy',
     targetSignals: [basePersona.name, basePersona.handle ?? '', ...basePersona.source_targets],
@@ -509,8 +631,8 @@ async function runInputRoutingComparison(
         directorReviewInterval: executionSettings.directorReviewInterval,
         directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
       }),
-      EXPERIMENT_PROFILE_TIMEOUT_MS,
-      `input routing ${strategy}`
+      comparisonTimeoutMs,
+      `input routing ${strategy}/${trainingSeedMode}`
     );
     const fallbackMetrics = snapshotAndResetAgentFallbackMetrics();
     const history = result.history;
@@ -523,10 +645,18 @@ async function runInputRoutingComparison(
       : history.reduce((sum, item) => sum + item.observability.duplicationRate, 0) / history.length;
 
     rows.push({
-      label: `${profile}+${strategy}+${trainingSeedMode}`,
+      label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
       profile,
       input_routing: strategy,
-      training_seed_mode: trainingSeedMode,
+      requested_training_seed_mode: trainingSeedMode,
+      training_seed_mode: trainingSeedSelection.mode,
+      training_seed_gate: {
+        applied: trainingSeedSelection.gate.applied,
+        ready: trainingSeedSelection.gate.ready,
+        readiness_score: trainingSeedSelection.gate.readiness_score,
+        fallback_mode: trainingSeedSelection.gate.fallback_mode,
+        summary: trainingSeedSelection.gate.summary,
+      },
       soul_source: soulSource,
       runtime_preset: strategyDecision.runtimePreset,
       optimization_mode: strategyDecision.optimizationMode,
@@ -538,6 +668,26 @@ async function runInputRoutingComparison(
       duplicationRate,
       coverage: result.soul.coverage_score,
       observability: routed.observability,
+      scaling_observability: {
+        pack_count: packBuild.packs.length,
+        avg_pack_tokens: packBuild.stats.avg_tokens_per_pack,
+        stable_topic_growth: packBuild.metrics.stable_topic_growth,
+        duplication_pressure: packBuild.metrics.duplication_pressure,
+        seed_maturity: packBuild.metrics.seed_maturity,
+        adaptive_shard_count: adaptiveShardPlan.totals.shard_count,
+        adaptive_avg_pack_per_shard:
+          adaptiveShardPlan.totals.shard_count === 0
+            ? 0
+            : adaptiveShardPlan.totals.pack_count / adaptiveShardPlan.totals.shard_count,
+        adaptive_avg_tokens_per_shard:
+          adaptiveShardPlan.totals.shard_count === 0
+            ? 0
+            : adaptiveShardPlan.totals.estimated_tokens / adaptiveShardPlan.totals.shard_count,
+        dynamic_scaling_state: dynamicScalingRecommendation.state,
+        dynamic_scaling_action: dynamicScalingRecommendation.recommended_action,
+        dynamic_scaling_confidence: dynamicScalingRecommendation.confidence,
+        dynamic_scaling_reason: dynamicScalingRecommendation.reason,
+      },
       runtime_observability: {
         kimi_stability_mode: executionSettings.kimiStabilityMode,
         trainer_fallbacks: fallbackMetrics.trainerFallbacks,
@@ -548,12 +698,72 @@ async function runInputRoutingComparison(
     });
   }
 
-  return {
-    rows,
-    recommendation: recommendInputRoutingStrategy({
+  const recommendation = recommendInputRoutingStrategy({
       legacyObservability,
       v2Observability,
-    }),
+    });
+  const routingDecisionRecord = buildRoutingDecisionRecord({
+    rows,
+    routingRecommendation: recommendation,
+    dynamicScalingRecommendation,
+    currentGrayPathRecommendation: buildCurrentGrayPathRecommendation(rows),
+  });
+
+  return {
+    rows,
+    recommendation,
+    dynamicScalingRecommendation,
+    routingDecisionRecord,
+  };
+}
+
+function resolveComparisonTimeoutMs(rawDocCount: number, rounds: number): number {
+  const envTimeout = Math.max(0, EXPERIMENT_COMPARISON_TIMEOUT_MS);
+  const corpusAllowance = rawDocCount >= 3000
+    ? 300_000
+    : rawDocCount >= 2400
+      ? 240_000
+      : rawDocCount >= 1600
+        ? 210_000
+        : rawDocCount >= 800
+          ? 180_000
+          : rawDocCount >= 500
+            ? 135_000
+            : EXPERIMENT_PROFILE_TIMEOUT_MS;
+  const roundAllowance = Math.max(EXPERIMENT_PROFILE_TIMEOUT_MS, rounds * 90_000);
+  return Math.max(EXPERIMENT_PROFILE_TIMEOUT_MS, envTimeout, corpusAllowance, roundAllowance);
+}
+
+function buildCurrentGrayPathRecommendation(rows: InputRoutingComparisonRow[]): CurrentGrayPathRecommendation {
+  const observedBest = [...rows].sort((left, right) =>
+    right.avgQuality - left.avgQuality ||
+    right.coverage - left.coverage ||
+    left.contradictionRate - right.contradictionRate ||
+    left.duplicationRate - right.duplicationRate
+  )[0];
+
+  return {
+    version: '2026-04-05',
+    safe_default: {
+      input_routing: 'legacy',
+      training_seed_mode: 'off',
+    },
+    recommended_gray_path: {
+      input_routing: 'v2',
+      training_seed_mode: 'off',
+    },
+    summary: 'Current stable recommendation is v2 + off. topics has not shown stable upside over off, and signals remains gated until seed readiness improves.',
+    observed_best_variant: observedBest
+      ? {
+          label: observedBest.label,
+          input_routing: observedBest.input_routing,
+          training_seed_mode: observedBest.training_seed_mode,
+          avg_quality: observedBest.avgQuality,
+          coverage: observedBest.coverage,
+          contradiction_rate: observedBest.contradictionRate,
+          duplication_rate: observedBest.duplicationRate,
+        }
+      : undefined,
   };
 }
 

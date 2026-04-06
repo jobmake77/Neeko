@@ -37,8 +37,8 @@ program
   .option('--yes', 'Skip all confirmation prompts (for non-interactive / Web UI use)')
   .option('--rounds <n>', 'Training rounds to run automatically (0 = skip training)', '0')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
-  .option('--input-routing <strategy>', 'Input routing strategy: legacy | v2')
-  .option('--training-seed-mode <mode>', 'Gray training-seed hints: off | topics | signals', 'off')
+  .option('--input-routing <strategy>', 'Input routing strategy: legacy | v2 (current recommended gray path: v2 + off)')
+  .option('--training-seed-mode <mode>', 'Gray training-seed hints: off | topics | signals (current recommended gray path: off)', 'off')
   .option('--kimi-stability-mode <mode>', 'Kimi 2-round governance: standard | tight_runtime | sparse_director | hybrid')
   .action(async (target?: string, options?: {
     skill?: string;
@@ -99,7 +99,7 @@ program
   .option('--deepseek-key <key>', 'Set DeepSeek API key')
   .option('--qdrant-url <url>', 'Set Qdrant URL')
   .option('--training-profile <profile>', 'Set default training profile: baseline | a1 | a2 | a3 | a4 | full')
-  .option('--input-routing <strategy>', 'Set default input routing strategy: legacy | v2')
+  .option('--input-routing <strategy>', 'Set default input routing strategy: legacy | v2 (keep legacy as safe default; recommended gray line is v2 + off)')
   .option('--show', 'Show current configuration')
   .action(async (options: {
     apiKey?: string;
@@ -125,8 +125,8 @@ program
   .option('--max-quality-drop <n>', 'Allowed quality drop for full vs baseline', '0.02')
   .option('--max-contradiction-rise <n>', 'Allowed contradiction rate rise for full vs baseline', '0.03')
   .option('--max-duplication-rise <n>', 'Allowed duplication rate rise for full vs baseline', '0.05')
-  .option('--input-routing <strategy>', 'Input routing strategy for experiment preprocessing: legacy | v2')
-  .option('--training-seed-mode <mode>', 'Gray training-seed hints for profile runs: off | topics | signals', 'off')
+  .option('--input-routing <strategy>', 'Input routing strategy for experiment preprocessing: legacy | v2 (recommended gray comparison base: v2)')
+  .option('--training-seed-mode <mode>', 'Gray training-seed hints for profile runs: off | topics | signals (recommended gray comparison base: off)', 'off')
   .option('--skip-profile-sweep', 'Skip profile sweep and only run extra comparison tracks')
   .option('--compare-input-routing', 'Run extra full-profile legacy vs v2 input routing comparison')
   .option('--compare-training-seed', 'Run extra full-profile legacy/off vs v2/off/topics/signals comparison')
@@ -187,8 +187,8 @@ program
   .option('--rounds <n>', 'Training rounds (overrides mode)')
   .option('--track <track>', 'Track: persona_extract | work_execute | full_serial', 'full_serial')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
-  .option('--input-routing <strategy>', 'Input routing strategy placeholder: legacy | v2')
-  .option('--training-seed-mode <mode>', 'Gray training-seed hints: off | topics | signals', 'off')
+  .option('--input-routing <strategy>', 'Input routing strategy placeholder: legacy | v2 (current recommended gray path: v2 + off)')
+  .option('--training-seed-mode <mode>', 'Gray training-seed hints: off | topics | signals (current recommended gray path: off)', 'off')
   .option('--retries <n>', 'Retry count for transient model format errors', '2')
   .option('--from-checkpoint <id>', 'Resume from checkpoint id (or latest)')
   .option('--kimi-stability-mode <mode>', 'Kimi 2-round governance: standard | tight_runtime | sparse_director | hybrid')

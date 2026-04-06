@@ -93,9 +93,123 @@ test('mergeShardDistillationResults promotes cross-shard stable signals into glo
     true
   );
   assert.equal(merged.trainingSeed.stable_topics.length >= 1, true);
+  assert.equal(merged.trainingSeed.stable_topic_roots.length >= 1, true);
+  assert.equal(merged.trainingSeed.stable_topics.some((item) => item.startsWith('family:')), false);
+  assert.equal(
+    merged.trainingSeed.stable_topics.some((item) =>
+      merged.trainingSeed.stable_keywords.includes(item) || merged.trainingSeed.stable_topic_roots.includes(item)
+    ),
+    true
+  );
+  assert.equal(Array.isArray(merged.soulSeed.topic_clusters[0].topic_roots), true);
   assert.equal(merged.trainingSeed.stable_signal_count, merged.soulSeed.stable_signal_count);
   assert.equal(merged.trainingSeed.topic_cluster_count, merged.soulSeed.topic_cluster_count);
   assert.equal(merged.memoryCandidates.candidate_count >= 0, true);
+});
+
+test('mergeShardDistillationResults derives topic families for global seed', () => {
+  const shardResults = [
+    {
+      shard: { shard_id: 'shard-1', index: 0, doc_ids: [], raw_doc_count: 0, estimated_tokens: 0, estimated_chunks: 0, source_type_counts: {} },
+      routing: {},
+      soulSummary: {
+        schema_version: 1,
+        generated_at: new Date().toISOString(),
+        shard_id: 'shard-1',
+        strategy: 'v2',
+        raw_doc_count: 0,
+        clean_doc_count: 0,
+        chunk_count: 0,
+        selected_soul_chunk_count: 1,
+        doc_ids: [],
+        top_keywords: ['training', 'model'],
+        top_phrases: ['model training', 'inference systems'],
+        top_signals: [
+          {
+            document_id: 'doc-1',
+            chunk_id: 'chunk-1',
+            score: 0.9,
+            excerpt: 'Model training and inference systems benefit from strong GPU memory planning.',
+            keywords: ['training', 'model', 'gpu', 'memory'],
+            phrases: ['model training', 'inference systems'],
+          },
+        ],
+      },
+      memorySummary: {
+        schema_version: 1,
+        generated_at: new Date().toISOString(),
+        shard_id: 'shard-1',
+        strategy: 'v2',
+        memory_doc_count: 0,
+        discard_doc_count: 0,
+        memory_doc_ids: [],
+        top_keywords: [],
+        context_examples: [],
+      },
+      observabilityReport: {
+        schema_version: 1,
+        generated_at: new Date().toISOString(),
+        shard_id: 'shard-1',
+        strategy: 'v2',
+        observability: {},
+      },
+    },
+    {
+      shard: { shard_id: 'shard-2', index: 1, doc_ids: [], raw_doc_count: 0, estimated_tokens: 0, estimated_chunks: 0, source_type_counts: {} },
+      routing: {},
+      soulSummary: {
+        schema_version: 1,
+        generated_at: new Date().toISOString(),
+        shard_id: 'shard-2',
+        strategy: 'v2',
+        raw_doc_count: 0,
+        clean_doc_count: 0,
+        chunk_count: 0,
+        selected_soul_chunk_count: 1,
+        doc_ids: [],
+        top_keywords: ['training', 'network'],
+        top_phrases: ['model training', 'network inference'],
+        top_signals: [
+          {
+            document_id: 'doc-2',
+            chunk_id: 'chunk-2',
+            score: 0.88,
+            excerpt: 'Training larger models requires better network throughput and inference discipline.',
+            keywords: ['training', 'network', 'inference'],
+            phrases: ['model training', 'network inference'],
+          },
+        ],
+      },
+      memorySummary: {
+        schema_version: 1,
+        generated_at: new Date().toISOString(),
+        shard_id: 'shard-2',
+        strategy: 'v2',
+        memory_doc_count: 0,
+        discard_doc_count: 0,
+        memory_doc_ids: [],
+        top_keywords: [],
+        context_examples: [],
+      },
+      observabilityReport: {
+        schema_version: 1,
+        generated_at: new Date().toISOString(),
+        shard_id: 'shard-2',
+        strategy: 'v2',
+        observability: {},
+      },
+    },
+  ];
+
+  const merged = mergeShardDistillationResults(shardResults, {
+    strategy: 'v2',
+    minShardsForStableSignal: 2,
+  });
+
+  assert.equal(merged.trainingSeed.stable_topic_roots.includes('training'), true);
+  assert.equal(merged.trainingSeed.stable_topic_families.includes('family:ml_training'), true);
+  assert.equal(merged.trainingSeed.stable_topics.includes('ml training systems'), true);
+  assert.equal(merged.trainingSeed.stable_topics.includes('family:ml_training'), false);
 });
 
 test('writeGlobalMergeAssets persists global seed, memory candidates, conflicts, and training seed', () => {

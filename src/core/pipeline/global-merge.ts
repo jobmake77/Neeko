@@ -25,6 +25,8 @@ export interface GlobalSoulTopicCluster {
   supporting_shards: string[];
   representative_excerpts: string[];
   cluster_terms: string[];
+  topic_roots: string[];
+  topic_families: string[];
 }
 
 export interface GlobalSoulSeed {
@@ -79,6 +81,8 @@ export interface TrainingSeed {
   shard_count: number;
   stable_keywords: string[];
   stable_topics: string[];
+  stable_topic_roots: string[];
+  stable_topic_families: string[];
   stable_signal_count: number;
   topic_cluster_count: number;
   memory_candidate_count: number;
@@ -181,13 +185,29 @@ export function mergeShardDistillationResults(
     conflicts: conflictList,
   };
 
+  const fallbackTopicRoots = collectTopicRoots(
+    soulSeed.stable_signals,
+    soulSeed.stable_signals.flatMap((item) => item.representative_excerpts)
+  );
+  const fallbackTopicFamilies = collectTopicFamilies(fallbackTopicRoots);
+  const stableTopicRoots = uniqueStrings([
+    ...soulSeed.topic_clusters.flatMap((item) => item.topic_roots),
+    ...fallbackTopicRoots,
+  ]);
+  const stableTopicFamilies = uniqueStrings([
+    ...soulSeed.topic_clusters.flatMap((item) => item.topic_families),
+    ...fallbackTopicFamilies,
+  ]);
+
   const trainingSeed: TrainingSeed = {
     schema_version: 1,
     generated_at: new Date().toISOString(),
     strategy,
     shard_count: results.length,
     stable_keywords: soulSeed.stable_signals.map((item) => item.signal),
-    stable_topics: soulSeed.topic_clusters.map((item) => item.label),
+    stable_topics: buildTrainingSeedTopics(soulSeed.topic_clusters, stableTopicRoots, stableTopicFamilies),
+    stable_topic_roots: stableTopicRoots,
+    stable_topic_families: stableTopicFamilies,
     stable_signal_count: soulSeed.stable_signal_count,
     topic_cluster_count: soulSeed.topic_cluster_count,
     memory_candidate_count: memoryCandidates.candidate_count,
@@ -298,6 +318,8 @@ function buildTopicClusters(stableSignals: GlobalSoulSeedItem[]): GlobalSoulTopi
     const supportingShards = new Set<string>(members.flatMap((item) => item.supporting_shards));
     const excerpts = new Set<string>(members.flatMap((item) => item.representative_excerpts));
     const clusterTerms = collectClusterTerms(members);
+    const topicRoots = collectTopicRoots(members, [...excerpts]);
+    const topicFamilies = collectTopicFamilies(topicRoots);
     clusters.push({
       cluster_id: `cluster-${String(clusters.length + 1).padStart(3, '0')}`,
       label: labelSource?.signal ?? `cluster-${clusters.length + 1}`,
@@ -309,6 +331,8 @@ function buildTopicClusters(stableSignals: GlobalSoulSeedItem[]): GlobalSoulTopi
       supporting_shards: [...supportingShards].sort(),
       representative_excerpts: [...excerpts].slice(0, 3),
       cluster_terms: clusterTerms,
+      topic_roots: topicRoots,
+      topic_families: topicFamilies,
     });
   }
 
@@ -442,6 +466,92 @@ function collectClusterTerms(members: GlobalSoulSeedItem[]): string[] {
     .map(([token]) => token);
 }
 
+function collectTopicRoots(members: GlobalSoulSeedItem[], excerpts: string[]): string[] {
+  const counts = new Map<string, number>();
+  const texts = [
+    ...members.map((member) => member.signal),
+    ...members.flatMap((member) => member.representative_excerpts),
+    ...excerpts,
+  ];
+
+  for (const text of texts) {
+    for (const token of mergeTokenizeTerms(text)) {
+      const root = normalizeMergeTopicRoot(token);
+      if (!root || shouldSkipMergeTopicRoot(root)) continue;
+      counts.set(root, (counts.get(root) ?? 0) + 1);
+    }
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 8)
+    .map(([root]) => root);
+}
+
+function collectTopicFamilies(topicRoots: string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const root of topicRoots) {
+    const family = MERGE_TOPIC_FAMILY_SEEDS.get(root);
+    if (!family) continue;
+    counts.set(family, (counts.get(family) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 4)
+    .map(([family]) => family);
+}
+
+function mergeTokenizeTerms(text: string): string[] {
+  return (
+    text
+      .toLowerCase()
+      .match(/[\p{Script=Han}]{2,}|[\p{Letter}\p{Number}_-]{3,}/gu) ?? []
+  )
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function normalizeMergeTopicRoot(token: string): string {
+  const direct = MERGE_TOPIC_ROOT_ALIASES.get(token);
+  if (direct) return direct;
+
+  let normalized = token.toLowerCase();
+  normalized = normalized.replace(/(?:ing)$/i, '');
+  normalized = normalized.replace(/(?:ations|ation)$/i, 'ate');
+  normalized = normalized.replace(/(?:izers|izer)$/i, 'ize');
+  normalized = normalized.replace(/(?:ments|ment)$/i, '');
+  normalized = normalized.replace(/(?:ers|er)$/i, '');
+  normalized = normalized.replace(/(?:ies)$/i, 'y');
+  normalized = normalized.replace(/(?:ed)$/i, '');
+  normalized = normalized.replace(/(?:s)$/i, '');
+
+  return MERGE_TOPIC_ROOT_ALIASES.get(normalized) ?? normalized;
+}
+
+function shouldSkipMergeTopicRoot(root: string): boolean {
+  return MERGE_STOPWORDS.has(root) || GENERIC_CLUSTER_TERMS.has(root) || root.length < 4;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function buildTrainingSeedTopics(
+  topicClusters: GlobalSoulTopicCluster[],
+  stableTopicRoots: string[],
+  stableTopicFamilies: string[]
+): string[] {
+  const clusterLabels = uniqueStrings(topicClusters.map((item) => item.label)).filter(isUsableTrainingTopicLabel);
+  const familyLabels = uniqueStrings(stableTopicFamilies.map((value) => humanizeTopicFamily(value))).filter(Boolean);
+  const rootLabels = uniqueStrings(stableTopicRoots).filter(isUsableTrainingTopicRoot);
+  return uniqueStrings([
+    ...clusterLabels,
+    ...familyLabels,
+    ...rootLabels.slice(0, 6),
+  ]);
+}
+
 function isMeaningfulStableSignal(item: {
   signal: string;
   signalType: 'phrase' | 'keyword';
@@ -459,6 +569,38 @@ function isMeaningfulStableSignal(item: {
   if (domainHits.length >= 1) return true;
   const longTerms = terms.filter((term) => term.length >= 6 && !GENERIC_CLUSTER_TERMS.has(term));
   return longTerms.length >= 2 && genericHits.length < terms.length;
+}
+
+function isUsableTrainingTopicLabel(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.startsWith('family:')) return false;
+
+  const tokens = normalized
+    .split(/[^a-z0-9\u4e00-\u9fff]+/i)
+    .filter(Boolean);
+  if (tokens.length === 0) return false;
+  if (tokens.every((token) => TRAINING_TOPIC_BLOCKLIST.has(token))) return false;
+  if (tokens.length === 1) return isUsableTrainingTopicRoot(tokens[0] ?? '');
+  return tokens.some((token) => MERGE_DOMAIN_TERMS.has(token) || token.length >= 5);
+}
+
+function isUsableTrainingTopicRoot(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.length < 4) return false;
+  if (MERGE_STOPWORDS.has(normalized)) return false;
+  if (GENERIC_CLUSTER_TERMS.has(normalized)) return false;
+  if (TRAINING_TOPIC_BLOCKLIST.has(normalized)) return false;
+  return true;
+}
+
+function humanizeTopicFamily(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  const mapped = TOPIC_FAMILY_LABELS.get(normalized);
+  if (mapped) return mapped;
+  if (!normalized.startsWith('family:')) return '';
+  return normalized.slice('family:'.length).replace(/[_-]+/g, ' ').trim();
 }
 
 const MERGE_STOPWORDS = new Set([
@@ -529,6 +671,112 @@ const GENERIC_CLUSTER_TERMS = new Set([
   'used',
   'using',
   'work',
+]);
+
+const TRAINING_TOPIC_BLOCKLIST = new Set([
+  'anyone',
+  'anything',
+  'capability',
+  'everything',
+  'everywhere',
+  'even',
+  'grade',
+  'have',
+  'human',
+  'just',
+  'many',
+  'more',
+  'much',
+  'people',
+  'some',
+  'someone',
+  'stuff',
+  'that',
+  'them',
+  'then',
+  'there',
+  'these',
+  'they',
+  'should',
+  'very',
+  'what',
+  'when',
+  'where',
+  'which',
+  'with',
+]);
+
+const MERGE_TOPIC_ROOT_ALIASES = new Map<string, string>([
+  ['agents', 'agent'],
+  ['modeling', 'model'],
+  ['modelling', 'model'],
+  ['models', 'model'],
+  ['training', 'training'],
+  ['train', 'training'],
+  ['trained', 'training'],
+  ['trainer', 'training'],
+  ['trainers', 'training'],
+  ['compute', 'compute'],
+  ['computer', 'compute'],
+  ['computers', 'compute'],
+  ['computing', 'compute'],
+  ['computation', 'compute'],
+  ['computations', 'compute'],
+  ['networks', 'network'],
+  ['neural', 'network'],
+  ['infer', 'inference'],
+  ['inferencing', 'inference'],
+  ['activations', 'activation'],
+  ['activation', 'activation'],
+  ['transformers', 'transformer'],
+  ['coding', 'code'],
+  ['coder', 'code'],
+  ['coders', 'code'],
+  ['codes', 'code'],
+  ['datasets', 'data'],
+  ['datapoints', 'data'],
+  ['reasoning', 'reason'],
+  ['reasons', 'reason'],
+  ['memorys', 'memory'],
+]);
+
+const MERGE_TOPIC_FAMILY_SEEDS = new Map<string, string>([
+  ['training', 'family:ml_training'],
+  ['model', 'family:ml_training'],
+  ['inference', 'family:ml_training'],
+  ['network', 'family:ml_training'],
+  ['compute', 'family:ml_infra'],
+  ['gpu', 'family:ml_infra'],
+  ['cuda', 'family:ml_infra'],
+  ['pytorch', 'family:ml_infra'],
+  ['memory', 'family:ml_infra'],
+  ['attention', 'family:ml_infra'],
+  ['agent', 'family:llm_agents'],
+  ['llama', 'family:llm_agents'],
+  ['chatgpt', 'family:llm_agents'],
+  ['claude', 'family:llm_agents'],
+  ['prompt', 'family:llm_agents'],
+  ['code', 'family:software_build'],
+  ['app', 'family:software_build'],
+  ['deploy', 'family:software_build'],
+  ['software', 'family:software_build'],
+  ['build', 'family:software_build'],
+  ['research', 'family:research_work'],
+  ['learn', 'family:research_work'],
+  ['eval', 'family:research_work'],
+  ['image', 'family:media_content'],
+  ['video', 'family:media_content'],
+  ['podcast', 'family:media_content'],
+  ['text', 'family:media_content'],
+]);
+
+const TOPIC_FAMILY_LABELS = new Map<string, string>([
+  ['family:ml_training', 'ml training systems'],
+  ['family:ml_infra', 'ml infrastructure'],
+  ['family:llm_agents', 'llm agents'],
+  ['family:software_build', 'software building'],
+  ['family:research_work', 'research workflows'],
+  ['family:media_content', 'media content'],
 ]);
 
 function computeStableConfidence(shardSupport: number, signalCount: number, totalShards: number): number {

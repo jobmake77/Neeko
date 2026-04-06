@@ -126,6 +126,11 @@ node dist/cli/index.js experiment elonmusk --rounds 10 --output-dir ./reports
 node dist/cli/index.js experiment elonmusk --rounds 6 --gate
 ```
 
+当前推荐策略口径：
+- 安全默认行为仍保持 `legacy + off`
+- 当前推荐灰度实验线为 `v2 + off`
+- `topics / signals` 继续保留为实验增强项，其中 `signals` 现在会经过 readiness gate，不达标时自动降到 `topics`
+
 `--training-profile` 可选值：
 - `baseline`：旧训练流程基线
 - `a1`：课程化训练（Curriculum）
@@ -141,8 +146,14 @@ node dist/cli/index.js experiment elonmusk --rounds 6 --gate
 相关文档：
 - [快速开始](/Users/a77/Desktop/Neeko/docs/quickstart.md)
 - [架构设计](/Users/a77/Desktop/Neeko/docs/architecture.md)
+- [系统 V1 正式定义](/Users/a77/Desktop/Neeko/docs/system-v1.md)
+- [培养阶段 V1 阶段总结](/Users/a77/Desktop/Neeko/docs/training-phase-summary-v1.md)
+- [客户端与交流层 V1 方案](/Users/a77/Desktop/Neeko/docs/client-conversation-v1-plan.md)
 - [输入架构阶段总结](/Users/a77/Desktop/Neeko/docs/input-architecture-status.md)
 - [大语料稳定蒸馏实施方案](/Users/a77/Desktop/Neeko/docs/large-corpus-implementation-plan.md)
+- [大语料扩展优化路线图](/Users/a77/Desktop/Neeko/docs/large-corpus-roadmap.md)
+- [Dynamic Evidence Scaling Framework](/Users/a77/Desktop/Neeko/docs/dynamic-evidence-scaling-framework.md)
+- [Dynamic Scaling Phase A 实施方案](/Users/a77/Desktop/Neeko/docs/dynamic-scaling-phase-a-plan.md)
 
 ```
 ┌─────────────────────────────────────────────────────┐

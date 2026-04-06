@@ -31,6 +31,9 @@ const variants = variantsRaw.split(',').map((item) => item.trim()).filter(Boolea
 const maxAttempts = Math.max(1, parseInt(maxAttemptsRaw, 10) || 3);
 
 fs.mkdirSync(outputDir, { recursive: true });
+const { buildPkAggregateSummary, defaultCurrentGrayPathRecommendation } = await import(
+  '../dist/testing/pk-aggregate-test-entry.js'
+);
 
 const allRuns = [];
 
@@ -42,6 +45,7 @@ for (const variant of variants) {
 
     let latestReport = null;
     let row = null;
+    let routingDecisionRecord = null;
     let lastExitCode = null;
     let successfulAttempt = null;
 
@@ -88,6 +92,7 @@ for (const variant of variants) {
       latestReport = findLatestJson(runDir);
       const parsed = latestReport ? JSON.parse(fs.readFileSync(latestReport, 'utf8')) : null;
       row = parsed?.input_routing_comparison?.[0] ?? null;
+      routingDecisionRecord = parsed?.routing_decision_record ?? null;
 
       if ((result.status ?? 1) === 0 && row && typeof row.avgQuality === 'number') {
         successfulAttempt = attempt;
@@ -112,21 +117,18 @@ for (const variant of variants) {
       duplicationRate: row?.duplicationRate ?? null,
       inputRouting: row?.input_routing ?? null,
       trainingSeedMode: row?.training_seed_mode ?? null,
+      runtimeObservability: row?.runtime_observability ?? null,
+      observability: row?.observability ?? null,
+      scalingObservability: row?.scaling_observability ?? null,
+      routingDecisionRecord,
     };
     allRuns.push(runSummary);
   }
 }
 
-const aggregate = variants.map((variant) => {
-  const rows = allRuns.filter((item) => item.variant === variant && typeof item.quality === 'number');
-  return {
-    variant,
-    runs: rows.length,
-    mean_quality: mean(rows.map((item) => item.quality)),
-    mean_coverage: mean(rows.map((item) => item.coverage)),
-    mean_contradiction_rate: mean(rows.map((item) => item.contradictionRate)),
-    mean_duplication_rate: mean(rows.map((item) => item.duplicationRate)),
-  };
+const aggregateSummary = buildPkAggregateSummary({
+  runs: allRuns,
+  currentGrayPathRecommendation: defaultCurrentGrayPathRecommendation(),
 });
 
 const summary = {
@@ -138,12 +140,24 @@ const summary = {
   max_attempts: maxAttempts,
   variants,
   runs: allRuns,
-  aggregate,
+  aggregate: aggregateSummary.aggregate,
+  aggregate_by_variant: aggregateSummary.aggregate_by_variant,
+  routing_decision_aggregate: aggregateSummary.routing_decision_aggregate,
 };
 
 const summaryPath = path.join(outputDir, 'pk-summary.json');
 fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
-console.log(JSON.stringify({ summaryPath, aggregate }, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      summaryPath,
+      aggregate: summary.aggregate,
+      routing_decision_aggregate: summary.routing_decision_aggregate,
+    },
+    null,
+    2
+  )
+);
 
 function sanitizeVariant(value) {
   return value.replace(/[^a-z0-9:_-]+/gi, '-').replace(/:/g, '__');
@@ -153,12 +167,6 @@ function findLatestJson(dir) {
   const files = fs.readdirSync(dir).filter((name) => name.endsWith('.json') && name.startsWith('experiment-')).sort();
   if (files.length === 0) return null;
   return path.join(dir, files[files.length - 1]);
-}
-
-function mean(values) {
-  const numeric = values.filter((value) => typeof value === 'number' && Number.isFinite(value));
-  if (numeric.length === 0) return null;
-  return numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
 }
 
 function sleep(ms) {

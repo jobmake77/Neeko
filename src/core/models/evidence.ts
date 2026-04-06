@@ -79,6 +79,10 @@ export const EvidenceStatsSchema = z.object({
   downgraded_scene_items: z.number().int().min(0).default(0),
   blocked_scene_items: z.number().int().min(0).default(0),
   cross_session_stable_items: z.number().int().min(0).default(0),
+  speaker_role_counts: z.record(z.string(), z.number().int().min(0)).default({}),
+  scene_counts: z.record(z.string(), z.number().int().min(0)).default({}),
+  modality_counts: z.record(z.string(), z.number().int().min(0)).default({}),
+  source_type_counts: z.record(z.string(), z.number().int().min(0)).default({}),
 });
 export type EvidenceStats = z.infer<typeof EvidenceStatsSchema>;
 

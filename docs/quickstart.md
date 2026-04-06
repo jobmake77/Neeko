@@ -3,8 +3,13 @@
 推荐先看：
 
 - [架构设计](/Users/a77/Desktop/Neeko/docs/architecture.md)
+- [系统 V1 正式定义](/Users/a77/Desktop/Neeko/docs/system-v1.md)
+- [培养阶段 V1 阶段总结](/Users/a77/Desktop/Neeko/docs/training-phase-summary-v1.md)
+- [客户端与交流层 V1 方案](/Users/a77/Desktop/Neeko/docs/client-conversation-v1-plan.md)
 - [输入架构阶段总结](/Users/a77/Desktop/Neeko/docs/input-architecture-status.md)
 - [大语料稳定蒸馏实施方案](/Users/a77/Desktop/Neeko/docs/large-corpus-implementation-plan.md)
+- [大语料扩展优化路线图](/Users/a77/Desktop/Neeko/docs/large-corpus-roadmap.md)
+- [Dynamic Evidence Scaling Framework](/Users/a77/Desktop/Neeko/docs/dynamic-evidence-scaling-framework.md)
 
 ## 第一步：环境准备
 
@@ -184,6 +189,12 @@ node dist/cli/index.js experiment elonmusk --rounds 6 --gate
 ```
 
 实验会对比 `baseline/a1/a2/a3/a4` 的质量与风险指标，并输出推荐默认档位。
+
+当前输入策略建议：
+- 安全默认仍是 `legacy + off`
+- 当前推荐灰度实验线是 `v2 + off`
+- `topics` 与 `signals` 仍作为实验增强项保留
+- 当显式请求 `signals` 时，系统会先做 readiness gate；如果 seed 噪声过高，会自动降到 `topics`
 
 继续培养已创建 Persona：
 ```bash

@@ -371,7 +371,7 @@ function deriveIntakeGuidance(item: WorkbenchEvidenceImport): {
   if (stats.cross_session_stable_items === 0 && stats.windows <= 8) {
     return {
       tone: 'warning',
-      statusLabel: 'thin signal',
+      statusLabel: 'expand corpus',
       summary: 'This intake completed, but it does not contain much stable evidence yet.',
       actions: [
         'Import a larger slice of the same corpus before training.',
@@ -394,10 +394,11 @@ function deriveIntakeGuidance(item: WorkbenchEvidenceImport): {
 
   return {
     tone: 'good',
-    statusLabel: 'ready for train',
-    summary: 'This intake looks healthy enough to attach directly to training or turn into a prep artifact.',
+    statusLabel: 'start with smoke',
+    summary: 'This intake looks healthy enough to attach directly to training. Start with a smoke run first, then expand if the result stays stable.',
     actions: [
       'Use For Training if you want to test the current corpus immediately.',
+      'Run Smoke first from Train before committing to a longer run.',
       'If you want more control, review memory candidates and create a handoff first.',
     ],
   };

@@ -111,6 +111,16 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   const activeEvidenceImport = trainEvidenceImportId
     ? evidenceImports.find((item) => item.id === trainEvidenceImportId) ?? null
     : null;
+  const trainLaunchGuidance = activeView === 'Train'
+    ? deriveTrainLaunchGuidance({
+      activeTrainingPrep,
+      activeEvidenceImport,
+      trainPrepDocumentsPath,
+      trainPrepEvidencePath,
+      rounds,
+      trainMode,
+    })
+    : null;
 
   useEffect(() => {
     setTarget(defaultValues.createTarget);
@@ -253,6 +263,32 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         </div>
         {selectedPersona ? <span className="badge">{selectedPersona.name}</span> : null}
       </div>
+      {activeView === 'Train' && trainLaunchGuidance ? (
+        <div className="settings-card workflow-card">
+          <div className="list-card-top">
+            <strong>Train Guidance</strong>
+            <span className={trainLaunchGuidance.tone === 'good' ? 'badge success' : trainLaunchGuidance.tone === 'warning' ? 'badge warning' : 'badge'}>
+              {trainLaunchGuidance.statusLabel}
+            </span>
+          </div>
+          <p>{trainLaunchGuidance.summary}</p>
+          <div className="workflow-stage-grid">
+            {trainLaunchGuidance.stages.map((stage) => (
+              <div key={stage.label} className="workflow-stage-card">
+                <strong>{stage.label}</strong>
+                <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
+                  {stage.status}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="workflow-step-list">
+            {trainLaunchGuidance.actions.map((item) => (
+              <small key={item}>{item}</small>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <form className="form-grid" onSubmit={handleSubmit}>
         {activeView === 'Create' ? (
           <label className="field">
@@ -843,5 +879,116 @@ function deriveWorkbenchRunPresentation(run: WorkbenchRun): {
   return {
     statusLabel: run.status,
     primaryMessage: run.summary ?? run.status,
+  };
+}
+
+function deriveTrainLaunchGuidance(input: {
+  activeTrainingPrep: TrainingPrepArtifact | null;
+  activeEvidenceImport: WorkbenchEvidenceImport | null;
+  trainPrepDocumentsPath: string;
+  trainPrepEvidencePath: string;
+  rounds: string;
+  trainMode: string;
+}): {
+  tone: 'good' | 'warning' | 'neutral';
+  statusLabel: string;
+  summary: string;
+  actions: string[];
+  stages: Array<{ label: string; status: string; tone: 'good' | 'warning' | 'neutral' }>;
+} {
+  const hasManualContext = Boolean(input.trainPrepDocumentsPath || input.trainPrepEvidencePath);
+  const stages = [
+    {
+      label: 'Corpus',
+      status: input.activeTrainingPrep ? 'prep artifact' : input.activeEvidenceImport ? 'evidence intake' : hasManualContext ? 'manual paths' : 'none',
+      tone: input.activeTrainingPrep || input.activeEvidenceImport || hasManualContext ? 'good' as const : 'warning' as const,
+    },
+    {
+      label: 'Launch Mode',
+      status: input.trainMode === 'quick' ? 'quick' : 'full',
+      tone: input.trainMode === 'quick' ? 'neutral' as const : 'good' as const,
+    },
+    {
+      label: 'Rounds',
+      status: input.rounds || '1',
+      tone: Number(input.rounds || '1') > 1 ? 'good' as const : 'neutral' as const,
+    },
+  ];
+
+  if (input.activeTrainingPrep) {
+    return {
+      tone: 'good',
+      statusLabel: 'start with smoke',
+      summary: 'A training prep artifact is attached, so the train path is ready. Start with Smoke to verify the prep before a longer run.',
+      actions: [
+        'Run Smoke first to validate the attached prep artifact.',
+        'If Smoke stays stable, run the full train flow with the same context.',
+      ],
+      stages,
+    };
+  }
+
+  if (input.activeEvidenceImport) {
+    const stats = input.activeEvidenceImport.stats;
+    if (stats.target_windows === 0 || (stats.cross_session_stable_items === 0 && stats.windows <= 8)) {
+      return {
+        tone: 'warning',
+        statusLabel: 'expand corpus first',
+        summary: 'The attached intake is still thin, so a longer train run would likely be noisy.',
+        actions: [
+          'Import a larger slice of the corpus before training.',
+          'If you still want to probe it, keep the next run to Smoke only.',
+        ],
+        stages,
+      };
+    }
+
+    if (stats.blocked_scene_items > stats.cross_session_stable_items && stats.blocked_scene_items >= 3) {
+      return {
+        tone: 'neutral',
+        statusLabel: 'smoke with caution',
+        summary: 'The intake has usable evidence, but scene filtering is doing a lot of work. Verify with Smoke before any longer run.',
+        actions: [
+          'Run Smoke first and inspect the result before scaling up.',
+          'If the result feels noisy, go back and refine the corpus or route it through handoff review.',
+        ],
+        stages,
+      };
+    }
+
+    return {
+      tone: 'good',
+      statusLabel: 'smoke then train',
+      summary: 'The attached intake looks healthy enough to move into train. Smoke is still the safest first step before a full run.',
+      actions: [
+        'Run Smoke first to verify the intake behaves as expected in training.',
+        'If Smoke is stable, continue with a longer run using the same context.',
+      ],
+      stages,
+    };
+  }
+
+  if (hasManualContext) {
+    return {
+      tone: 'neutral',
+      statusLabel: 'manual context attached',
+      summary: 'Manual training context is attached. Smoke is the safest way to validate these paths before a longer run.',
+      actions: [
+        'Run Smoke first to verify the attached paths resolve correctly.',
+        'Keep the same paths for a longer run only after Smoke completes cleanly.',
+      ],
+      stages,
+    };
+  }
+
+  return {
+    tone: 'warning',
+    statusLabel: 'attach context',
+    summary: 'No prep artifact or evidence intake is attached to this train form yet.',
+    actions: [
+      'Attach a recent evidence intake or a training prep artifact first.',
+      'If you want more control, review candidates and create handoff plus prep before training.',
+    ],
+    stages,
   };
 }

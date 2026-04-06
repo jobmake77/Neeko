@@ -9,6 +9,8 @@ import {
   ConversationSchema,
   MemoryCandidate,
   MemoryCandidateSchema,
+  PromotionHandoff,
+  PromotionHandoffSchema,
   SessionSummary,
   SessionSummarySchema,
   WorkbenchRun,
@@ -40,6 +42,7 @@ export class WorkbenchStore {
     this.baseDir = baseDir;
     ensureDir(this.baseDir);
     ensureDir(this.getConversationsDir());
+    ensureDir(this.getHandoffsDir());
     ensureDir(this.getRunsDir());
   }
 
@@ -49,6 +52,10 @@ export class WorkbenchStore {
 
   getRunsDir(): string {
     return join(this.baseDir, 'runs');
+  }
+
+  getHandoffsDir(): string {
+    return join(this.baseDir, 'handoffs');
   }
 
   private getConversationDir(id: string): string {
@@ -73,6 +80,10 @@ export class WorkbenchStore {
 
   private getRunPath(id: string): string {
     return join(this.getRunsDir(), `${id}.json`);
+  }
+
+  private getHandoffPath(id: string): string {
+    return join(this.getHandoffsDir(), `${id}.json`);
   }
 
   listRuns(personaSlug?: string): WorkbenchRun[] {
@@ -212,5 +223,34 @@ export class WorkbenchStore {
     const current = this.getRun(id);
     if (!current) return null;
     return this.saveRun({ ...current, ...patch });
+  }
+
+  savePromotionHandoff(handoff: PromotionHandoff): PromotionHandoff {
+    const parsed = PromotionHandoffSchema.parse(handoff);
+    writeJsonFile(this.getHandoffPath(parsed.id), parsed);
+    return parsed;
+  }
+
+  getPromotionHandoff(id: string): PromotionHandoff | null {
+    const raw = readJsonFile<PromotionHandoff | null>(this.getHandoffPath(id), null);
+    if (!raw) return null;
+    return PromotionHandoffSchema.parse(raw);
+  }
+
+  listPromotionHandoffs(personaSlug?: string, conversationId?: string): PromotionHandoff[] {
+    if (!existsSync(this.getHandoffsDir())) return [];
+    return readdirSync(this.getHandoffsDir(), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => this.getPromotionHandoff(entry.name.replace(/\.json$/, '')))
+      .filter((item): item is PromotionHandoff => Boolean(item))
+      .filter((item) => !personaSlug || item.persona_slug === personaSlug)
+      .filter((item) => !conversationId || item.conversation_id === conversationId)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  updatePromotionHandoff(id: string, patch: Partial<PromotionHandoff>): PromotionHandoff | null {
+    const current = this.getPromotionHandoff(id);
+    if (!current) return null;
+    return this.savePromotionHandoff({ ...current, ...patch });
   }
 }

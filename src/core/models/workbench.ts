@@ -47,6 +47,30 @@ export const MemoryCandidateSchema = z.object({
 });
 export type MemoryCandidate = z.infer<typeof MemoryCandidateSchema>;
 
+export const PromotionHandoffItemSchema = z.object({
+  candidate_id: z.string().uuid(),
+  candidate_type: z.enum(['belief', 'value', 'behavior', 'knowledge', 'preference', 'general']),
+  content: z.string(),
+  confidence: z.number().min(0).max(1),
+  source_message_ids: z.array(z.string().uuid()).default([]),
+  created_at: z.string().datetime(),
+});
+export type PromotionHandoffItem = z.infer<typeof PromotionHandoffItemSchema>;
+
+export const PromotionHandoffSchema = z.object({
+  id: z.string().uuid(),
+  persona_slug: z.string(),
+  conversation_id: z.string().uuid(),
+  candidate_ids: z.array(z.string().uuid()).default([]),
+  status: z.enum(['drafted', 'queued', 'archived']).default('drafted'),
+  summary: z.string(),
+  session_summary: z.string().optional(),
+  items: z.array(PromotionHandoffItemSchema).default([]),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+export type PromotionHandoff = z.infer<typeof PromotionHandoffSchema>;
+
 export const SessionSummarySchema = z.object({
   conversation_id: z.string().uuid(),
   summary: z.string(),

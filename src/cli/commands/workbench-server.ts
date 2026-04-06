@@ -10,7 +10,7 @@ function writeJson(res: ServerResponse, statusCode: number, payload: unknown): v
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
   res.end(JSON.stringify(payload));
 }
 
@@ -76,6 +76,14 @@ export async function cmdWorkbenchServer(
       const personaConversationsMatch = path.match(/^\/api\/personas\/([^/]+)\/conversations$/);
       if (req.method === 'GET' && personaConversationsMatch) {
         writeJson(res, 200, service.listConversations(decodeURIComponent(personaConversationsMatch[1])));
+        return;
+      }
+
+      const personaHandoffsMatch = path.match(/^\/api\/personas\/([^/]+)\/promotion-handoffs$/);
+      if (req.method === 'GET' && personaHandoffsMatch) {
+        const personaSlug = decodeURIComponent(personaHandoffsMatch[1]);
+        const conversationId = getString(url.searchParams.get('conversationId'));
+        writeJson(res, 200, service.listPromotionHandoffs(personaSlug, conversationId));
         return;
       }
       if (req.method === 'POST' && personaConversationsMatch) {
@@ -156,6 +164,12 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const handoffsMatch = path.match(/^\/api\/conversations\/([^/]+)\/promotion-handoffs$/);
+      if (req.method === 'POST' && handoffsMatch) {
+        writeJson(res, 200, service.createPromotionHandoff(decodeURIComponent(handoffsMatch[1])));
+        return;
+      }
+
       const candidateReviewMatch = path.match(/^\/api\/conversations\/([^/]+)\/writeback-candidates\/([^/]+)$/);
       if (req.method === 'PATCH' && candidateReviewMatch) {
         const body = await readBody(req);
@@ -200,6 +214,20 @@ export async function cmdWorkbenchServer(
           return;
         }
         writeJson(res, 200, bundle);
+        return;
+      }
+
+      const handoffMatch = path.match(/^\/api\/promotion-handoffs\/([^/]+)$/);
+      if (req.method === 'PATCH' && handoffMatch) {
+        const body = await readBody(req);
+        const status = getString(body.status) as 'drafted' | 'queued' | 'archived' | undefined;
+        if (!status) throw new Error('status is required');
+        const handoff = service.updatePromotionHandoffStatus(decodeURIComponent(handoffMatch[1]), status);
+        if (!handoff) {
+          writeJson(res, 404, { error: 'Promotion handoff not found' });
+          return;
+        }
+        writeJson(res, 200, handoff);
         return;
       }
 

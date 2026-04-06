@@ -15,9 +15,11 @@
 3. 当前不再继续推进新的 Web 页面方案；如果需要 UI，优先做客户端桌面端体验。
 4. 客户端工作台 V1 采用 `Tauri + 本地 workbench-server + 复用 Node core/CLI` 的分层结构推进。
 5. 第一版工作台坚持“单线程单 Persona、自动生成 memory candidates、不直接写 Soul”。
+6. 当前客户端写回链路新增 `promotion-ready -> handoff artifact` 中间层，但仍不允许直接写正式 `Soul` 或正式长期记忆。
 
 ## 交流层纪律
 
 1. 会话层默认只允许写 `conversation log`、`session summary`、`memory candidates`。
 2. 不允许在客户端会话过程中直接写 `Soul`。
 3. 任何自动写回规则上线前，都必须先有可解释的候选层和回退路径。
+4. `promotion-ready` 候选只允许汇总成 handoff artifact，供后续训练/人工整理使用，不能绕过审核层直接落正式资产。

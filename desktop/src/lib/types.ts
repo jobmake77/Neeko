@@ -90,6 +90,28 @@ export interface MemoryCandidate {
   created_at: string;
 }
 
+export interface PromotionHandoffItem {
+  candidate_id: string;
+  candidate_type: MemoryCandidate['candidate_type'];
+  content: string;
+  confidence: number;
+  source_message_ids: string[];
+  created_at: string;
+}
+
+export interface PromotionHandoff {
+  id: string;
+  persona_slug: string;
+  conversation_id: string;
+  candidate_ids: string[];
+  status: 'drafted' | 'queued' | 'archived';
+  summary: string;
+  session_summary?: string;
+  items: PromotionHandoffItem[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WorkbenchRun {
   id: string;
   type: 'create' | 'train' | 'experiment' | 'export';

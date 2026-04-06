@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
+import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
 import { ConversationBundle } from '../lib/types';
 
 const TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Writeback', 'Training'];
@@ -10,11 +10,14 @@ interface InfoPanelProps {
   profile: PersonaWorkbenchProfile | null;
   bundle: ConversationBundle | null;
   candidates: MemoryCandidate[];
+  promotionHandoffs: PromotionHandoff[];
   recentRuns: WorkbenchRun[];
   currentRunId: string | null;
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
   onReviewCandidate: (candidateId: string, status: MemoryCandidate['status']) => Promise<void>;
   onSetCandidatePromotionState: (candidateId: string, promotionState: MemoryCandidate['promotion_state']) => Promise<void>;
+  onCreatePromotionHandoff: () => Promise<void>;
+  onUpdatePromotionHandoff: (handoffId: string, status: PromotionHandoff['status']) => Promise<void>;
   runReport: WorkbenchRunReport | null;
 }
 
@@ -24,11 +27,14 @@ export function InfoPanel({
   profile,
   bundle,
   candidates,
+  promotionHandoffs,
   recentRuns,
   currentRunId,
   onSelectRun,
   onReviewCandidate,
   onSetCandidatePromotionState,
+  onCreatePromotionHandoff,
+  onUpdatePromotionHandoff,
   runReport,
 }: InfoPanelProps) {
   const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected' | 'ready_queue'>('all');
@@ -38,6 +44,7 @@ export function InfoPanel({
   const acceptedCount = candidates.filter((item) => item.status === 'accepted').length;
   const rejectedCount = candidates.filter((item) => item.status === 'rejected').length;
   const readyCount = candidates.filter((item) => item.promotion_state === 'ready').length;
+  const latestHandoff = promotionHandoffs[0] ?? null;
   const filteredCandidates = useMemo(() => {
     const base =
       candidateFilter === 'all'
@@ -122,6 +129,54 @@ export function InfoPanel({
             <span className="badge warning">{rejectedCount} rejected</span>
             <span className="badge">{readyCount} ready</span>
           </div>
+          <div className="candidate-actions">
+            <button
+              type="button"
+              className="action-button"
+              disabled={readyCount === 0}
+              onClick={() => void onCreatePromotionHandoff()}
+            >
+              Create Handoff
+            </button>
+          </div>
+          {latestHandoff ? (
+            <article className="mini-card">
+              <strong>Latest handoff</strong>
+              <p>{latestHandoff.summary}</p>
+              <small>
+                {latestHandoff.status} · {new Date(latestHandoff.updated_at).toLocaleString()}
+              </small>
+              {latestHandoff.session_summary ? <p>{latestHandoff.session_summary}</p> : null}
+              <div className="candidate-actions">
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  disabled={latestHandoff.status === 'queued'}
+                  onClick={() => void onUpdatePromotionHandoff(latestHandoff.id, 'queued')}
+                >
+                  Mark Queued
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  disabled={latestHandoff.status === 'drafted'}
+                  onClick={() => void onUpdatePromotionHandoff(latestHandoff.id, 'drafted')}
+                >
+                  Reopen
+                </button>
+                <button
+                  type="button"
+                  className="action-button danger"
+                  disabled={latestHandoff.status === 'archived'}
+                  onClick={() => void onUpdatePromotionHandoff(latestHandoff.id, 'archived')}
+                >
+                  Archive
+                </button>
+              </div>
+            </article>
+          ) : (
+            <div className="empty-state">No handoff artifact yet. Create one from the ready queue when the candidate set looks clean.</div>
+          )}
           <div className="writeback-controls">
             <label className="field compact-field">
               <span>Status</span>
@@ -197,6 +252,18 @@ export function InfoPanel({
           {candidates.length === 0 ? <div className="empty-state">No memory candidates yet.</div> : null}
           {candidates.length > 0 && filteredCandidates.length === 0 ? (
             <div className="empty-state">No candidates match the current filter.</div>
+          ) : null}
+          {promotionHandoffs.length > 1 ? (
+            <div className="inspector-section">
+              <h3>Handoff history</h3>
+              {promotionHandoffs.slice(0, 3).map((handoff) => (
+                <article key={handoff.id} className="mini-card">
+                  <strong>{handoff.status}</strong>
+                  <p>{handoff.summary}</p>
+                  <small>{new Date(handoff.updated_at).toLocaleString()}</small>
+                </article>
+              ))}
+            </div>
           ) : null}
         </div>
       ) : null}

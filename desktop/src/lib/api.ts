@@ -4,6 +4,7 @@ import {
   MemoryCandidate,
   PersonaSummary,
   PersonaWorkbenchProfile,
+  PromotionHandoff,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './types';
@@ -81,6 +82,19 @@ export const api = {
         body: JSON.stringify({ promotion_state: promotionState }),
       }
     ),
+  listPromotionHandoffs: (slug: string, conversationId?: string) =>
+    request<PromotionHandoff[]>(
+      `/api/personas/${encodeURIComponent(slug)}/promotion-handoffs${conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''}`
+    ),
+  createPromotionHandoff: (conversationId: string) =>
+    request<PromotionHandoff>(`/api/conversations/${encodeURIComponent(conversationId)}/promotion-handoffs`, {
+      method: 'POST',
+    }),
+  updatePromotionHandoff: (handoffId: string, status: PromotionHandoff['status']) =>
+    request<PromotionHandoff>(`/api/promotion-handoffs/${encodeURIComponent(handoffId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
   refreshConversationSummary: (id: string) =>
     request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/refresh-summary`, {
       method: 'POST',

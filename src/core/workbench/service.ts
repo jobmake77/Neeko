@@ -18,6 +18,7 @@ import {
   MemoryCandidate,
   PersonaSummary,
   PersonaWorkbenchProfile,
+  PromotionHandoff,
   SessionSummary,
   WorkbenchRun,
   WorkbenchRunReport,
@@ -119,6 +120,23 @@ function toPreview(text: string, maxLength = 88): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) return '';
   return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength)}...`;
+}
+
+function buildPromotionHandoffSummary(candidates: MemoryCandidate[]): string {
+  const grouped = new Map<MemoryCandidate['candidate_type'], number>();
+  for (const candidate of candidates) {
+    grouped.set(candidate.candidate_type, (grouped.get(candidate.candidate_type) ?? 0) + 1);
+  }
+  const typeSummary = Array.from(grouped.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([type, count]) => `${type} x${count}`)
+    .join(', ');
+  const confidence =
+    candidates.length > 0
+      ? `${Math.round((candidates.reduce((sum, item) => sum + item.confidence, 0) / candidates.length) * 100)}% avg confidence`
+      : 'no confidence';
+  return `${candidates.length} promotion-ready candidates${typeSummary ? ` · ${typeSummary}` : ''} · ${confidence}`;
 }
 
 export class WorkbenchService {
@@ -291,6 +309,10 @@ export class WorkbenchService {
     return this.store.listMemoryCandidates(conversationId);
   }
 
+  listPromotionHandoffs(personaSlug: string, conversationId?: string): PromotionHandoff[] {
+    return this.store.listPromotionHandoffs(personaSlug, conversationId);
+  }
+
   reviewMemoryCandidate(
     conversationId: string,
     candidateId: string,
@@ -332,6 +354,53 @@ export class WorkbenchService {
       candidate: updated,
       candidates: this.store.listMemoryCandidates(conversationId),
     };
+  }
+
+  createPromotionHandoff(conversationId: string): PromotionHandoff {
+    const conversation = this.store.getConversation(conversationId);
+    if (!conversation) {
+      throw new Error(`Conversation "${conversationId}" not found.`);
+    }
+    const readyCandidates = this.store
+      .listMemoryCandidates(conversationId)
+      .filter((item) => item.status === 'accepted' && item.promotion_state === 'ready');
+    if (readyCandidates.length === 0) {
+      throw new Error('No promotion-ready candidates available for handoff.');
+    }
+    const sessionSummary = this.store.getSessionSummary(conversationId);
+    const now = new Date().toISOString();
+    return this.store.savePromotionHandoff({
+      id: crypto.randomUUID(),
+      persona_slug: conversation.persona_slug,
+      conversation_id: conversationId,
+      candidate_ids: readyCandidates.map((item) => item.id),
+      status: 'drafted',
+      summary: buildPromotionHandoffSummary(readyCandidates),
+      session_summary: sessionSummary?.summary,
+      items: readyCandidates.map((item) => ({
+        candidate_id: item.id,
+        candidate_type: item.candidate_type,
+        content: item.content,
+        confidence: item.confidence,
+        source_message_ids: item.source_message_ids,
+        created_at: item.created_at,
+      })),
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  updatePromotionHandoffStatus(
+    handoffId: string,
+    status: PromotionHandoff['status']
+  ): PromotionHandoff | null {
+    if (!['drafted', 'queued', 'archived'].includes(status)) {
+      throw new Error(`Unsupported handoff status: ${status}`);
+    }
+    return this.store.updatePromotionHandoff(handoffId, {
+      status,
+      updated_at: new Date().toISOString(),
+    });
   }
 
   createPersona(input: WorkbenchCreateInput): WorkbenchRun {

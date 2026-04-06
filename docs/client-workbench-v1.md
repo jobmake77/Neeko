@@ -90,6 +90,8 @@
 16. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
 17. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
 18. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
+19. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
+20. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
 
 ### 3.2 默认写回规则
 
@@ -98,14 +100,50 @@
 3. 自动生成 `memory candidates`
 4. 不直接写 `Soul`
 5. 不自动晋升为正式长期记忆
+6. `promotion-ready` 只生成 handoff artifact，不自动提升为正式记忆
 
 ### 3.3 当前限制
 
 1. Tauri 壳已建好，但当前环境没有 `cargo`，所以还没法在本机完成 Rust 打包验证
 2. 会话候选生成目前先用轻量启发式，不额外增加一层昂贵 LLM 审核
 3. create/train/experiment/export 仍由现有 CLI 执行，本地 server 负责结构化调度与状态持久化
+4. handoff 目前仍是本地交接层，不包含正式审核流与一键写入能力
 
-## 4. 下一步
+## 5. 当前工作台新增交接层
+
+### 5.1 Promotion-ready Queue
+
+1. 只有 `accepted` candidate 才能进入 `promotion-ready queue`
+2. 队列目标是把“看起来可保留”的候选从普通候选池中提纯出来
+3. 队列本身仍是安全缓冲层，不直接触达正式资产
+
+### 5.2 Promotion Handoff Artifact
+
+当线程里的 `promotion-ready` 候选足够稳定后，工作台可以生成一个结构化 handoff：
+
+1. `persona_slug`
+2. `conversation_id`
+3. `candidate_ids[]`
+4. `items[]`
+5. `summary`
+6. `session_summary`
+7. `status: drafted | queued | archived`
+
+这个对象的定位是：
+
+1. 给后续训练或人工整理提供“可复看、可回溯”的中间资产
+2. 把 ready queue 里的候选组织成一个更稳定的交接包
+3. 继续保持和正式 `Soul / Memory` 的隔离
+
+### 5.3 本地 API 扩展
+
+当前新增：
+
+1. `GET /api/personas/:slug/promotion-handoffs`
+2. `POST /api/conversations/:id/promotion-handoffs`
+3. `PATCH /api/promotion-handoffs/:id`
+
+## 6. 下一步
 
 1. 验证 `workbench-server` 与桌面前端联调
 2. 视本地环境补齐 Tauri 构建链路

@@ -14,6 +14,7 @@ import {
   NavView,
   PersonaSummary,
   PersonaWorkbenchProfile,
+  PromotionHandoff,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './lib/types';
@@ -121,6 +122,7 @@ export default function App() {
   );
   const [bundle, setBundle] = useState<ConversationBundle | null>(null);
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
+  const [promotionHandoffs, setPromotionHandoffs] = useState<PromotionHandoff[]>([]);
   const [recentRuns, setRecentRuns] = useState<WorkbenchRun[]>([]);
   const [currentRun, setCurrentRun] = useState<WorkbenchRun | null>(null);
   const [runReport, setRunReport] = useState<WorkbenchRunReport | null>(null);
@@ -144,6 +146,7 @@ export default function App() {
     if (!selectedConversationId) {
       setBundle(null);
       setCandidates([]);
+      setPromotionHandoffs([]);
       return;
     }
     void refreshConversation(selectedConversationId);
@@ -251,8 +254,12 @@ export default function App() {
     try {
       const nextBundle = await api.getConversation(id);
       const nextCandidates = await api.listMemoryCandidates(id);
+      const nextHandoffs = selectedPersonaSlug
+        ? await api.listPromotionHandoffs(selectedPersonaSlug, id)
+        : [];
       setBundle(nextBundle);
       setCandidates(nextCandidates);
+      setPromotionHandoffs(nextHandoffs);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -305,6 +312,7 @@ export default function App() {
       await refreshThreads(selectedPersonaSlug);
       setBundle(null);
       setCandidates([]);
+      setPromotionHandoffs([]);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -316,8 +324,12 @@ export default function App() {
     try {
       const nextBundle = await api.refreshConversationSummary(selectedConversationId);
       const nextCandidates = await api.listMemoryCandidates(selectedConversationId);
+      const nextHandoffs = selectedPersonaSlug
+        ? await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId)
+        : [];
       setBundle(nextBundle);
       setCandidates(nextCandidates);
+      setPromotionHandoffs(nextHandoffs);
       await refreshThreads(selectedPersonaSlug);
       setError(null);
     } catch (err) {
@@ -400,6 +412,34 @@ export default function App() {
     }
   }
 
+  async function handleCreatePromotionHandoff() {
+    if (!selectedConversationId || !selectedPersonaSlug) return;
+    try {
+      const handoff = await api.createPromotionHandoff(selectedConversationId);
+      const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
+      setPromotionHandoffs(nextHandoffs);
+      setActiveTab('Writeback');
+      setError(null);
+      if (!nextHandoffs.some((item) => item.id === handoff.id)) {
+        setPromotionHandoffs((current) => [handoff, ...current]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleUpdatePromotionHandoff(handoffId: string, status: PromotionHandoff['status']) {
+    if (!selectedConversationId || !selectedPersonaSlug) return;
+    try {
+      await api.updatePromotionHandoff(handoffId, status);
+      const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
+      setPromotionHandoffs(nextHandoffs);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function handleApiBaseUrlChange(value: string) {
     setApiBaseUrlState(value);
     setApiBaseUrl(value);
@@ -453,11 +493,14 @@ export default function App() {
         profile={selectedPersona}
         bundle={bundle}
         candidates={candidates}
+        promotionHandoffs={promotionHandoffs}
         recentRuns={recentRuns}
         currentRunId={currentRun?.id ?? null}
         onSelectRun={handleSelectRun}
         onReviewCandidate={handleReviewCandidate}
         onSetCandidatePromotionState={handleCandidatePromotionState}
+        onCreatePromotionHandoff={handleCreatePromotionHandoff}
+        onUpdatePromotionHandoff={handleUpdatePromotionHandoff}
         runReport={runReport}
       />
     </div>

@@ -61,6 +61,14 @@ export const api = {
     }),
   listMemoryCandidates: (id: string) =>
     request<MemoryCandidate[]>(`/api/conversations/${encodeURIComponent(id)}/writeback-candidates`),
+  reviewMemoryCandidate: (conversationId: string, candidateId: string, status: MemoryCandidate['status']) =>
+    request<{ candidate: MemoryCandidate; candidates: MemoryCandidate[] }>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/writeback-candidates/${encodeURIComponent(candidateId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      }
+    ),
   refreshConversationSummary: (id: string) =>
     request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/refresh-summary`, {
       method: 'POST',

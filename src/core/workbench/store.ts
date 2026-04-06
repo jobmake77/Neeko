@@ -159,6 +159,20 @@ export class WorkbenchStore {
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
 
+  updateMemoryCandidate(
+    conversationId: string,
+    candidateId: string,
+    patch: Partial<MemoryCandidate>
+  ): MemoryCandidate | null {
+    const candidates = this.listMemoryCandidates(conversationId);
+    const index = candidates.findIndex((item) => item.id === candidateId);
+    if (index < 0) return null;
+    const updated = MemoryCandidateSchema.parse({ ...candidates[index], ...patch });
+    candidates[index] = updated;
+    this.saveMemoryCandidates(conversationId, candidates);
+    return updated;
+  }
+
   saveSessionSummary(summary: SessionSummary): SessionSummary {
     const parsed = SessionSummarySchema.parse(summary);
     ensureDir(this.getConversationDir(parsed.conversation_id));

@@ -12,6 +12,7 @@ interface InfoPanelProps {
   recentRuns: WorkbenchRun[];
   currentRunId: string | null;
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
+  onReviewCandidate: (candidateId: string, status: MemoryCandidate['status']) => Promise<void>;
   runReport: WorkbenchRunReport | null;
 }
 
@@ -24,9 +25,13 @@ export function InfoPanel({
   recentRuns,
   currentRunId,
   onSelectRun,
+  onReviewCandidate,
   runReport,
 }: InfoPanelProps) {
   const latestAssistant = [...(bundle?.messages ?? [])].reverse().find((item) => item.role === 'assistant');
+  const pendingCount = candidates.filter((item) => item.status === 'pending').length;
+  const acceptedCount = candidates.filter((item) => item.status === 'accepted').length;
+  const rejectedCount = candidates.filter((item) => item.status === 'rejected').length;
 
   return (
     <aside className="panel info-panel">
@@ -87,11 +92,42 @@ export function InfoPanel({
 
       {activeTab === 'Writeback' ? (
         <div className="inspector-section">
+          <div className="writeback-summary">
+            <span className="badge">{pendingCount} pending</span>
+            <span className="badge success">{acceptedCount} accepted</span>
+            <span className="badge warning">{rejectedCount} rejected</span>
+          </div>
           {candidates.map((item) => (
             <article key={item.id} className="mini-card">
               <strong>{item.candidate_type}</strong>
               <p>{item.content}</p>
               <small>{Math.round(item.confidence * 100)}% · {item.status}</small>
+              <div className="candidate-actions">
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  disabled={item.status === 'accepted'}
+                  onClick={() => void onReviewCandidate(item.id, 'accepted')}
+                >
+                  Accept
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  disabled={item.status === 'pending'}
+                  onClick={() => void onReviewCandidate(item.id, 'pending')}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  className="action-button danger"
+                  disabled={item.status === 'rejected'}
+                  onClick={() => void onReviewCandidate(item.id, 'rejected')}
+                >
+                  Reject
+                </button>
+              </div>
             </article>
           ))}
           {candidates.length === 0 ? <div className="empty-state">No memory candidates yet.</div> : null}

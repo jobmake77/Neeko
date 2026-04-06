@@ -459,6 +459,19 @@ pre {
   flex-wrap: wrap;
 }
 
+.writeback-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.candidate-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
 .tab-button {
   background: rgba(31, 36, 48, 0.06);
   color: #4a4f59;

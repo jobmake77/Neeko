@@ -291,6 +291,22 @@ export class WorkbenchService {
     return this.store.listMemoryCandidates(conversationId);
   }
 
+  reviewMemoryCandidate(
+    conversationId: string,
+    candidateId: string,
+    status: MemoryCandidate['status']
+  ): { candidate: MemoryCandidate; candidates: MemoryCandidate[] } | null {
+    if (!['pending', 'accepted', 'rejected'].includes(status)) {
+      throw new Error(`Unsupported candidate status: ${status}`);
+    }
+    const updated = this.store.updateMemoryCandidate(conversationId, candidateId, { status });
+    if (!updated) return null;
+    return {
+      candidate: updated,
+      candidates: this.store.listMemoryCandidates(conversationId),
+    };
+  }
+
   createPersona(input: WorkbenchCreateInput): WorkbenchRun {
     const args = ['create'];
     if (input.target) args.push(input.target);

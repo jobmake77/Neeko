@@ -156,6 +156,24 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const candidateReviewMatch = path.match(/^\/api\/conversations\/([^/]+)\/writeback-candidates\/([^/]+)$/);
+      if (req.method === 'PATCH' && candidateReviewMatch) {
+        const body = await readBody(req);
+        const status = getString(body.status) as 'pending' | 'accepted' | 'rejected' | undefined;
+        if (!status) throw new Error('status is required');
+        const result = service.reviewMemoryCandidate(
+          decodeURIComponent(candidateReviewMatch[1]),
+          decodeURIComponent(candidateReviewMatch[2]),
+          status
+        );
+        if (!result) {
+          writeJson(res, 404, { error: 'Candidate not found' });
+          return;
+        }
+        writeJson(res, 200, result);
+        return;
+      }
+
       const refreshSummaryMatch = path.match(/^\/api\/conversations\/([^/]+)\/refresh-summary$/);
       if (req.method === 'POST' && refreshSummaryMatch) {
         const bundle = service.refreshConversationSummary(decodeURIComponent(refreshSummaryMatch[1]));

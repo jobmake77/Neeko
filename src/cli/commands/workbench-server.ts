@@ -14,6 +14,10 @@ function writeJson(res: ServerResponse, statusCode: number, payload: unknown): v
   res.end(JSON.stringify(payload));
 }
 
+function writeSafeError(res: ServerResponse, statusCode: number, error: unknown): void {
+  writeJson(res, statusCode, { error: toClientSafeError(error) });
+}
+
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -57,7 +61,7 @@ export async function cmdWorkbenchServer(
   const server = createServer(async (req, res) => {
     try {
       if (!req.url) {
-        writeJson(res, 404, { error: 'Not found' });
+        writeSafeError(res, 404, 'Not found');
         return;
       }
       if (req.method === 'OPTIONS') {
@@ -158,7 +162,7 @@ export async function cmdWorkbenchServer(
       if (req.method === 'GET' && conversationMatch) {
         const bundle = service.getConversation(decodeURIComponent(conversationMatch[1]));
         if (!bundle) {
-          writeJson(res, 404, { error: 'Conversation not found' });
+          writeSafeError(res, 404, 'Conversation not found');
           return;
         }
         writeJson(res, 200, bundle);
@@ -170,7 +174,7 @@ export async function cmdWorkbenchServer(
         if (!title) throw new Error('title is required');
         const conversation = service.renameConversation(decodeURIComponent(conversationMatch[1]), title);
         if (!conversation) {
-          writeJson(res, 404, { error: 'Conversation not found' });
+          writeSafeError(res, 404, 'Conversation not found');
           return;
         }
         writeJson(res, 200, conversation);
@@ -179,7 +183,7 @@ export async function cmdWorkbenchServer(
       if (req.method === 'DELETE' && conversationMatch) {
         const deleted = service.deleteConversation(decodeURIComponent(conversationMatch[1]));
         if (!deleted) {
-          writeJson(res, 404, { error: 'Conversation not found' });
+          writeSafeError(res, 404, 'Conversation not found');
           return;
         }
         writeJson(res, 200, { ok: true });
@@ -222,7 +226,7 @@ export async function cmdWorkbenchServer(
           status
         );
         if (!result) {
-          writeJson(res, 404, { error: 'Candidate not found' });
+          writeSafeError(res, 404, 'Candidate not found');
           return;
         }
         writeJson(res, 200, result);
@@ -240,7 +244,7 @@ export async function cmdWorkbenchServer(
           promotionState
         );
         if (!result) {
-          writeJson(res, 404, { error: 'Candidate not found' });
+          writeSafeError(res, 404, 'Candidate not found');
           return;
         }
         writeJson(res, 200, result);
@@ -251,7 +255,7 @@ export async function cmdWorkbenchServer(
       if (req.method === 'POST' && refreshSummaryMatch) {
         const bundle = service.refreshConversationSummary(decodeURIComponent(refreshSummaryMatch[1]));
         if (!bundle) {
-          writeJson(res, 404, { error: 'Conversation not found' });
+          writeSafeError(res, 404, 'Conversation not found');
           return;
         }
         writeJson(res, 200, bundle);
@@ -262,7 +266,7 @@ export async function cmdWorkbenchServer(
       if (req.method === 'GET' && handoffMatch) {
         const handoff = service.getPromotionHandoff(decodeURIComponent(handoffMatch[1]));
         if (!handoff) {
-          writeJson(res, 404, { error: 'Promotion handoff not found' });
+          writeSafeError(res, 404, 'Promotion handoff not found');
           return;
         }
         writeJson(res, 200, handoff);
@@ -274,7 +278,7 @@ export async function cmdWorkbenchServer(
         if (!status) throw new Error('status is required');
         const handoff = service.updatePromotionHandoffStatus(decodeURIComponent(handoffMatch[1]), status);
         if (!handoff) {
-          writeJson(res, 404, { error: 'Promotion handoff not found' });
+          writeSafeError(res, 404, 'Promotion handoff not found');
           return;
         }
         writeJson(res, 200, handoff);
@@ -298,7 +302,7 @@ export async function cmdWorkbenchServer(
       if (req.method === 'GET' && trainingPrepMatch) {
         const prep = service.getTrainingPrepArtifact(decodeURIComponent(trainingPrepMatch[1]));
         if (!prep) {
-          writeJson(res, 404, { error: 'Training prep not found' });
+          writeSafeError(res, 404, 'Training prep not found');
           return;
         }
         writeJson(res, 200, prep);
@@ -384,7 +388,7 @@ export async function cmdWorkbenchServer(
       if (req.method === 'GET' && runMatch) {
         const run = service.getRunStatus(decodeURIComponent(runMatch[1]));
         if (!run) {
-          writeJson(res, 404, { error: 'Run not found' });
+          writeSafeError(res, 404, 'Run not found');
           return;
         }
         writeJson(res, 200, run);
@@ -395,14 +399,14 @@ export async function cmdWorkbenchServer(
       if (req.method === 'GET' && runReportMatch) {
         const report = service.getRunReport(decodeURIComponent(runReportMatch[1]));
         if (!report) {
-          writeJson(res, 404, { error: 'Run not found' });
+          writeSafeError(res, 404, 'Run not found');
           return;
         }
         writeJson(res, 200, report);
         return;
       }
 
-      writeJson(res, 404, { error: 'Not found' });
+      writeSafeError(res, 404, 'Not found');
     } catch (error) {
       console.error('[workbench-server]', error);
       writeJson(res, 500, { error: toClientSafeError(error) });

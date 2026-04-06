@@ -23,6 +23,7 @@ interface InfoPanelProps {
   onCreateTrainingPrep: (handoffId: string) => Promise<void>;
   onExportTrainingPrep: (prepId: string, format: 'markdown' | 'json') => Promise<void>;
   onCopyValue: (value: string, label: string) => Promise<void>;
+  onUseTrainingPrep: (prep: TrainingPrepArtifact) => void;
   runReport: WorkbenchRunReport | null;
 }
 
@@ -45,6 +46,7 @@ export function InfoPanel({
   onCreateTrainingPrep,
   onExportTrainingPrep,
   onCopyValue,
+  onUseTrainingPrep,
   runReport,
 }: InfoPanelProps) {
   const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected' | 'ready_queue'>('all');
@@ -340,6 +342,13 @@ export function InfoPanel({
                   <p>{selectedPrep.summary}</p>
                   <small>{new Date(selectedPrep.updated_at).toLocaleString()}</small>
                   <div className="candidate-actions">
+                    <button
+                      type="button"
+                      className="action-button"
+                      onClick={() => onUseTrainingPrep(selectedPrep)}
+                    >
+                      Use For Training
+                    </button>
                     <button
                       type="button"
                       className="action-button secondary"

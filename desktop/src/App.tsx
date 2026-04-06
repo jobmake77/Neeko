@@ -628,6 +628,20 @@ export default function App() {
     setError(null);
   }
 
+  function handleUseTrainingPrep(prep: TrainingPrepArtifact) {
+    setFormDefaults((current) => ({
+      ...current,
+      trainPrepDocumentsPath: prep.documents_path,
+      trainPrepEvidencePath: prep.evidence_index_path,
+      trainPrepArtifactId: prep.id,
+      trainEvidenceImportId: '',
+    }));
+    setActiveView('Train');
+    setActiveTab('Training');
+    setNotice('Training prep has been attached to the train form.');
+    setError(null);
+  }
+
   async function handleExportTrainingPrep(prepId: string, format: 'markdown' | 'json') {
     try {
       const exported = await api.exportTrainingPrep(prepId, format);
@@ -720,6 +734,7 @@ export default function App() {
         onCreateTrainingPrep={handleCreateTrainingPrep}
         onExportTrainingPrep={handleExportTrainingPrep}
         onCopyValue={handleCopyValue}
+        onUseTrainingPrep={handleUseTrainingPrep}
         runReport={runReport}
       />
     </div>

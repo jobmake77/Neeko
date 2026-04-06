@@ -17,6 +17,7 @@
 5. 第一版工作台坚持“单线程单 Persona、自动生成 memory candidates、不直接写 Soul”。
 6. 当前客户端写回链路新增 `promotion-ready -> handoff artifact` 中间层，但仍不允许直接写正式 `Soul` 或正式长期记忆。
 7. 当前工作台允许把 `handoff` 转成 `training prep artifact`，但它仍然只是安全适配层，不等于正式训练写回。
+8. 当前工作台允许把 `training prep / evidence import` 作为 train launch 的 `prep context` 附加到运行上下文里，但它只用于追踪与审计，不改变训练核心逻辑。
 
 ## 交流层纪律
 
@@ -25,3 +26,4 @@
 3. 任何自动写回规则上线前，都必须先有可解释的候选层和回退路径。
 4. `promotion-ready` 候选只允许汇总成 handoff artifact，供后续训练/人工整理使用，不能绕过审核层直接落正式资产。
 5. `training prep artifact` 只允许作为训练输入准备层存在，不能绕过治理和审核直接改正式人格资产。
+6. train launch 上附带的 `prep context` 只允许写入运行上下文和追踪文件，不能被当作直接写正式资产的捷径。

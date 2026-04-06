@@ -95,6 +95,7 @@
 21. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
 22. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
 23. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
+24. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
 
 ### 3.2 默认写回规则
 
@@ -186,6 +187,20 @@
 4. 继续和正式 `Soul / Memory` 隔离
 5. 可以导出为 `Markdown / JSON` 交接内容，供训练整理或人工审核使用
 
+训练发起时，workbench 现在允许把这些资产作为 `prep context` 挂到训练运行上：
+
+1. `prep_documents_path`
+2. `prep_evidence_path`
+3. `prep_artifact_id`
+4. `evidence_import_id`
+
+这一层的定位仍然是：
+
+1. 让训练运行知道“这次是基于哪份整理资产发起的”
+2. 把来源写进 `training-context.json` 和 checkpoint 上下文，便于审计和回溯
+3. 不改变现有 TrainingLoop、TrainerAgent、EvaluatorAgent、DirectorAgent 的核心行为
+4. 不允许绕过 workbench 安全链路直接改正式人格资产
+
 ### 6.3 Chat UX 收尾
 
 聊天工作区已补：
@@ -195,7 +210,8 @@
 3. notice 提示
 4. 聊天页内直接做 Evidence Intake
 5. 导入结果快速回看
-6. Train 面板直接展示最近的 `training prep / evidence intake` 资产路径，便于继续进入训练整理流
+6. Train 面板直接展示最近的 `training prep / evidence intake` 资产路径，支持一键带入训练表单
+7. Train launch 支持清空 prep context，避免不同资产之间误串
 
 ## 7. 下一步
 

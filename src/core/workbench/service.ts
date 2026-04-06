@@ -61,6 +61,10 @@ export interface WorkbenchTrainingInput {
   retries?: number;
   fromCheckpoint?: string;
   kimiStabilityMode?: string;
+  prepDocumentsPath?: string;
+  prepEvidencePath?: string;
+  prepArtifactId?: string;
+  evidenceImportId?: string;
 }
 
 export interface WorkbenchExperimentInput {
@@ -807,6 +811,10 @@ export class WorkbenchService {
     if (typeof input.retries === 'number') args.push('--retries', String(input.retries));
     if (input.fromCheckpoint) args.push('--from-checkpoint', input.fromCheckpoint);
     if (input.kimiStabilityMode) args.push('--kimi-stability-mode', input.kimiStabilityMode);
+    if (input.prepDocumentsPath) args.push('--prep-documents-path', input.prepDocumentsPath);
+    if (input.prepEvidencePath) args.push('--prep-evidence-path', input.prepEvidencePath);
+    if (input.prepArtifactId) args.push('--prep-artifact-id', input.prepArtifactId);
+    if (input.evidenceImportId) args.push('--evidence-import-id', input.evidenceImportId);
     return this.startCliRun('train', input.slug, args, join(settings.getPersonaDir(input.slug), 'training-report.json'));
   }
 

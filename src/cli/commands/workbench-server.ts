@@ -317,6 +317,10 @@ export async function cmdWorkbenchServer(
           retries: getNumber(body.retries),
           fromCheckpoint: getString(body.fromCheckpoint),
           kimiStabilityMode: getString(body.kimiStabilityMode),
+          prepDocumentsPath: getString(body.prepDocumentsPath),
+          prepEvidencePath: getString(body.prepEvidencePath),
+          prepArtifactId: getString(body.prepArtifactId),
+          evidenceImportId: getString(body.evidenceImportId),
         }));
         return;
       }

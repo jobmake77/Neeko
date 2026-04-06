@@ -193,6 +193,10 @@ program
   .option('--retries <n>', 'Retry count for transient model format errors', '2')
   .option('--from-checkpoint <id>', 'Resume from checkpoint id (or latest)')
   .option('--kimi-stability-mode <mode>', 'Kimi 2-round governance: standard | tight_runtime | sparse_director | hybrid')
+  .option('--prep-documents-path <path>', 'Optional training prep documents path from workbench adapter')
+  .option('--prep-evidence-path <path>', 'Optional training prep evidence-index path from workbench adapter')
+  .option('--prep-artifact-id <id>', 'Optional training prep artifact id from workbench adapter')
+  .option('--evidence-import-id <id>', 'Optional linked evidence import id from workbench adapter')
   .action(async (slug: string, options: {
     mode?: string;
     rounds?: string;
@@ -203,6 +207,10 @@ program
     retries?: string;
     fromCheckpoint?: string;
     kimiStabilityMode?: string;
+    prepDocumentsPath?: string;
+    prepEvidencePath?: string;
+    prepArtifactId?: string;
+    evidenceImportId?: string;
   }) => {
     await cmdTrain(slug, options);
   });

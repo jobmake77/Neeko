@@ -105,6 +105,12 @@ interface TrainRuntimeContext {
   strategyDecision: TrainingStrategyDecision;
   executionSettings: TrainingExecutionSettings;
   trainingSeedHints: string[];
+  prepContext?: {
+    prep_documents_path?: string;
+    prep_evidence_path?: string;
+    prep_artifact_id?: string;
+    evidence_import_id?: string;
+  };
 }
 
 const TRACK_STAGE_TIMEOUT_MS = Number(process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? 180_000);
@@ -141,6 +147,10 @@ export async function cmdTrain(
     track?: string;
     fromCheckpoint?: string;
     kimiStabilityMode?: string;
+    prepDocumentsPath?: string;
+    prepEvidencePath?: string;
+    prepArtifactId?: string;
+    evidenceImportId?: string;
   } = {}
 ): Promise<void> {
   const dir = settings.getPersonaDir(slug);
@@ -183,6 +193,7 @@ export async function cmdTrain(
     rounds,
     explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
   });
+  const prepContext = buildPrepContext(options);
   if (rawDocs.length > 0) {
     const evidenceItems = loadEvidenceItemsFromFile(join(dir, 'evidence-index.jsonl'));
     const packSourceItems = evidenceItems.length > 0
@@ -282,6 +293,11 @@ export async function cmdTrain(
       `Training seed hints 已启用：requested=${trainingSeedSelection.requested_mode}，effective=${trainingSeedSelection.mode}，hints=${trainingSeedSelection.hints.length}（${trainingSeedSelection.reason}）`
     );
   }
+  if (prepContext) {
+    spin.message(
+      `Workbench prep context 已附加：docs=${prepContext.prep_documents_path ? 'yes' : 'no'}，evidence=${prepContext.prep_evidence_path ? 'yes' : 'no'}`
+    );
+  }
 
   writeTrainingContext(contextPath, {
     state: 'running',
@@ -293,6 +309,7 @@ export async function cmdTrain(
     report_path: reportPath,
     track,
     mode,
+    prep_context: prepContext,
   });
 
   const runtime: TrainRuntimeContext = {
@@ -317,6 +334,7 @@ export async function cmdTrain(
     strategyDecision,
     executionSettings,
     trainingSeedHints: trainingSeedSelection.hints,
+    prepContext,
   };
 
   try {
@@ -350,6 +368,7 @@ export async function cmdTrain(
         report_path: reportPath,
         track,
         mode,
+        prep_context: runtime.prepContext,
       });
       writeJsonFile(assetPaths.errorLedgerPath, runtime.errorLedger);
       throw new Error('训练未通过验收门槛，已保留断点，可继续恢复。');
@@ -456,6 +475,7 @@ async function runTrackLoop(
     updated_at: new Date().toISOString(),
     report_path: runtime.reportPath,
     track,
+    prep_context: runtime.prepContext,
   });
 
   const loop = new TrainingLoop(runtime.soul, runtime.persona, runtime.store);
@@ -532,6 +552,7 @@ async function runTrackLoop(
     report_path: runtime.reportPath,
     track,
     acceptance,
+    prep_context: runtime.prepContext,
   });
 
   return {
@@ -605,6 +626,7 @@ function finalizeRun(runtime: TrainRuntimeContext, manifest: RunManifest): void 
     report_path: runtime.reportPath,
     track: manifest.orchestration.track,
     mode: manifest.orchestration.mode,
+    prep_context: runtime.prepContext,
   });
 
   writeJsonFile(runtime.assetPaths.errorLedgerPath, runtime.errorLedger);
@@ -649,6 +671,7 @@ function writeRuntimeArtifacts(
     soul_rounds: runtime.soul.training_rounds_completed,
     observability: progress.observability,
     convergence: progress.convergenceState,
+    prep_context: runtime.prepContext,
   });
   runtime.checkpointStore.append({
     id: crypto.randomUUID(),
@@ -691,6 +714,7 @@ function persistPartialReport(
     completed_rounds: partial.total_rounds,
     updated_at: new Date().toISOString(),
     report_path: runtime.reportPath,
+    prep_context: runtime.prepContext,
   });
 }
 
@@ -721,6 +745,29 @@ function normalizeTrack(rawTrack?: string): StartTrackType {
   return 'full_serial';
 }
 
+function buildPrepContext(options: {
+  prepDocumentsPath?: string;
+  prepEvidencePath?: string;
+  prepArtifactId?: string;
+  evidenceImportId?: string;
+}): TrainRuntimeContext['prepContext'] {
+  const prepDocumentsPath = normalizeOptionalString(options.prepDocumentsPath);
+  const prepEvidencePath = normalizeOptionalString(options.prepEvidencePath);
+  const prepArtifactId = normalizeOptionalString(options.prepArtifactId);
+  const evidenceImportId = normalizeOptionalString(options.evidenceImportId);
+
+  if (!prepDocumentsPath && !prepEvidencePath && !prepArtifactId && !evidenceImportId) {
+    return undefined;
+  }
+
+  return {
+    prep_documents_path: prepDocumentsPath,
+    prep_evidence_path: prepEvidencePath,
+    prep_artifact_id: prepArtifactId,
+    evidence_import_id: evidenceImportId,
+  };
+}
+
 function resolveRounds(rawRounds?: string, rawMode?: string): number {
   if (rawRounds !== undefined) {
     const explicit = parseInt(rawRounds, 10);
@@ -738,6 +785,12 @@ function resolveRetries(raw?: string): number {
   const parsed = parseInt(raw ?? '2', 10);
   if (Number.isNaN(parsed)) return 2;
   return Math.max(0, Math.min(parsed, 5));
+}
+
+function normalizeOptionalString(value?: string): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function retryLimitForTag(tag: string, configuredRetries: number): number {
@@ -929,6 +982,7 @@ async function runWithTrackHeartbeat<T>(
       updated_at: new Date().toISOString(),
       report_path: runtime.reportPath,
       track,
+      prep_context: runtime.prepContext,
     });
   }, TRACK_HEARTBEAT_MS);
 

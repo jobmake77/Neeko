@@ -30,6 +30,10 @@ interface WorkbenchFormsProps {
     trainTrack: string;
     trainRetries: string;
     trainFromCheckpoint: string;
+    trainPrepDocumentsPath: string;
+    trainPrepEvidencePath: string;
+    trainPrepArtifactId: string;
+    trainEvidenceImportId: string;
     experimentProfiles: string;
     questionsPerRound: string;
     experimentCompareVariants: string;
@@ -77,6 +81,10 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   const [trainTrack, setTrainTrack] = useState(defaultValues.trainTrack);
   const [trainRetries, setTrainRetries] = useState(defaultValues.trainRetries);
   const [trainFromCheckpoint, setTrainFromCheckpoint] = useState(defaultValues.trainFromCheckpoint);
+  const [trainPrepDocumentsPath, setTrainPrepDocumentsPath] = useState(defaultValues.trainPrepDocumentsPath);
+  const [trainPrepEvidencePath, setTrainPrepEvidencePath] = useState(defaultValues.trainPrepEvidencePath);
+  const [trainPrepArtifactId, setTrainPrepArtifactId] = useState(defaultValues.trainPrepArtifactId);
+  const [trainEvidenceImportId, setTrainEvidenceImportId] = useState(defaultValues.trainEvidenceImportId);
   const [experimentProfiles, setExperimentProfiles] = useState(defaultValues.experimentProfiles);
   const [questionsPerRound, setQuestionsPerRound] = useState(defaultValues.questionsPerRound);
   const [experimentCompareVariants, setExperimentCompareVariants] = useState(defaultValues.experimentCompareVariants);
@@ -125,6 +133,10 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         retries: Number(trainRetries),
         fromCheckpoint: trainFromCheckpoint || undefined,
         kimiStabilityMode,
+        prepDocumentsPath: trainPrepDocumentsPath || undefined,
+        prepEvidencePath: trainPrepEvidencePath || undefined,
+        prepArtifactId: trainPrepArtifactId || undefined,
+        evidenceImportId: trainEvidenceImportId || undefined,
       });
       return;
     }
@@ -383,6 +395,62 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           </label>
         ) : null}
 
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>Prep documents path</span>
+            <input
+              value={trainPrepDocumentsPath}
+              onChange={(event) => {
+                setTrainPrepDocumentsPath(event.target.value);
+                onDefaultValuesChange({ trainPrepDocumentsPath: event.target.value });
+              }}
+              placeholder="/path/to/training-prep/documents.json"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>Prep evidence path</span>
+            <input
+              value={trainPrepEvidencePath}
+              onChange={(event) => {
+                setTrainPrepEvidencePath(event.target.value);
+                onDefaultValuesChange({ trainPrepEvidencePath: event.target.value });
+              }}
+              placeholder="/path/to/training-prep/evidence-index.jsonl"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>Prep artifact id</span>
+            <input
+              value={trainPrepArtifactId}
+              onChange={(event) => {
+                setTrainPrepArtifactId(event.target.value);
+                onDefaultValuesChange({ trainPrepArtifactId: event.target.value });
+              }}
+              placeholder="training prep artifact id"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>Evidence import id</span>
+            <input
+              value={trainEvidenceImportId}
+              onChange={(event) => {
+                setTrainEvidenceImportId(event.target.value);
+                onDefaultValuesChange({ trainEvidenceImportId: event.target.value });
+              }}
+              placeholder="linked evidence import id"
+            />
+          </label>
+        ) : null}
+
         {activeView === 'Experiment' ? (
           <label className="field">
             <span>Profiles</span>
@@ -560,6 +628,24 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 <button
                   type="button"
                   className="action-button secondary"
+                  onClick={() => {
+                    setTrainPrepDocumentsPath(latestTrainingPrep.documents_path);
+                    setTrainPrepEvidencePath(latestTrainingPrep.evidence_index_path);
+                    setTrainPrepArtifactId(latestTrainingPrep.id);
+                    setTrainEvidenceImportId('');
+                    onDefaultValuesChange({
+                      trainPrepDocumentsPath: latestTrainingPrep.documents_path,
+                      trainPrepEvidencePath: latestTrainingPrep.evidence_index_path,
+                      trainPrepArtifactId: latestTrainingPrep.id,
+                      trainEvidenceImportId: '',
+                    });
+                  }}
+                >
+                  Use Latest Prep
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
                   onClick={() => void onCopyValue(latestTrainingPrep.documents_path, 'Training prep documents path')}
                 >
                   Copy Docs Path
@@ -585,6 +671,24 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 <button
                   type="button"
                   className="action-button secondary"
+                  onClick={() => {
+                    setTrainPrepDocumentsPath(latestEvidenceImport.artifacts.documents_path);
+                    setTrainPrepEvidencePath(latestEvidenceImport.artifacts.evidence_index_path);
+                    setTrainPrepArtifactId('');
+                    setTrainEvidenceImportId(latestEvidenceImport.id);
+                    onDefaultValuesChange({
+                      trainPrepDocumentsPath: latestEvidenceImport.artifacts.documents_path,
+                      trainPrepEvidencePath: latestEvidenceImport.artifacts.evidence_index_path,
+                      trainPrepArtifactId: '',
+                      trainEvidenceImportId: latestEvidenceImport.id,
+                    });
+                  }}
+                >
+                  Use Latest Import
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
                   onClick={() => void onCopyValue(latestEvidenceImport.artifacts.documents_path, 'Evidence import documents path')}
                 >
                   Copy Docs Path
@@ -599,6 +703,29 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
               </div>
             </article>
           ) : null}
+          <div className="settings-actions">
+            <button
+              type="button"
+              className="action-button secondary"
+              onClick={() => {
+                setTrainPrepDocumentsPath('');
+                setTrainPrepEvidencePath('');
+                setTrainPrepArtifactId('');
+                setTrainEvidenceImportId('');
+                onDefaultValuesChange({
+                  trainPrepDocumentsPath: '',
+                  trainPrepEvidencePath: '',
+                  trainPrepArtifactId: '',
+                  trainEvidenceImportId: '',
+                });
+              }}
+            >
+              Clear Prep Context
+            </button>
+          </div>
+          <div className="helper-text">
+            Train launch only carries these prep/import fields as contextual metadata for traceability. It does not bypass the existing training core or write back into formal `Soul`.
+          </div>
         </div>
       ) : null}
     </section>

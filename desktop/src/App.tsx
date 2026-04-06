@@ -40,6 +40,10 @@ type WorkbenchFormDefaults = {
   trainTrack: string;
   trainRetries: string;
   trainFromCheckpoint: string;
+  trainPrepDocumentsPath: string;
+  trainPrepEvidencePath: string;
+  trainPrepArtifactId: string;
+  trainEvidenceImportId: string;
   experimentProfiles: string;
   questionsPerRound: string;
   experimentCompareVariants: string;
@@ -69,6 +73,10 @@ export default function App() {
         trainTrack: parsed.trainTrack ?? 'full_serial',
         trainRetries: parsed.trainRetries ?? '2',
         trainFromCheckpoint: parsed.trainFromCheckpoint ?? '',
+        trainPrepDocumentsPath: parsed.trainPrepDocumentsPath ?? '',
+        trainPrepEvidencePath: parsed.trainPrepEvidencePath ?? '',
+        trainPrepArtifactId: parsed.trainPrepArtifactId ?? '',
+        trainEvidenceImportId: parsed.trainEvidenceImportId ?? '',
         experimentProfiles: parsed.experimentProfiles ?? '',
         questionsPerRound: parsed.questionsPerRound ?? '5',
         experimentCompareVariants: parsed.experimentCompareVariants ?? '',
@@ -93,6 +101,10 @@ export default function App() {
         trainTrack: 'full_serial',
         trainRetries: '2',
         trainFromCheckpoint: '',
+        trainPrepDocumentsPath: '',
+        trainPrepEvidencePath: '',
+        trainPrepArtifactId: '',
+        trainEvidenceImportId: '',
         experimentProfiles: '',
         questionsPerRound: '5',
         experimentCompareVariants: '',

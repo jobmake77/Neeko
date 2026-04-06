@@ -129,6 +129,8 @@ export const WorkbenchRunSchema = z.object({
   type: z.enum(['create', 'train', 'experiment', 'export']),
   persona_slug: z.string().optional(),
   status: z.enum(['queued', 'running', 'completed', 'failed']),
+  recovery_state: z.enum(['idle', 'recovering', 'exhausted']).default('idle'),
+  attempt_count: z.number().int().min(1).default(1),
   started_at: z.string().datetime(),
   finished_at: z.string().datetime().optional(),
   report_path: z.string().optional(),

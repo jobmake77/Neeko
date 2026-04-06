@@ -36,6 +36,8 @@ import {
   WorkbenchRun,
   WorkbenchRunReport,
 } from '../models/workbench.js';
+import { classifyFailure } from '../training/failure-loop.js';
+import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
 
 export interface WorkbenchCreateInput {
@@ -830,6 +832,8 @@ export class WorkbenchService {
           }
           : undefined,
         summaryLabel: isSmoke ? 'train smoke' : 'train',
+        autoRecover: true,
+        maxRecoveryAttempts: isSmoke ? 2 : 2,
       }
     );
   }
@@ -874,6 +878,17 @@ export class WorkbenchService {
     if ((run.status === 'completed' || run.status === 'failed') && typeof run.summary === 'string' && run.summary.endsWith(' started')) {
       return this.store.updateRun(run.id, {
         summary: inferExitedRunSummary(run.summary, run.status),
+      });
+    }
+    if (run.status === 'failed' && run.recovery_state === 'recovering') {
+      return this.store.updateRun(run.id, {
+        recovery_state: 'exhausted',
+        summary: 'This run paused before finishing, and progress was kept safe.',
+      });
+    }
+    if (run.status === 'completed' && run.recovery_state === 'recovering') {
+      return this.store.updateRun(run.id, {
+        recovery_state: 'idle',
       });
     }
     return run;
@@ -1008,6 +1023,8 @@ export class WorkbenchService {
     options?: {
       env?: Record<string, string>;
       summaryLabel?: string;
+      autoRecover?: boolean;
+      maxRecoveryAttempts?: number;
     }
   ): WorkbenchRun {
     const runId = crypto.randomUUID();
@@ -1015,52 +1032,121 @@ export class WorkbenchService {
     const logDir = join(this.store.baseDir, 'logs');
     mkdirSync(logDir, { recursive: true });
     const logPath = join(logDir, `${runId}.log`);
-    const child = spawn(process.execPath, [this.cliEntryPath, ...args], {
-      cwd: this.repoRoot,
-      env: { ...process.env, NEEKO_CLI_FORCE_EXIT: '1', ...(options?.env ?? {}) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
-    });
     const summaryLabel = options?.summaryLabel ?? type;
-
-    child.stdout.on('data', (chunk) => {
-      writeFileSync(logPath, String(chunk), { flag: 'a' });
-    });
-    child.stderr.on('data', (chunk) => {
-      writeFileSync(logPath, String(chunk), { flag: 'a' });
-    });
+    const maxRecoveryAttempts = options?.autoRecover ? Math.max(0, options?.maxRecoveryAttempts ?? 0) : 0;
 
     const run = this.store.saveRun({
       id: runId,
       type,
       persona_slug: personaSlug,
       status: 'running',
+      recovery_state: 'idle',
+      attempt_count: 1,
       started_at: startedAt,
       report_path: reportPath,
-      summary: `${summaryLabel} started`,
+      summary: summaryLabel === 'train smoke' ? 'Smoke check started.' : `${summaryLabel} started`,
       log_path: logPath,
-      pid: child.pid,
       command: [process.execPath, this.cliEntryPath, ...args],
     });
 
-    child.on('exit', (code) => {
-      const status = code === 0 ? 'completed' : 'failed';
-      const summary = code === 0 ? `${summaryLabel} completed` : `${summaryLabel} failed with exit code ${code}`;
-      this.store.updateRun(runId, {
-        status,
-        finished_at: new Date().toISOString(),
-        summary,
+    const launchAttempt = (attemptNumber: number, extraEnv?: Record<string, string>, extraArgs?: string[]) => {
+      const child = spawn(process.execPath, [this.cliEntryPath, ...args, ...(extraArgs ?? [])], {
+        cwd: this.repoRoot,
+        env: { ...process.env, NEEKO_CLI_FORCE_EXIT: '1', ...(options?.env ?? {}), ...(extraEnv ?? {}) },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
       });
-    });
 
-    child.on('error', (error) => {
-      writeFileSync(logPath, `${String(error)}\n`, { flag: 'a' });
       this.store.updateRun(runId, {
-        status: 'failed',
-        finished_at: new Date().toISOString(),
-        summary: `${type} failed to start: ${String(error)}`,
+        pid: child.pid,
+        attempt_count: attemptNumber,
       });
-    });
+
+      child.stdout.on('data', (chunk) => {
+        writeFileSync(logPath, String(chunk), { flag: 'a' });
+      });
+      child.stderr.on('data', (chunk) => {
+        writeFileSync(logPath, String(chunk), { flag: 'a' });
+      });
+
+      child.on('exit', (code) => {
+        if (code === 0) {
+          this.store.updateRun(runId, {
+            status: 'completed',
+            recovery_state: 'idle',
+            finished_at: new Date().toISOString(),
+            summary: attemptNumber > 1
+              ? 'Training completed after automatic recovery.'
+              : (summaryLabel === 'train smoke' ? 'Smoke check completed.' : `${summaryLabel} completed`),
+          });
+          return;
+        }
+
+        const recoveryPlan = this.planAutomaticRecovery({
+          runId,
+          type,
+          personaSlug,
+          summaryLabel,
+          attemptNumber,
+          maxRecoveryAttempts,
+          logPath,
+          args,
+        });
+
+        if (recoveryPlan) {
+          this.store.updateRun(runId, {
+            status: 'running',
+            recovery_state: 'recovering',
+            summary: recoveryPlan.userSummary,
+            finished_at: undefined,
+          });
+          setTimeout(() => launchAttempt(attemptNumber + 1, recoveryPlan.env, recoveryPlan.extraArgs), recoveryPlan.delayMs);
+          return;
+        }
+
+        this.store.updateRun(runId, {
+          status: 'failed',
+          recovery_state: maxRecoveryAttempts > 0 ? 'exhausted' : 'idle',
+          finished_at: new Date().toISOString(),
+          summary: type === 'train'
+            ? 'Training paused. Progress has been saved and automatic recovery could not complete.'
+            : `${summaryLabel} did not finish. Please try again later.`,
+        });
+      });
+
+      child.on('error', (error) => {
+        writeFileSync(logPath, `${String(error)}\n`, { flag: 'a' });
+        const recoveryPlan = this.planAutomaticRecovery({
+          runId,
+          type,
+          personaSlug,
+          summaryLabel,
+          attemptNumber,
+          maxRecoveryAttempts,
+          logPath,
+          args,
+        });
+        if (recoveryPlan) {
+          this.store.updateRun(runId, {
+            status: 'running',
+            recovery_state: 'recovering',
+            summary: recoveryPlan.userSummary,
+          });
+          setTimeout(() => launchAttempt(attemptNumber + 1, recoveryPlan.env, recoveryPlan.extraArgs), recoveryPlan.delayMs);
+          return;
+        }
+        this.store.updateRun(runId, {
+          status: 'failed',
+          recovery_state: maxRecoveryAttempts > 0 ? 'exhausted' : 'idle',
+          finished_at: new Date().toISOString(),
+          summary: type === 'train'
+            ? 'Training could not start. Progress has been kept safe.'
+            : `${type} could not start.`,
+        });
+      });
+    };
+
+    launchAttempt(1);
 
     return run;
   }
@@ -1084,14 +1170,58 @@ export class WorkbenchService {
       return false;
     }
   }
+
+  private planAutomaticRecovery(input: {
+    runId: string;
+    type: WorkbenchRun['type'];
+    personaSlug?: string;
+    summaryLabel: string;
+    attemptNumber: number;
+    maxRecoveryAttempts: number;
+    logPath: string;
+    args: string[];
+  }): { env?: Record<string, string>; extraArgs?: string[]; delayMs: number; userSummary: string } | null {
+    if (input.type !== 'train') return null;
+    if (input.attemptNumber > input.maxRecoveryAttempts) return null;
+
+    const logTail = this.readLogTail(input.logPath, 120) ?? '';
+    const resolution = classifyFailure(logTail);
+    if (!resolution.retryable) return null;
+
+    const personaDir = input.personaSlug ? settings.getPersonaDir(input.personaSlug) : undefined;
+    const checkpointPath = personaDir ? join(personaDir, 'checkpoint_index.json') : undefined;
+    const checkpointStore = checkpointPath ? new CheckpointStore(checkpointPath) : null;
+    const latestCheckpoint = checkpointStore?.latest() ?? null;
+    const hasCheckpointArg = input.args.includes('--from-checkpoint');
+    const extraArgs = latestCheckpoint && !hasCheckpointArg ? ['--from-checkpoint', 'latest'] : undefined;
+    const env: Record<string, string> = {
+      NEEKO_PREFLIGHT_TRAIN_TIMEOUT_MS: process.env.NEEKO_PREFLIGHT_TRAIN_TIMEOUT_MS ?? '60000',
+    };
+
+    if (resolution.tag === 'structured_output_failure') {
+      env.NEEKO_RELAXED_SCHEMA_MODE = '1';
+    }
+    if (resolution.tag === 'generation_timeout') {
+      env.NEEKO_TRAIN_STAGE_TIMEOUT_MS = process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? '240000';
+    }
+
+    return {
+      env,
+      extraArgs,
+      delayMs: 1200 * input.attemptNumber,
+      userSummary: latestCheckpoint
+        ? 'System is retrying from saved progress.'
+        : 'System is retrying automatically.',
+    };
+  }
 }
 
 function inferExitedRunSummary(summary: string | undefined, status: 'completed' | 'failed'): string {
   if (!summary) {
-    return status === 'completed' ? 'Run finished.' : 'Process exited unexpectedly.';
+    return status === 'completed' ? 'Run finished.' : 'This run paused before finishing, and progress was kept safe.';
   }
-  if (summary.endsWith(' started')) {
-    return summary.replace(/ started$/, status === 'completed' ? ' completed' : ' failed');
+  if (/started\.?$/.test(summary)) {
+    return summary.replace(/started\.?$/, status === 'completed' ? 'completed.' : 'paused.');
   }
-  return status === 'completed' ? summary : `${summary} (process exited)`;
+  return status === 'completed' ? summary : 'This run paused before finishing, and progress was kept safe.';
 }

@@ -184,6 +184,8 @@ export interface WorkbenchRun {
   type: 'create' | 'train' | 'experiment' | 'export';
   persona_slug?: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
+  recovery_state?: 'idle' | 'recovering' | 'exhausted';
+  attempt_count?: number;
   started_at: string;
   finished_at?: string;
   report_path?: string;

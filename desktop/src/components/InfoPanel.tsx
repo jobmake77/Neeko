@@ -118,6 +118,7 @@ export function InfoPanel({
               <p>{runReport.run.summary ?? runReport.run.status}</p>
               {runReport.run.report_path ? <code>{runReport.run.report_path}</code> : null}
               {runReport.report ? <pre>{JSON.stringify(runReport.report, null, 2).slice(0, 2400)}</pre> : null}
+              {runReport.log_tail ? <pre>{runReport.log_tail}</pre> : null}
             </article>
           ) : <div className="empty-state">No active run selected.</div>}
         </div>

@@ -49,6 +49,7 @@ export interface Conversation {
   updated_at: string;
   status: 'active' | 'idle' | 'archived';
   message_count: number;
+  last_message_preview?: string;
 }
 
 export interface ConversationMessage {
@@ -105,4 +106,5 @@ export interface WorkbenchRun {
 export interface WorkbenchRunReport {
   run: WorkbenchRun;
   report?: unknown;
+  log_tail?: string;
 }

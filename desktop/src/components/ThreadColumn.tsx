@@ -31,7 +31,8 @@ export function ThreadColumn({ threads, selectedId, onSelect, onCreate }: Thread
               <strong>{thread.title}</strong>
               <span>{thread.message_count}</span>
             </div>
-            <p>{new Date(thread.updated_at).toLocaleString()}</p>
+            <p>{thread.last_message_preview || 'No conversation yet.'}</p>
+            <small>{new Date(thread.updated_at).toLocaleString()}</small>
           </button>
         ))}
         {threads.length === 0 ? <div className="empty-state">Create the first thread for this persona.</div> : null}

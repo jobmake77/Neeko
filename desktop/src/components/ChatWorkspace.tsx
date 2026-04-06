@@ -27,6 +27,12 @@ export function ChatWorkspace({ bundle, loading, onSend }: ChatWorkspaceProps) {
         </div>
         {bundle?.session_summary ? <span className="badge">{bundle.session_summary.candidate_count} candidates</span> : null}
       </div>
+      {bundle?.session_summary ? (
+        <div className="session-summary-card">
+          <strong>Session Summary</strong>
+          <p>{bundle.session_summary.summary}</p>
+        </div>
+      ) : null}
       <div className="chat-scroll">
         {bundle?.messages.length ? bundle.messages.map((item) => (
           <article key={item.id} className={`message-bubble ${item.role}`}>

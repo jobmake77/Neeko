@@ -92,11 +92,15 @@ export default function App() {
     if (!currentRun || currentRun.status !== 'running') return;
     const timer = window.setInterval(async () => {
       try {
-        const run = await api.getRun(currentRun.id);
-        setCurrentRun(run);
-        if (run.status !== 'running') {
-          const report = await api.getRunReport(run.id).catch(() => null);
+        const report = await api.getRunReport(currentRun.id).catch(() => null);
+        if (report) {
+          setCurrentRun(report.run);
           setRunReport(report);
+        } else {
+          const run = await api.getRun(currentRun.id);
+          setCurrentRun(run);
+        }
+        if ((report?.run.status ?? currentRun.status) !== 'running') {
           await refreshPersonas();
           await refreshRuns(selectedPersonaSlug ?? undefined);
         }

@@ -115,6 +115,12 @@ function buildSessionSummary(messages: ConversationMessage[], candidates: Memory
   ].join(' ');
 }
 
+function toPreview(text: string, maxLength = 88): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength)}...`;
+}
+
 export class WorkbenchService {
   constructor(
     private readonly store = new WorkbenchStore(),
@@ -169,6 +175,7 @@ export class WorkbenchService {
       updated_at: now,
       status: 'active',
       message_count: 0,
+      last_message_preview: '',
     });
   }
 
@@ -230,6 +237,7 @@ export class WorkbenchService {
       updated_at: assistantMessage.created_at,
       message_count: bundle.messages.length,
       status: 'active',
+      last_message_preview: toPreview(assistantMessage.content),
     };
     this.store.saveConversation(updatedConversation);
 
@@ -323,6 +331,7 @@ export class WorkbenchService {
     const run = this.getRunStatus(runId);
     if (!run) return null;
     let report: unknown;
+    const logTail = this.readLogTail(run.log_path);
     if (run.report_path && existsSync(run.report_path)) {
       if (run.report_path.endsWith('.json')) {
         report = readJsonFile(run.report_path, null);
@@ -330,7 +339,7 @@ export class WorkbenchService {
         report = { path: run.report_path };
       }
     }
-    return { run, report };
+    return { run, report, log_tail: logTail };
   }
 
   private readPersonaSummary(slug: string): PersonaSummary | null {
@@ -486,6 +495,17 @@ export class WorkbenchService {
     });
 
     return run;
+  }
+
+  private readLogTail(logPath: string | undefined, maxLines = 80): string | undefined {
+    if (!logPath || !existsSync(logPath)) return undefined;
+    try {
+      const content = readFileSync(logPath, 'utf-8');
+      const lines = content.split(/\r?\n/).filter(Boolean);
+      return lines.slice(-maxLines).join('\n');
+    } catch {
+      return undefined;
+    }
   }
 
   private isPidAlive(pid: number): boolean {

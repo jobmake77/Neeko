@@ -79,6 +79,9 @@
 5. create / train / experiment / export 的结构化触发与状态轮询
 6. recent runs 列表查看与历史 report 回看
 7. 工作台状态本地恢复：active view、active tab、selected persona、selected thread
+8. thread 卡片最近消息预览
+9. 聊天主区显式展示 session summary
+10. run report 附带 log tail，可在客户端内直接查看最近运行输出
 
 ### 3.2 默认写回规则
 

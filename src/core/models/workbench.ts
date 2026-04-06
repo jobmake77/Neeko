@@ -17,6 +17,7 @@ export const ConversationSchema = z.object({
   updated_at: z.string().datetime(),
   status: z.enum(['active', 'idle', 'archived']).default('active'),
   message_count: z.number().int().min(0).default(0),
+  last_message_preview: z.string().optional(),
 });
 export type Conversation = z.infer<typeof ConversationSchema>;
 
@@ -72,6 +73,7 @@ export type WorkbenchRun = z.infer<typeof WorkbenchRunSchema>;
 export const WorkbenchRunReportSchema = z.object({
   run: WorkbenchRunSchema,
   report: z.unknown().optional(),
+  log_tail: z.string().optional(),
 });
 export type WorkbenchRunReport = z.infer<typeof WorkbenchRunReportSchema>;
 

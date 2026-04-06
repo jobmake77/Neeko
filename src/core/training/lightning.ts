@@ -7,11 +7,11 @@ export type TrainMode = 'quick' | 'full';
 export type StageStatus = 'pending' | 'running' | 'blocked' | 'repairing' | 'completed';
 
 export type FailureTag =
-  | 'provider_timeout'
-  | 'fetch_error'
-  | 'parse_drift'
-  | 'schema_incompat'
-  | 'reward_instability'
+  | 'generation_timeout'
+  | 'transport_error'
+  | 'structured_output_failure'
+  | 'capability_mismatch'
+  | 'evaluation_instability'
   | 'lock_stale'
   | 'data_conflict'
   | 'unknown';

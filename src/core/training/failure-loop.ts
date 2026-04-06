@@ -10,24 +10,39 @@ export interface FailureResolution {
 export function classifyFailure(error: unknown): FailureResolution {
   const msg = String(error ?? '').toLowerCase();
   if (
+    msg.includes('text_probe_failed') ||
+    msg.includes('structured_probe_failed') ||
     msg.includes('tool_choice') ||
     msg.includes('not yet supported') ||
     msg.includes('did not match schema') ||
     msg.includes('no object generated')
   ) {
-    return { tag: 'schema_incompat', recoveryAction: 'stage_skip_with_flag', retryable: false, stageCanSkip: true };
+    if (
+      msg.includes('tool_choice') ||
+      msg.includes('not yet supported')
+    ) {
+      return { tag: 'capability_mismatch', recoveryAction: 'stage_skip_with_flag', retryable: false, stageCanSkip: true };
+    }
+    return { tag: 'structured_output_failure', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: false };
   }
   if (msg.includes('timeout')) {
-    return { tag: 'provider_timeout', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: false };
+    return { tag: 'generation_timeout', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: false };
   }
-  if (msg.includes('qdrant') || msg.includes('fetch') || msg.includes('network')) {
-    return { tag: 'fetch_error', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: true };
+  if (
+    msg.includes('qdrant') ||
+    msg.includes('fetch') ||
+    msg.includes('network') ||
+    msg.includes('socket') ||
+    msg.includes('econn') ||
+    msg.includes('connection')
+  ) {
+    return { tag: 'transport_error', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: true };
   }
   if (msg.includes('schema') || msg.includes('json') || msg.includes('parse')) {
-    return { tag: 'parse_drift', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: false };
+    return { tag: 'structured_output_failure', recoveryAction: 'soft_retry', retryable: true, stageCanSkip: false };
   }
   if (msg.includes('reward') || msg.includes('score')) {
-    return { tag: 'reward_instability', recoveryAction: 'stage_skip_with_flag', retryable: true, stageCanSkip: true };
+    return { tag: 'evaluation_instability', recoveryAction: 'stage_skip_with_flag', retryable: true, stageCanSkip: true };
   }
   if (msg.includes('lock')) {
     return { tag: 'lock_stale', recoveryAction: 'heartbeat_renew', retryable: true, stageCanSkip: false };

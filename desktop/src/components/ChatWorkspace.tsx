@@ -178,6 +178,18 @@ export function ChatWorkspace({
                       <small key={key}>{key}: {count}</small>
                     ))}
                   </div>
+                  <div className="metric-group">
+                    <strong>Modalities</strong>
+                    {topEntries(selectedEvidenceImport.stats.modality_counts).map(([key, count]) => (
+                      <small key={key}>{key}: {count}</small>
+                    ))}
+                  </div>
+                  <div className="metric-group">
+                    <strong>Source Types</strong>
+                    {topEntries(selectedEvidenceImport.stats.source_type_counts).map(([key, count]) => (
+                      <small key={key}>{key}: {count}</small>
+                    ))}
+                  </div>
                 </div>
                 <code>{selectedEvidenceImport.artifacts.documents_path}</code>
                 <code>{selectedEvidenceImport.artifacts.evidence_index_path}</code>

@@ -192,6 +192,22 @@ button {
   background: rgba(248, 245, 239, 0.92);
 }
 
+.training-card-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.training-overview-card,
+.training-diagnostic-card,
+.training-summary-card,
+.training-prep-card,
+.training-log-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .badge,
 .status-chip {
   display: inline-flex;

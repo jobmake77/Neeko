@@ -239,9 +239,13 @@
 
 当前 preflight 治理：
 
-1. 对 Kimi 增加 provider-aware 的 text/structured probe 重试
-2. 第二次 structured probe 自动切到更轻量的 schema
-3. 对 Kimi 提高 probe timeout，减少 20s 内 structured preflight 的误杀
+1. preflight 仍然会识别 provider 差异，但治理口径不再绑定某个模型名
+2. failure 会按培养能力分型记录，例如：
+3. `generation_timeout`
+4. `structured_output_failure`
+5. `transport_error`
+6. `capability_mismatch`
+7. 第二次 structured probe 会自动切到更轻量的 schema，减少结构化输出误杀
 
 ## 7. 下一步
 

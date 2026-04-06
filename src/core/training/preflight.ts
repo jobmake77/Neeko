@@ -1,11 +1,24 @@
 import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
-import { resolveModel, resolveModelProviderName } from '../../config/model.js';
+import { ProviderName, resolveModel, resolveModelProviderName } from '../../config/model.js';
+
+export type PreflightFailureStage = 'text_probe' | 'structured_probe';
+export type PreflightFailureCategory =
+  | 'generation_timeout'
+  | 'transport_error'
+  | 'structured_output_failure'
+  | 'capability_mismatch'
+  | 'unknown';
 
 export interface ModelPreflightResult {
   ok: boolean;
   latencyMs: number;
   structuredOk: boolean;
+  providerName: ProviderName;
+  textAttempts: number;
+  structuredAttempts: number;
+  failureStage?: PreflightFailureStage;
+  failureCategory?: PreflightFailureCategory;
   reason?: string;
 }
 
@@ -27,29 +40,57 @@ export async function runModelPreflight(options?: {
   const providerName = resolveModelProviderName();
   const model = resolveModel();
   const startedAt = Date.now();
+  let textAttempts = 0;
   try {
-    await runTextProbe(model, providerName, timeoutMs);
+    textAttempts = await runTextProbe(model, providerName, timeoutMs);
   } catch (error) {
+    const failure = classifyCapabilityFailure(error);
     return {
       ok: false,
       latencyMs: Date.now() - startedAt,
       structuredOk: false,
+      providerName,
+      textAttempts,
+      structuredAttempts: 0,
+      failureStage: 'text_probe',
+      failureCategory: failure,
       reason: `text_probe_failed: ${String(error)}`,
     };
   }
 
   if (!requireStructured) {
-    return { ok: true, latencyMs: Date.now() - startedAt, structuredOk: true };
+    return {
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      structuredOk: true,
+      providerName,
+      textAttempts,
+      structuredAttempts: 0,
+    };
   }
 
+  let structuredAttempts = 0;
   try {
-    await runStructuredProbe(model, providerName, timeoutMs);
-    return { ok: true, latencyMs: Date.now() - startedAt, structuredOk: true };
+    structuredAttempts = await runStructuredProbe(model, providerName, timeoutMs);
+    return {
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      structuredOk: true,
+      providerName,
+      textAttempts,
+      structuredAttempts,
+    };
   } catch (error) {
+    const failure = classifyCapabilityFailure(error);
     return {
       ok: false,
       latencyMs: Date.now() - startedAt,
       structuredOk: false,
+      providerName,
+      textAttempts,
+      structuredAttempts,
+      failureStage: 'structured_probe',
+      failureCategory: failure,
       reason: `structured_probe_failed: ${String(error)}`,
     };
   }
@@ -59,7 +100,7 @@ async function runTextProbe(
   model: ReturnType<typeof resolveModel>,
   providerName: ReturnType<typeof resolveModelProviderName>,
   timeoutMs: number
-): Promise<void> {
+): Promise<number> {
   const attempts = providerName === 'kimi' ? 2 : 1;
   let lastError: unknown;
 
@@ -78,7 +119,7 @@ async function runTextProbe(
         attemptTimeoutMs,
         'preflight text probe'
       );
-      return;
+      return attempt;
     } catch (error) {
       lastError = error;
       if (attempt < attempts) {
@@ -94,7 +135,7 @@ async function runStructuredProbe(
   model: ReturnType<typeof resolveModel>,
   providerName: ReturnType<typeof resolveModelProviderName>,
   timeoutMs: number
-): Promise<void> {
+): Promise<number> {
   const attempts = providerName === 'kimi' ? 2 : 1;
   let lastError: unknown;
 
@@ -115,7 +156,7 @@ async function runStructuredProbe(
         attemptTimeoutMs,
         'preflight structured probe'
       );
-      return;
+      return attempt;
     } catch (error) {
       lastError = error;
       if (attempt < attempts) {
@@ -143,4 +184,33 @@ async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function classifyCapabilityFailure(error: unknown): PreflightFailureCategory {
+  const msg = String(error ?? '').toLowerCase();
+  if (msg.includes('timeout')) return 'generation_timeout';
+  if (
+    msg.includes('fetch') ||
+    msg.includes('network') ||
+    msg.includes('socket') ||
+    msg.includes('econn') ||
+    msg.includes('connection')
+  ) {
+    return 'transport_error';
+  }
+  if (
+    msg.includes('tool_choice') ||
+    msg.includes('not yet supported')
+  ) {
+    return 'capability_mismatch';
+  }
+  if (
+    msg.includes('schema') ||
+    msg.includes('json') ||
+    msg.includes('parse') ||
+    msg.includes('object')
+  ) {
+    return 'structured_output_failure';
+  }
+  return 'unknown';
 }

@@ -302,7 +302,9 @@ export async function cmdExperiment(
     requireStructured: true,
   });
   if (!preflight.ok) {
-    throw new Error(`experiment preflight failed (${preflight.latencyMs}ms): ${preflight.reason ?? 'unknown'}`);
+    throw new Error(
+      `experiment preflight failed (provider=${preflight.providerName}, stage=${preflight.failureStage ?? 'unknown'}, category=${preflight.failureCategory ?? 'unknown'}, ${preflight.latencyMs}ms): ${preflight.reason ?? 'unknown'}`
+    );
   }
 
   console.log(chalk.bold.cyan(`\n✦ Training Experiment (${slug})\n`));

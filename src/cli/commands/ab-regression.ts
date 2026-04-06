@@ -69,7 +69,9 @@ export async function cmdAbRegression(
     requireStructured: true,
   });
   if (!preflight.ok) {
-    throw new Error(`A/B preflight failed (${preflight.latencyMs}ms): ${preflight.reason ?? 'unknown'}`);
+    throw new Error(
+      `A/B preflight failed (provider=${preflight.providerName}, stage=${preflight.failureStage ?? 'unknown'}, category=${preflight.failureCategory ?? 'unknown'}, ${preflight.latencyMs}ms): ${preflight.reason ?? 'unknown'}`
+    );
   }
 
   const { rows, failures } = await runExperimentProfiles(slug, rounds, [groupA, groupB], {

@@ -265,7 +265,9 @@ export async function cmdTrain(
     requireStructured: true,
   });
   if (!preflight.ok) {
-    throw new Error(`模型预检失败（耗时 ${preflight.latencyMs}ms）：${preflight.reason ?? 'unknown'}`);
+    throw new Error(
+      `模型预检失败（provider=${preflight.providerName}, stage=${preflight.failureStage ?? 'unknown'}, category=${preflight.failureCategory ?? 'unknown'}, 耗时 ${preflight.latencyMs}ms）：${preflight.reason ?? 'unknown'}`
+    );
   }
 
   persona.status = 'training';
@@ -427,7 +429,7 @@ async function runTrackWithRecovery(
         })
       );
       if (!recovered) break;
-      if (resolution.tag === 'parse_drift') {
+      if (resolution.tag === 'structured_output_failure') {
         process.env.NEEKO_RELAXED_SCHEMA_MODE = '1';
       }
       runtime.spin.message(`阶段失败(${resolution.tag})，执行恢复策略 ${resolution.recoveryAction}（${attempt}/${retryLimit + 1}）`);
@@ -794,9 +796,9 @@ function normalizeOptionalString(value?: string): string | undefined {
 }
 
 function retryLimitForTag(tag: string, configuredRetries: number): number {
-  if (tag === 'provider_timeout') return Math.min(configuredRetries, Math.max(0, PROVIDER_TIMEOUT_RETRY_MAX));
-  if (tag === 'parse_drift') return Math.min(configuredRetries, Math.max(0, PARSE_DRIFT_RETRY_MAX));
-  if (tag === 'schema_incompat') return 0;
+  if (tag === 'generation_timeout') return Math.min(configuredRetries, Math.max(0, PROVIDER_TIMEOUT_RETRY_MAX));
+  if (tag === 'structured_output_failure') return Math.min(configuredRetries, Math.max(0, PARSE_DRIFT_RETRY_MAX));
+  if (tag === 'capability_mismatch') return 0;
   return configuredRetries;
 }
 

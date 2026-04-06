@@ -63,6 +63,8 @@ export function InfoPanel({
     runContext && typeof runContext.prep_context === 'object' && runContext.prep_context
       ? runContext.prep_context as Record<string, unknown>
       : null;
+  const runDiagnostics = deriveRunDiagnostics(runReport);
+  const runSummary = deriveRunSummary(runReport?.report);
   const filteredCandidates = useMemo(() => {
     const base =
       candidateFilter === 'all'
@@ -403,14 +405,56 @@ export function InfoPanel({
             </button>
           ))}
           {runReport ? (
-            <article className="mini-card">
-              <strong>{runReport.run.type}</strong>
-              <p>{runReport.run.summary ?? runReport.run.status}</p>
-              {runReport.run.report_path ? <code>{runReport.run.report_path}</code> : null}
-              {runReport.context_path ? <code>{runReport.context_path}</code> : null}
+            <div className="training-card-stack">
+              <article className="mini-card training-overview-card">
+                <div className="list-card-top">
+                  <strong>{runReport.run.type}</strong>
+                  <span className={runReport.run.status === 'completed' ? 'badge success' : runReport.run.status === 'failed' ? 'badge warning' : 'badge'}>
+                    {runReport.run.status}
+                  </span>
+                </div>
+                <p>{runReport.run.summary ?? runReport.run.status}</p>
+                <div className="writeback-summary">
+                  {runDiagnostics.provider ? <span className="badge">{runDiagnostics.provider}</span> : null}
+                  {runDiagnostics.track ? <span className="badge">{runDiagnostics.track}</span> : null}
+                  {runDiagnostics.phase ? <span className="badge">{runDiagnostics.phase}</span> : null}
+                  {runDiagnostics.isSmoke ? <span className="badge success">smoke</span> : null}
+                </div>
+                <small>started: {new Date(runReport.run.started_at).toLocaleString()}</small>
+                {runReport.run.finished_at ? <small>finished: {new Date(runReport.run.finished_at).toLocaleString()}</small> : null}
+                {runReport.run.report_path ? <code>{runReport.run.report_path}</code> : null}
+                {runReport.context_path ? <code>{runReport.context_path}</code> : null}
+              </article>
+
+              {runDiagnostics.failureCategory ? (
+                <article className="mini-card training-diagnostic-card">
+                  <strong>Failure Diagnosis</strong>
+                  <p>{runDiagnostics.failureLabel}</p>
+                  <div className="writeback-summary">
+                    <span className="badge warning">{runDiagnostics.failureCategory}</span>
+                    {runDiagnostics.failureStage ? <span className="badge">{runDiagnostics.failureStage}</span> : null}
+                    <span className={runDiagnostics.retryable ? 'badge success' : 'badge'}>{runDiagnostics.retryable ? 'retryable' : 'manual review'}</span>
+                  </div>
+                </article>
+              ) : null}
+
+              {runSummary ? (
+                <article className="mini-card training-summary-card">
+                  <strong>Report Snapshot</strong>
+                  <div className="evidence-metric-grid">
+                    {runSummary.map((item) => (
+                      <div key={item.label} className="metric-group">
+                        <strong>{item.label}</strong>
+                        <span>{item.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ) : null}
+
               {prepContext ? (
-                <div className="inspector-section">
-                  <h3>Prep Context</h3>
+                <article className="mini-card training-prep-card">
+                  <strong>Prep Context</strong>
                   {typeof prepContext.prep_documents_path === 'string' ? <code>{prepContext.prep_documents_path}</code> : null}
                   {typeof prepContext.prep_evidence_path === 'string' ? <code>{prepContext.prep_evidence_path}</code> : null}
                   <div className="writeback-summary">
@@ -421,15 +465,117 @@ export function InfoPanel({
                       <span className="badge">{prepContext.evidence_import_id}</span>
                     ) : null}
                   </div>
-                </div>
+                </article>
               ) : null}
-              {runReport.report ? <pre>{JSON.stringify(runReport.report, null, 2).slice(0, 2400)}</pre> : null}
-              {runReport.context ? <pre>{JSON.stringify(runReport.context, null, 2).slice(0, 1600)}</pre> : null}
-              {runReport.log_tail ? <pre>{runReport.log_tail}</pre> : null}
-            </article>
+
+              {runReport.log_tail ? (
+                <article className="mini-card training-log-card">
+                  <strong>Log Tail</strong>
+                  <pre>{runReport.log_tail}</pre>
+                </article>
+              ) : null}
+            </div>
           ) : <div className="empty-state">No active run selected.</div>}
         </div>
       ) : null}
     </aside>
   );
+}
+
+function deriveRunDiagnostics(runReport: WorkbenchRunReport | null): {
+  provider?: string;
+  track?: string;
+  phase?: string;
+  isSmoke: boolean;
+  failureStage?: string;
+  failureCategory?: string;
+  failureLabel?: string;
+  retryable: boolean;
+} {
+  const logTail = runReport?.log_tail ?? '';
+  const context = runReport?.context && typeof runReport.context === 'object'
+    ? runReport.context as Record<string, unknown>
+    : null;
+  const command = runReport?.run.command ?? [];
+  const providerMatch = logTail.match(/\[model\]\s+使用\s+([^\n（(]+)/);
+  const provider = providerMatch?.[1]?.trim();
+  const track = typeof context?.track === 'string' ? context.track : undefined;
+  const phase = typeof context?.state === 'string' ? context.state : runReport?.run.status;
+  const isSmoke = command.includes('--track') && command.includes('persona_extract') && command.includes('--rounds') && command.includes('1') && (runReport?.run.summary?.includes('smoke') ?? false);
+
+  const failure = classifyCapabilityIssue([runReport?.run.summary, logTail].filter(Boolean).join('\n'));
+  return {
+    provider,
+    track,
+    phase,
+    isSmoke,
+    failureStage: failure?.stage,
+    failureCategory: failure?.category,
+    failureLabel: failure?.label,
+    retryable: failure?.retryable ?? false,
+  };
+}
+
+function classifyCapabilityIssue(message: string): {
+  stage?: string;
+  category: string;
+  label: string;
+  retryable: boolean;
+} | null {
+  const msg = message.toLowerCase();
+  if (!msg.trim()) return null;
+  if (msg.includes('structured_probe_failed') || msg.includes('schema') || msg.includes('json') || msg.includes('parse')) {
+    return {
+      stage: msg.includes('preflight') || msg.includes('structured_probe_failed') ? 'structured_probe' : 'runtime',
+      category: 'structured_output_failure',
+      label: 'Structured output failed or drifted from the expected schema.',
+      retryable: true,
+    };
+  }
+  if (msg.includes('timeout')) {
+    return {
+      stage: msg.includes('preflight') ? 'preflight' : 'runtime',
+      category: 'generation_timeout',
+      label: 'Model response exceeded the allowed generation time budget.',
+      retryable: true,
+    };
+  }
+  if (msg.includes('fetch') || msg.includes('network') || msg.includes('socket') || msg.includes('econn') || msg.includes('connection')) {
+    return {
+      stage: 'transport',
+      category: 'transport_error',
+      label: 'Transport or upstream connectivity failed before the model completed.',
+      retryable: true,
+    };
+  }
+  if (msg.includes('tool_choice') || msg.includes('not yet supported')) {
+    return {
+      stage: 'capability',
+      category: 'capability_mismatch',
+      label: 'The selected model/provider does not support the requested interaction pattern.',
+      retryable: false,
+    };
+  }
+  return null;
+}
+
+function deriveRunSummary(report: unknown): Array<{ label: string; value: string }> | null {
+  if (!report || typeof report !== 'object') return null;
+  const data = report as Record<string, unknown>;
+  const summary = data.summary && typeof data.summary === 'object' ? data.summary as Record<string, unknown> : null;
+  const totalRounds = typeof data.total_rounds === 'number' ? data.total_rounds : null;
+  if (!summary && totalRounds === null) return null;
+
+  const items: Array<{ label: string; value: string }> = [];
+  if (totalRounds !== null) items.push({ label: 'Rounds', value: String(totalRounds) });
+  if (typeof summary?.avg_quality_score === 'number') {
+    items.push({ label: 'Avg Quality', value: `${(summary.avg_quality_score * 100).toFixed(1)}%` });
+  }
+  if (typeof summary?.avg_contradiction_rate === 'number') {
+    items.push({ label: 'Contradiction', value: `${(summary.avg_contradiction_rate * 100).toFixed(1)}%` });
+  }
+  if (typeof summary?.avg_duplication_rate === 'number') {
+    items.push({ label: 'Duplication', value: `${(summary.avg_duplication_rate * 100).toFixed(1)}%` });
+  }
+  return items.length > 0 ? items : null;
 }

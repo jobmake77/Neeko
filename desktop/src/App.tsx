@@ -511,6 +511,16 @@ export default function App() {
     }
   }
 
+  async function handleCopyValue(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setNotice(`${label} copied to clipboard.`);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function handleImportEvidence(payload: {
     sourceKind: 'chat' | 'video';
     sourcePath: string;
@@ -545,6 +555,17 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setImportLoading(false);
+    }
+  }
+
+  async function handleExportTrainingPrep(prepId: string, format: 'markdown' | 'json') {
+    try {
+      const exported = await api.exportTrainingPrep(prepId, format);
+      await navigator.clipboard.writeText(exported.content);
+      setNotice(`${exported.filename} copied to clipboard.`);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -622,6 +643,8 @@ export default function App() {
         onUpdatePromotionHandoff={handleUpdatePromotionHandoff}
         onExportPromotionHandoff={handleExportPromotionHandoff}
         onCreateTrainingPrep={handleCreateTrainingPrep}
+        onExportTrainingPrep={handleExportTrainingPrep}
+        onCopyValue={handleCopyValue}
         runReport={runReport}
       />
     </div>

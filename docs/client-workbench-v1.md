@@ -153,6 +153,8 @@
 7. `POST /api/personas/:slug/evidence-imports`
 8. `GET /api/personas/:slug/training-preps`
 9. `POST /api/promotion-handoffs/:id/training-preps`
+10. `GET /api/training-preps/:id`
+11. `GET /api/training-preps/:id/export?format=markdown|json`
 
 ## 6. 当前新增工作流
 
@@ -182,6 +184,7 @@
 2. 生成 `documents.json`
 3. 生成 `evidence-index.jsonl`
 4. 继续和正式 `Soul / Memory` 隔离
+5. 可以导出为 `Markdown / JSON` 交接内容，供训练整理或人工审核使用
 
 ### 6.3 Chat UX 收尾
 

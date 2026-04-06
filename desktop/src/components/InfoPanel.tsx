@@ -21,6 +21,8 @@ interface InfoPanelProps {
   onUpdatePromotionHandoff: (handoffId: string, status: PromotionHandoff['status']) => Promise<void>;
   onExportPromotionHandoff: (handoffId: string, format: 'markdown' | 'json') => Promise<void>;
   onCreateTrainingPrep: (handoffId: string) => Promise<void>;
+  onExportTrainingPrep: (prepId: string, format: 'markdown' | 'json') => Promise<void>;
+  onCopyValue: (value: string, label: string) => Promise<void>;
   runReport: WorkbenchRunReport | null;
 }
 
@@ -41,17 +43,21 @@ export function InfoPanel({
   onUpdatePromotionHandoff,
   onExportPromotionHandoff,
   onCreateTrainingPrep,
+  onExportTrainingPrep,
+  onCopyValue,
   runReport,
 }: InfoPanelProps) {
   const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected' | 'ready_queue'>('all');
   const [candidateSort, setCandidateSort] = useState<'newest' | 'oldest' | 'confidence_desc' | 'confidence_asc'>('newest');
   const [selectedHandoffId, setSelectedHandoffId] = useState<string | null>(null);
+  const [selectedPrepId, setSelectedPrepId] = useState<string | null>(null);
   const latestAssistant = [...(bundle?.messages ?? [])].reverse().find((item) => item.role === 'assistant');
   const pendingCount = candidates.filter((item) => item.status === 'pending').length;
   const acceptedCount = candidates.filter((item) => item.status === 'accepted').length;
   const rejectedCount = candidates.filter((item) => item.status === 'rejected').length;
   const readyCount = candidates.filter((item) => item.promotion_state === 'ready').length;
   const selectedHandoff = promotionHandoffs.find((item) => item.id === selectedHandoffId) ?? promotionHandoffs[0] ?? null;
+  const selectedPrep = trainingPreps.find((item) => item.id === selectedPrepId) ?? trainingPreps[0] ?? null;
   const filteredCandidates = useMemo(() => {
     const base =
       candidateFilter === 'all'
@@ -321,14 +327,56 @@ export function InfoPanel({
           {trainingPreps.length > 0 ? (
             <div className="inspector-section">
               <h3>Training Prep</h3>
-              {trainingPreps.slice(0, 3).map((prep) => (
-                <article key={prep.id} className="mini-card">
+              {selectedPrep ? (
+                <article className="mini-card">
+                  <strong>Selected prep</strong>
+                  <p>{selectedPrep.summary}</p>
+                  <small>{new Date(selectedPrep.updated_at).toLocaleString()}</small>
+                  <div className="candidate-actions">
+                    <button
+                      type="button"
+                      className="action-button secondary"
+                      onClick={() => void onCopyValue(selectedPrep.documents_path, 'Documents path')}
+                    >
+                      Copy Docs Path
+                    </button>
+                    <button
+                      type="button"
+                      className="action-button secondary"
+                      onClick={() => void onCopyValue(selectedPrep.evidence_index_path, 'Evidence path')}
+                    >
+                      Copy Evidence Path
+                    </button>
+                    <button
+                      type="button"
+                      className="action-button secondary"
+                      onClick={() => void onExportTrainingPrep(selectedPrep.id, 'markdown')}
+                    >
+                      Copy Prep Markdown
+                    </button>
+                    <button
+                      type="button"
+                      className="action-button secondary"
+                      onClick={() => void onExportTrainingPrep(selectedPrep.id, 'json')}
+                    >
+                      Copy Prep JSON
+                    </button>
+                  </div>
+                  <code>{selectedPrep.documents_path}</code>
+                  <code>{selectedPrep.evidence_index_path}</code>
+                </article>
+              ) : null}
+              {trainingPreps.slice(0, 5).map((prep) => (
+                <button
+                  key={prep.id}
+                  type="button"
+                  className={selectedPrep?.id === prep.id ? 'mini-card active-card' : 'mini-card'}
+                  onClick={() => setSelectedPrepId(prep.id)}
+                >
                   <strong>{prep.status}</strong>
                   <p>{prep.summary}</p>
                   <small>{new Date(prep.updated_at).toLocaleString()}</small>
-                  <code>{prep.documents_path}</code>
-                  <code>{prep.evidence_index_path}</code>
-                </article>
+                </button>
               ))}
             </div>
           ) : null}

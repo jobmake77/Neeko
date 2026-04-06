@@ -283,6 +283,25 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const trainingPrepMatch = path.match(/^\/api\/training-preps\/([^/]+)$/);
+      if (req.method === 'GET' && trainingPrepMatch) {
+        const prep = service.getTrainingPrepArtifact(decodeURIComponent(trainingPrepMatch[1]));
+        if (!prep) {
+          writeJson(res, 404, { error: 'Training prep not found' });
+          return;
+        }
+        writeJson(res, 200, prep);
+        return;
+      }
+
+      const trainingPrepExportMatch = path.match(/^\/api\/training-preps\/([^/]+)\/export$/);
+      if (req.method === 'GET' && trainingPrepExportMatch) {
+        const requestedFormat = getString(url.searchParams.get('format'));
+        const format = requestedFormat === 'json' ? 'json' : 'markdown';
+        writeJson(res, 200, service.exportTrainingPrep(decodeURIComponent(trainingPrepExportMatch[1]), format));
+        return;
+      }
+
       if (req.method === 'POST' && path === '/api/runs/train') {
         const body = await readBody(req);
         const slug = getString(body.slug);

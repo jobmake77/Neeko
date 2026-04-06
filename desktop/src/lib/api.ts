@@ -7,6 +7,7 @@ import {
   PromotionHandoff,
   PromotionHandoffExport,
   TrainingPrepArtifact,
+  TrainingPrepExport,
   WorkbenchEvidenceImport,
   WorkbenchRun,
   WorkbenchRunReport,
@@ -121,6 +122,12 @@ export const api = {
     request<TrainingPrepArtifact>(`/api/promotion-handoffs/${encodeURIComponent(handoffId)}/training-preps`, {
       method: 'POST',
     }),
+  getTrainingPrep: (prepId: string) =>
+    request<TrainingPrepArtifact>(`/api/training-preps/${encodeURIComponent(prepId)}`),
+  exportTrainingPrep: (prepId: string, format: TrainingPrepExport['format']) =>
+    request<TrainingPrepExport>(
+      `/api/training-preps/${encodeURIComponent(prepId)}/export?format=${encodeURIComponent(format)}`
+    ),
   refreshConversationSummary: (id: string) =>
     request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/refresh-summary`, {
       method: 'POST',

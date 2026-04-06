@@ -172,6 +172,13 @@ export interface TrainingPrepArtifact {
   updated_at: string;
 }
 
+export interface TrainingPrepExport {
+  prep: TrainingPrepArtifact;
+  format: 'markdown' | 'json';
+  filename: string;
+  content: string;
+}
+
 export interface WorkbenchRun {
   id: string;
   type: 'create' | 'train' | 'experiment' | 'export';

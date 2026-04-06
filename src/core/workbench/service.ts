@@ -112,6 +112,13 @@ export interface PromotionHandoffExport {
   content: string;
 }
 
+export interface TrainingPrepExport {
+  prep: TrainingPrepArtifact;
+  format: 'markdown' | 'json';
+  filename: string;
+  content: string;
+}
+
 function readJsonFile<T>(path: string, fallback: T): T {
   if (!existsSync(path)) return fallback;
   try {
@@ -222,6 +229,29 @@ function buildTrainingPrepSummary(handoff: PromotionHandoff, docs: RawDocument[]
     `${docs.length} training documents`,
     handoff.summary,
   ].join(' · ');
+}
+
+function renderTrainingPrepMarkdown(prep: TrainingPrepArtifact): string {
+  return [
+    '# Training Prep Artifact',
+    '',
+    `- Persona: ${prep.persona_slug}`,
+    `- Conversation: ${prep.conversation_id ?? 'n/a'}`,
+    `- Handoff: ${prep.handoff_id}`,
+    `- Status: ${prep.status}`,
+    `- Items: ${prep.item_count}`,
+    `- Created: ${prep.created_at}`,
+    `- Updated: ${prep.updated_at}`,
+    '',
+    '## Summary',
+    '',
+    prep.summary,
+    '',
+    '## Paths',
+    '',
+    `- documents_path: ${prep.documents_path}`,
+    `- evidence_index_path: ${prep.evidence_index_path}`,
+  ].join('\n');
 }
 
 function createTranscriptDoc(
@@ -508,6 +538,10 @@ export class WorkbenchService {
     return this.store.listTrainingPrepArtifacts(personaSlug, conversationId);
   }
 
+  getTrainingPrepArtifact(prepId: string): TrainingPrepArtifact | null {
+    return this.store.getTrainingPrepArtifact(prepId);
+  }
+
   getPromotionHandoff(handoffId: string): PromotionHandoff | null {
     return this.store.getPromotionHandoff(handoffId);
   }
@@ -723,6 +757,28 @@ export class WorkbenchService {
       created_at: now,
       updated_at: now,
     });
+  }
+
+  exportTrainingPrep(prepId: string, format: 'markdown' | 'json' = 'markdown'): TrainingPrepExport {
+    const prep = this.store.getTrainingPrepArtifact(prepId);
+    if (!prep) {
+      throw new Error(`Training prep "${prepId}" not found.`);
+    }
+    const filenameBase = `${slugifySegment(prep.persona_slug)}-${prep.id}`;
+    if (format === 'json') {
+      return {
+        prep,
+        format,
+        filename: `${filenameBase}.json`,
+        content: JSON.stringify(prep, null, 2),
+      };
+    }
+    return {
+      prep,
+      format: 'markdown',
+      filename: `${filenameBase}.md`,
+      content: renderTrainingPrepMarkdown(prep),
+    };
   }
 
   createPersona(input: WorkbenchCreateInput): WorkbenchRun {

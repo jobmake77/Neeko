@@ -900,7 +900,6 @@ export class WorkbenchService {
     let report: unknown;
     let context: unknown;
     let contextPath: string | undefined;
-    const logTail = this.readLogTail(run.log_path);
     if (run.report_path && existsSync(run.report_path)) {
       if (run.report_path.endsWith('.json')) {
         report = readJsonFile(run.report_path, null);
@@ -916,7 +915,7 @@ export class WorkbenchService {
         contextPath = undefined;
       }
     }
-    return { run, report, context, context_path: contextPath, log_tail: logTail };
+    return { run, report, context, context_path: contextPath };
   }
 
   private readPersonaSummary(slug: string): PersonaSummary | null {

@@ -200,5 +200,4 @@ export interface WorkbenchRunReport {
   report?: unknown;
   context?: unknown;
   context_path?: string;
-  log_tail?: string;
 }

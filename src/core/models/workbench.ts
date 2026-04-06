@@ -146,7 +146,6 @@ export const WorkbenchRunReportSchema = z.object({
   report: z.unknown().optional(),
   context: z.unknown().optional(),
   context_path: z.string().optional(),
-  log_tail: z.string().optional(),
 });
 export type WorkbenchRunReport = z.infer<typeof WorkbenchRunReportSchema>;
 

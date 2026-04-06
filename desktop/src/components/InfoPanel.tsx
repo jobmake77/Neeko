@@ -424,8 +424,10 @@ export function InfoPanel({
                 </div>
                 <small>started: {new Date(runReport.run.started_at).toLocaleString()}</small>
                 {runReport.run.finished_at ? <small>finished: {new Date(runReport.run.finished_at).toLocaleString()}</small> : null}
-                {runReport.run.report_path ? <code>{runReport.run.report_path}</code> : null}
-                {runReport.context_path ? <code>{runReport.context_path}</code> : null}
+                <div className="writeback-summary">
+                  {runReport.run.report_path ? <span className="badge success">report ready</span> : null}
+                  {runReport.context_path ? <span className="badge">training context ready</span> : null}
+                </div>
               </article>
 
               {runPresentation.secondaryMessage ? (

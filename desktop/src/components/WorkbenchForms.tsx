@@ -104,6 +104,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   }, [activeView]);
   const latestTrainingPrep = trainingPreps[0] ?? null;
   const latestEvidenceImport = evidenceImports[0] ?? null;
+  const currentRunPresentation = currentRun ? deriveWorkbenchRunPresentation(currentRun) : null;
 
   const buildTrainingPayload = (smoke = false) => {
     if (!selectedPersona) return null;
@@ -604,11 +605,11 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       {currentRun ? (
         <div className="run-card">
           <strong>{currentRun.type}</strong>
-          <p>{currentRun.summary ?? currentRun.status}</p>
+          <p>{currentRunPresentation?.primaryMessage ?? currentRun.summary ?? currentRun.status}</p>
           <small>
-            {currentRun.status} · {new Date(currentRun.started_at).toLocaleString()}
+            {(currentRunPresentation?.statusLabel ?? currentRun.status)} · {new Date(currentRun.started_at).toLocaleString()}
           </small>
-          {currentRun.report_path ? <code>{currentRun.report_path}</code> : null}
+          {currentRunPresentation?.secondaryMessage ? <small>{currentRunPresentation.secondaryMessage}</small> : null}
         </div>
       ) : null}
       {recentRuns.length > 0 ? (
@@ -625,7 +626,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
               onClick={() => void onSelectRun(run)}
             >
               <span>{run.type}</span>
-              <span>{run.status}</span>
+              <span>{deriveWorkbenchRunPresentation(run).statusLabel}</span>
             </button>
           ))}
         </div>
@@ -749,4 +750,44 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       ) : null}
     </section>
   );
+}
+
+function deriveWorkbenchRunPresentation(run: WorkbenchRun): {
+  statusLabel: string;
+  primaryMessage: string;
+  secondaryMessage?: string;
+} {
+  const recoveryState = run.recovery_state ?? 'idle';
+  const attempts = run.attempt_count ?? 1;
+
+  if (recoveryState === 'recovering') {
+    return {
+      statusLabel: 'recovering',
+      primaryMessage: 'The system is retrying this run automatically.',
+      secondaryMessage: attempts > 1
+        ? `Saved progress is being reused. Recovery attempt ${attempts} is in progress.`
+        : 'Saved progress will be reused when available.',
+    };
+  }
+
+  if (run.status === 'failed') {
+    return {
+      statusLabel: 'paused',
+      primaryMessage: 'This run is paused for now.',
+      secondaryMessage: 'Progress has been saved safely for a later retry.',
+    };
+  }
+
+  if (run.status === 'completed' && attempts > 1) {
+    return {
+      statusLabel: 'completed',
+      primaryMessage: 'This run completed after automatic recovery.',
+      secondaryMessage: 'A temporary issue was handled internally during the run.',
+    };
+  }
+
+  return {
+    statusLabel: run.status,
+    primaryMessage: run.summary ?? run.status,
+  };
 }

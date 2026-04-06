@@ -4,6 +4,7 @@
 
 关联文档：
 
+- [客户端工作台 V1](/Users/a77/Desktop/Neeko/docs/client-workbench-v1.md)
 - [培养阶段 V1 阶段总结](/Users/a77/Desktop/Neeko/docs/training-phase-summary-v1.md)
 - [Neeko 系统 V1 正式定义](/Users/a77/Desktop/Neeko/docs/system-v1.md)
 - [架构设计](/Users/a77/Desktop/Neeko/docs/architecture.md)

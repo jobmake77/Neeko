@@ -11,6 +11,7 @@ import { cmdAbRegression } from './commands/ab-regression.js';
 import { cmdTrain } from './commands/train.js';
 import { cmdSkillsRefresh } from './commands/skills-refresh.js';
 import { cmdDualPipeline } from './commands/dual-pipeline.js';
+import { cmdWorkbenchServer } from './commands/workbench-server.js';
 
 // Apply saved API keys to environment on startup
 const cfg = settings.getAll();
@@ -232,6 +233,14 @@ program
     gate?: boolean;
   }) => {
     await cmdDualPipeline(options);
+  });
+
+program
+  .command('workbench-server')
+  .description('Start the local structured API server for the desktop workbench')
+  .option('--port <n>', 'Port for the local server', '4310')
+  .action(async (options: { port?: string }) => {
+    await cmdWorkbenchServer(options, process.argv[1]);
   });
 
 program.parseAsync(process.argv)

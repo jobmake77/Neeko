@@ -1,11 +1,14 @@
 # Dependencies
 node_modules/
 web/node_modules/
+desktop/node_modules/
 
 # Build output
 dist/
 web/.next/
 web/out/
+desktop/dist/
+desktop/src-tauri/target/
 
 # Logs
 *.log

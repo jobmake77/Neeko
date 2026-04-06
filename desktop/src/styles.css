@@ -1,0 +1,394 @@
+:root {
+  color-scheme: light;
+  font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(243, 163, 90, 0.22), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(44, 92, 165, 0.16), transparent 26%),
+    #f5efe3;
+  color: #1f2430;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: transparent;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 110px 280px 300px minmax(560px, 1fr) 360px;
+  gap: 14px;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.panel {
+  background: rgba(255, 252, 247, 0.82);
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  border-radius: 24px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 16px 30px rgba(28, 36, 52, 0.08);
+}
+
+.column,
+.nav-rail,
+.info-panel,
+.workspace {
+  min-height: calc(100vh - 32px);
+}
+
+.nav-rail {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 22px 14px;
+}
+
+.nav-rail h1,
+.panel-header h2,
+.workspace-header h2 {
+  margin: 6px 0 0;
+  font-family: "IBM Plex Serif", Georgia, serif;
+  font-size: 1.2rem;
+}
+
+.eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.72rem;
+  color: #6d6a64;
+}
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nav-item,
+.tab-button,
+.action-button,
+.primary-button {
+  border: none;
+  border-radius: 16px;
+  transition: transform 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.nav-item {
+  padding: 12px 10px;
+  background: transparent;
+  color: #4a4f59;
+  text-align: left;
+}
+
+.nav-item.active,
+.tab-button.active {
+  background: #1f2430;
+  color: #fff8ef;
+}
+
+.panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 22px 22px 14px;
+}
+
+.persona-column,
+.thread-column,
+.info-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.persona-list,
+.thread-list,
+.inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 14px 14px;
+  overflow: auto;
+}
+
+.list-card,
+.mini-card,
+.run-card {
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 14px;
+  text-align: left;
+}
+
+.list-card.active {
+  border-color: rgba(32, 82, 156, 0.5);
+  background: rgba(234, 243, 255, 0.82);
+}
+
+.list-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.list-card p,
+.mini-card p,
+.run-card p {
+  margin: 8px 0;
+  line-height: 1.45;
+}
+
+.badge,
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(31, 36, 48, 0.08);
+  font-size: 0.78rem;
+}
+
+.badge.success,
+.status-converged {
+  background: rgba(42, 133, 85, 0.16);
+}
+
+.badge.warning,
+.status-training,
+.status-recovering,
+.status-stalled {
+  background: rgba(240, 167, 63, 0.2);
+}
+
+.workspace-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace-header {
+  padding-bottom: 10px;
+}
+
+.chat-scroll {
+  flex: 1;
+  padding: 0 22px 22px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.message-bubble {
+  max-width: 84%;
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: #fffdf8;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+}
+
+.message-bubble.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #dfeeff, #f8fbff);
+}
+
+.message-bubble.assistant {
+  align-self: flex-start;
+  background: linear-gradient(135deg, #fff7ef, #fffdf8);
+}
+
+.message-bubble header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+}
+
+.message-bubble p,
+.message-bubble footer {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.message-bubble footer {
+  margin-top: 10px;
+  color: #6d6a64;
+  font-size: 0.85rem;
+}
+
+.composer {
+  border-top: 1px solid rgba(31, 36, 48, 0.08);
+  padding: 18px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+textarea,
+input,
+select {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 36, 48, 0.14);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 12px 14px;
+  outline: none;
+}
+
+textarea:focus,
+input:focus,
+select:focus {
+  border-color: rgba(32, 82, 156, 0.6);
+  box-shadow: 0 0 0 4px rgba(32, 82, 156, 0.08);
+}
+
+.primary-button,
+.action-button {
+  background: #1f2430;
+  color: #fff8ef;
+  padding: 12px 16px;
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.form-panel {
+  padding-bottom: 24px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 0 22px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field span,
+.helper-text,
+.empty-state,
+small,
+code,
+pre {
+  color: #5d626e;
+}
+
+.run-card,
+.error-banner {
+  margin: 18px 22px 0;
+}
+
+.error-banner {
+  border-radius: 18px;
+  border: 1px solid rgba(179, 67, 67, 0.18);
+  background: rgba(255, 231, 231, 0.86);
+  padding: 14px 16px;
+}
+
+.info-panel {
+  padding-bottom: 14px;
+}
+
+.tab-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 14px 14px;
+  flex-wrap: wrap;
+}
+
+.tab-button {
+  background: rgba(31, 36, 48, 0.06);
+  color: #4a4f59;
+  padding: 10px 12px;
+}
+
+.mini-card pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.empty-state {
+  padding: 18px;
+  border: 1px dashed rgba(31, 36, 48, 0.14);
+  border-radius: 18px;
+  text-align: center;
+}
+
+.empty-state.large {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+}
+
+@media (max-width: 1600px) {
+  .app-shell {
+    grid-template-columns: 96px 240px 260px minmax(420px, 1fr) 320px;
+  }
+}
+
+@media (max-width: 1280px) {
+  .app-shell {
+    grid-template-columns: 96px 220px 240px minmax(320px, 1fr);
+  }
+
+  .info-panel {
+    display: none;
+  }
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .nav-rail,
+  .persona-column,
+  .thread-column,
+  .workspace {
+    min-height: auto;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}

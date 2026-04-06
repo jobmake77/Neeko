@@ -54,5 +54,14 @@ export async function cmdChatOnce(
     reply: result.text,
     triggered_skills: result.triggeredSkills,
     normalized_query: result.normalizedQuery,
+    retrieved_memory_ids: result.retrievedMemories.map((item) => item.id),
+    persona_dimensions: result.personaDimensions,
+    citation_items: result.retrievedMemories.map((item) => ({
+      id: item.id,
+      summary: item.summary,
+      category: item.category,
+      soul_dimension: item.soul_dimension,
+      confidence: item.confidence,
+    })),
   }));
 }

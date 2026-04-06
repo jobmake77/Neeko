@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Neeko Workbench",
+  "version": "0.1.0",
+  "identifier": "com.neeko.workbench",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Neeko Workbench",
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 1200,
+        "minHeight": 760,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

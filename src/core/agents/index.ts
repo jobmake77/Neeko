@@ -141,7 +141,13 @@ export class PersonaAgent {
       memoryLimit?: number;
       memoryMaxChars?: number;
     } = {}
-  ): Promise<{ text: string; triggeredSkills: TriggeredSkillMatch[]; normalizedQuery: string }> {
+  ): Promise<{
+    text: string;
+    triggeredSkills: TriggeredSkillMatch[];
+    normalizedQuery: string;
+    retrievedMemories: MemoryNode[];
+    personaDimensions: string[];
+  }> {
     const skillSelection = selectTriggeredSkillsForQuery(this.skillLibrary, userMessage, 2);
     const query = skillSelection.cleanQuery;
 
@@ -178,6 +184,8 @@ export class PersonaAgent {
         text,
         triggeredSkills: skillSelection.triggered,
         normalizedQuery: query,
+        retrievedMemories: memories,
+        personaDimensions: Array.from(new Set(memories.map((item) => item.soul_dimension))),
       };
     } catch (error) {
       runtimeFallbackMetrics.personaFallbacks++;
@@ -186,6 +194,8 @@ export class PersonaAgent {
         text: this.fallbackResponse(query, memories),
         triggeredSkills: skillSelection.triggered,
         normalizedQuery: query,
+        retrievedMemories: memories,
+        personaDimensions: Array.from(new Set(memories.map((item) => item.soul_dimension))),
       };
     }
   }

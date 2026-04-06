@@ -11,6 +11,7 @@ interface ChatWorkspaceProps {
   onSend: (message: string) => Promise<void>;
   onCopyMessage: (content: string) => Promise<void>;
   onCopyValue: (value: string, label: string) => Promise<void>;
+  onUseEvidenceImport: (item: WorkbenchEvidenceImport) => void;
   onImportEvidence: (payload: {
     sourceKind: 'chat' | 'video';
     sourcePath: string;
@@ -29,6 +30,7 @@ export function ChatWorkspace({
   onSend,
   onCopyMessage,
   onCopyValue,
+  onUseEvidenceImport,
   onImportEvidence,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('');
@@ -194,6 +196,13 @@ export function ChatWorkspace({
                 <code>{selectedEvidenceImport.artifacts.documents_path}</code>
                 <code>{selectedEvidenceImport.artifacts.evidence_index_path}</code>
                 <div className="message-actions">
+                  <button
+                    type="button"
+                    className="action-button"
+                    onClick={() => onUseEvidenceImport(selectedEvidenceImport)}
+                  >
+                    Use For Training
+                  </button>
                   <button
                     type="button"
                     className="action-button secondary"

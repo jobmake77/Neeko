@@ -614,6 +614,20 @@ export default function App() {
     }
   }
 
+  function handleUseEvidenceImport(item: WorkbenchEvidenceImport) {
+    setFormDefaults((current) => ({
+      ...current,
+      trainPrepDocumentsPath: item.artifacts.documents_path,
+      trainPrepEvidencePath: item.artifacts.evidence_index_path,
+      trainPrepArtifactId: '',
+      trainEvidenceImportId: item.id,
+    }));
+    setActiveView('Train');
+    setActiveTab('Training');
+    setNotice('Evidence intake has been attached to the train form.');
+    setError(null);
+  }
+
   async function handleExportTrainingPrep(prepId: string, format: 'markdown' | 'json') {
     try {
       const exported = await api.exportTrainingPrep(prepId, format);
@@ -660,6 +674,7 @@ export default function App() {
             onSend={handleSendMessage}
             onCopyMessage={handleCopyMessage}
             onCopyValue={handleCopyValue}
+            onUseEvidenceImport={handleUseEvidenceImport}
             onImportEvidence={handleImportEvidence}
           />
         ) : (

@@ -195,6 +195,7 @@
 3. notice 提示
 4. 聊天页内直接做 Evidence Intake
 5. 导入结果快速回看
+6. Train 面板直接展示最近的 `training prep / evidence intake` 资产路径，便于继续进入训练整理流
 
 ## 7. 下一步
 

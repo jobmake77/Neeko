@@ -611,11 +611,14 @@ export default function App() {
             selectedPersona={selectedPersonaSummary}
             currentRun={currentRun}
             recentRuns={recentRuns}
+            trainingPreps={trainingPreps}
+            evidenceImports={evidenceImports}
             onCreatePersona={(payload) => launchRun(api.createPersona(payload))}
             onStartTraining={(payload) => launchRun(api.startTraining(payload))}
             onStartExperiment={(payload) => launchRun(api.startExperiment(payload))}
             onExportPersona={(payload) => launchRun(api.exportPersona(payload))}
             onSelectRun={handleSelectRun}
+            onCopyValue={handleCopyValue}
             apiBaseUrl={apiBaseUrl}
             onApiBaseUrlChange={handleApiBaseUrlChange}
             onRefreshHealth={refreshHealth}

@@ -1,16 +1,19 @@
 import { FormEvent, useMemo, useState } from 'react';
-import { NavView, PersonaSummary, WorkbenchRun } from '../lib/types';
+import { NavView, PersonaSummary, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchRun } from '../lib/types';
 
 interface WorkbenchFormsProps {
   activeView: Exclude<NavView, 'Chat'>;
   selectedPersona: PersonaSummary | null;
   currentRun: WorkbenchRun | null;
   recentRuns: WorkbenchRun[];
+  trainingPreps: TrainingPrepArtifact[];
+  evidenceImports: WorkbenchEvidenceImport[];
   onCreatePersona: (payload: Record<string, unknown>) => Promise<void>;
   onStartTraining: (payload: Record<string, unknown>) => Promise<void>;
   onStartExperiment: (payload: Record<string, unknown>) => Promise<void>;
   onExportPersona: (payload: Record<string, unknown>) => Promise<void>;
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
+  onCopyValue: (value: string, label: string) => Promise<void>;
   apiBaseUrl: string;
   onApiBaseUrlChange: (value: string) => void;
   onRefreshHealth: () => Promise<void>;
@@ -47,11 +50,14 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     selectedPersona,
     currentRun,
     recentRuns,
+    trainingPreps,
+    evidenceImports,
     onCreatePersona,
     onStartTraining,
     onStartExperiment,
     onExportPersona,
     onSelectRun,
+    onCopyValue,
     apiBaseUrl,
     onApiBaseUrlChange,
     onRefreshHealth,
@@ -88,6 +94,8 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     if (activeView === 'Export') return 'Export Persona';
     return 'Settings';
   }, [activeView]);
+  const latestTrainingPrep = trainingPreps[0] ?? null;
+  const latestEvidenceImport = evidenceImports[0] ?? null;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -533,6 +541,64 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
               <span>{run.status}</span>
             </button>
           ))}
+        </div>
+      ) : null}
+      {activeView === 'Train' && (latestTrainingPrep || latestEvidenceImport) ? (
+        <div className="run-history">
+          <div className="run-history-header">
+            <strong>Preparation Assets</strong>
+            <small>{selectedPersona ? selectedPersona.slug : 'persona required'}</small>
+          </div>
+          {latestTrainingPrep ? (
+            <article className="settings-card">
+              <strong>Latest Training Prep</strong>
+              <p>{latestTrainingPrep.summary}</p>
+              <small>{new Date(latestTrainingPrep.updated_at).toLocaleString()}</small>
+              <code>{latestTrainingPrep.documents_path}</code>
+              <code>{latestTrainingPrep.evidence_index_path}</code>
+              <div className="settings-actions">
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(latestTrainingPrep.documents_path, 'Training prep documents path')}
+                >
+                  Copy Docs Path
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(latestTrainingPrep.evidence_index_path, 'Training prep evidence path')}
+                >
+                  Copy Evidence Path
+                </button>
+              </div>
+            </article>
+          ) : null}
+          {latestEvidenceImport ? (
+            <article className="settings-card">
+              <strong>Latest Evidence Intake</strong>
+              <p>{latestEvidenceImport.summary}</p>
+              <small>{new Date(latestEvidenceImport.updated_at).toLocaleString()}</small>
+              <code>{latestEvidenceImport.artifacts.documents_path}</code>
+              <code>{latestEvidenceImport.artifacts.evidence_index_path}</code>
+              <div className="settings-actions">
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(latestEvidenceImport.artifacts.documents_path, 'Evidence import documents path')}
+                >
+                  Copy Docs Path
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(latestEvidenceImport.artifacts.evidence_index_path, 'Evidence import evidence path')}
+                >
+                  Copy Evidence Path
+                </button>
+              </div>
+            </article>
+          ) : null}
         </div>
       ) : null}
     </section>

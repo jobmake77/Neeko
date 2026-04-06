@@ -440,6 +440,16 @@ export default function App() {
     }
   }
 
+  async function handleExportPromotionHandoff(handoffId: string, format: 'markdown' | 'json') {
+    try {
+      const exported = await api.exportPromotionHandoff(handoffId, format);
+      await navigator.clipboard.writeText(exported.content);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function handleApiBaseUrlChange(value: string) {
     setApiBaseUrlState(value);
     setApiBaseUrl(value);
@@ -501,6 +511,7 @@ export default function App() {
         onSetCandidatePromotionState={handleCandidatePromotionState}
         onCreatePromotionHandoff={handleCreatePromotionHandoff}
         onUpdatePromotionHandoff={handleUpdatePromotionHandoff}
+        onExportPromotionHandoff={handleExportPromotionHandoff}
         runReport={runReport}
       />
     </div>

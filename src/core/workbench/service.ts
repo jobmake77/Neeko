@@ -83,6 +83,13 @@ export interface PersonaResponseMeta {
   personaDimensions: string[];
 }
 
+export interface PromotionHandoffExport {
+  handoff: PromotionHandoff;
+  format: 'markdown' | 'json';
+  filename: string;
+  content: string;
+}
+
 function readJsonFile<T>(path: string, fallback: T): T {
   if (!existsSync(path)) return fallback;
   try {
@@ -137,6 +144,44 @@ function buildPromotionHandoffSummary(candidates: MemoryCandidate[]): string {
       ? `${Math.round((candidates.reduce((sum, item) => sum + item.confidence, 0) / candidates.length) * 100)}% avg confidence`
       : 'no confidence';
   return `${candidates.length} promotion-ready candidates${typeSummary ? ` · ${typeSummary}` : ''} · ${confidence}`;
+}
+
+function slugifySegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'handoff';
+}
+
+function renderPromotionHandoffMarkdown(handoff: PromotionHandoff): string {
+  const lines = [
+    `# Promotion Handoff`,
+    '',
+    `- Persona: ${handoff.persona_slug}`,
+    `- Conversation: ${handoff.conversation_id}`,
+    `- Status: ${handoff.status}`,
+    `- Created: ${handoff.created_at}`,
+    `- Updated: ${handoff.updated_at}`,
+    `- Candidate count: ${handoff.items.length}`,
+    '',
+    `## Summary`,
+    '',
+    handoff.summary,
+  ];
+  if (handoff.session_summary) {
+    lines.push('', '## Session Summary', '', handoff.session_summary);
+  }
+  lines.push('', '## Candidates', '');
+  handoff.items.forEach((item, index) => {
+    lines.push(`${index + 1}. [${item.candidate_type}] (${Math.round(item.confidence * 100)}%) ${item.content}`);
+    if (item.source_message_ids.length > 0) {
+      lines.push(`   - source_message_ids: ${item.source_message_ids.join(', ')}`);
+    }
+    lines.push(`   - candidate_id: ${item.candidate_id}`);
+    lines.push(`   - created_at: ${item.created_at}`);
+  });
+  return lines.join('\n');
 }
 
 export class WorkbenchService {
@@ -313,6 +358,10 @@ export class WorkbenchService {
     return this.store.listPromotionHandoffs(personaSlug, conversationId);
   }
 
+  getPromotionHandoff(handoffId: string): PromotionHandoff | null {
+    return this.store.getPromotionHandoff(handoffId);
+  }
+
   reviewMemoryCandidate(
     conversationId: string,
     candidateId: string,
@@ -401,6 +450,28 @@ export class WorkbenchService {
       status,
       updated_at: new Date().toISOString(),
     });
+  }
+
+  exportPromotionHandoff(handoffId: string, format: 'markdown' | 'json' = 'markdown'): PromotionHandoffExport {
+    const handoff = this.store.getPromotionHandoff(handoffId);
+    if (!handoff) {
+      throw new Error(`Promotion handoff "${handoffId}" not found.`);
+    }
+    const filenameBase = `${slugifySegment(handoff.persona_slug)}-${handoff.id}`;
+    if (format === 'json') {
+      return {
+        handoff,
+        format,
+        filename: `${filenameBase}.json`,
+        content: JSON.stringify(handoff, null, 2),
+      };
+    }
+    return {
+      handoff,
+      format: 'markdown',
+      filename: `${filenameBase}.md`,
+      content: renderPromotionHandoffMarkdown(handoff),
+    };
   }
 
   createPersona(input: WorkbenchCreateInput): WorkbenchRun {

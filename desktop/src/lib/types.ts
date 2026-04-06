@@ -112,6 +112,13 @@ export interface PromotionHandoff {
   updated_at: string;
 }
 
+export interface PromotionHandoffExport {
+  handoff: PromotionHandoff;
+  format: 'markdown' | 'json';
+  filename: string;
+  content: string;
+}
+
 export interface WorkbenchRun {
   id: string;
   type: 'create' | 'train' | 'experiment' | 'export';

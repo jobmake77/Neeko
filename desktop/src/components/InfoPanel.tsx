@@ -18,6 +18,7 @@ interface InfoPanelProps {
   onSetCandidatePromotionState: (candidateId: string, promotionState: MemoryCandidate['promotion_state']) => Promise<void>;
   onCreatePromotionHandoff: () => Promise<void>;
   onUpdatePromotionHandoff: (handoffId: string, status: PromotionHandoff['status']) => Promise<void>;
+  onExportPromotionHandoff: (handoffId: string, format: 'markdown' | 'json') => Promise<void>;
   runReport: WorkbenchRunReport | null;
 }
 
@@ -35,16 +36,18 @@ export function InfoPanel({
   onSetCandidatePromotionState,
   onCreatePromotionHandoff,
   onUpdatePromotionHandoff,
+  onExportPromotionHandoff,
   runReport,
 }: InfoPanelProps) {
   const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected' | 'ready_queue'>('all');
   const [candidateSort, setCandidateSort] = useState<'newest' | 'oldest' | 'confidence_desc' | 'confidence_asc'>('newest');
+  const [selectedHandoffId, setSelectedHandoffId] = useState<string | null>(null);
   const latestAssistant = [...(bundle?.messages ?? [])].reverse().find((item) => item.role === 'assistant');
   const pendingCount = candidates.filter((item) => item.status === 'pending').length;
   const acceptedCount = candidates.filter((item) => item.status === 'accepted').length;
   const rejectedCount = candidates.filter((item) => item.status === 'rejected').length;
   const readyCount = candidates.filter((item) => item.promotion_state === 'ready').length;
-  const latestHandoff = promotionHandoffs[0] ?? null;
+  const selectedHandoff = promotionHandoffs.find((item) => item.id === selectedHandoffId) ?? promotionHandoffs[0] ?? null;
   const filteredCandidates = useMemo(() => {
     const base =
       candidateFilter === 'all'
@@ -139,39 +142,73 @@ export function InfoPanel({
               Create Handoff
             </button>
           </div>
-          {latestHandoff ? (
+          {selectedHandoff ? (
             <article className="mini-card">
-              <strong>Latest handoff</strong>
-              <p>{latestHandoff.summary}</p>
+              <strong>Selected handoff</strong>
+              <p>{selectedHandoff.summary}</p>
               <small>
-                {latestHandoff.status} · {new Date(latestHandoff.updated_at).toLocaleString()}
+                {selectedHandoff.status} · {new Date(selectedHandoff.updated_at).toLocaleString()}
               </small>
-              {latestHandoff.session_summary ? <p>{latestHandoff.session_summary}</p> : null}
+              {selectedHandoff.session_summary ? <p>{selectedHandoff.session_summary}</p> : null}
+              <div className="handoff-meta-grid">
+                <span className="badge">{selectedHandoff.items.length} items</span>
+                <span className="badge">{selectedHandoff.candidate_ids.length} ids</span>
+                <span className="badge">{selectedHandoff.persona_slug}</span>
+              </div>
               <div className="candidate-actions">
                 <button
                   type="button"
                   className="action-button secondary"
-                  disabled={latestHandoff.status === 'queued'}
-                  onClick={() => void onUpdatePromotionHandoff(latestHandoff.id, 'queued')}
+                  disabled={selectedHandoff.status === 'queued'}
+                  onClick={() => void onUpdatePromotionHandoff(selectedHandoff.id, 'queued')}
                 >
                   Mark Queued
                 </button>
                 <button
                   type="button"
                   className="action-button secondary"
-                  disabled={latestHandoff.status === 'drafted'}
-                  onClick={() => void onUpdatePromotionHandoff(latestHandoff.id, 'drafted')}
+                  disabled={selectedHandoff.status === 'drafted'}
+                  onClick={() => void onUpdatePromotionHandoff(selectedHandoff.id, 'drafted')}
                 >
                   Reopen
                 </button>
                 <button
                   type="button"
                   className="action-button danger"
-                  disabled={latestHandoff.status === 'archived'}
-                  onClick={() => void onUpdatePromotionHandoff(latestHandoff.id, 'archived')}
+                  disabled={selectedHandoff.status === 'archived'}
+                  onClick={() => void onUpdatePromotionHandoff(selectedHandoff.id, 'archived')}
                 >
                   Archive
                 </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onExportPromotionHandoff(selectedHandoff.id, 'markdown')}
+                >
+                  Copy Markdown
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onExportPromotionHandoff(selectedHandoff.id, 'json')}
+                >
+                  Copy JSON
+                </button>
+              </div>
+              <div className="handoff-item-list">
+                {selectedHandoff.items.map((item) => (
+                  <article key={item.candidate_id} className="mini-card handoff-item-card">
+                    <div className="list-card-top">
+                      <strong>{item.candidate_type}</strong>
+                      <span className="badge">{Math.round(item.confidence * 100)}%</span>
+                    </div>
+                    <p>{item.content}</p>
+                    <small>{item.candidate_id}</small>
+                    {item.source_message_ids.length > 0 ? (
+                      <small>sources: {item.source_message_ids.join(', ')}</small>
+                    ) : null}
+                  </article>
+                ))}
               </div>
             </article>
           ) : (
@@ -256,12 +293,17 @@ export function InfoPanel({
           {promotionHandoffs.length > 1 ? (
             <div className="inspector-section">
               <h3>Handoff history</h3>
-              {promotionHandoffs.slice(0, 3).map((handoff) => (
-                <article key={handoff.id} className="mini-card">
+              {promotionHandoffs.slice(0, 6).map((handoff) => (
+                <button
+                  key={handoff.id}
+                  type="button"
+                  className={selectedHandoff?.id === handoff.id ? 'mini-card active-card' : 'mini-card'}
+                  onClick={() => setSelectedHandoffId(handoff.id)}
+                >
                   <strong>{handoff.status}</strong>
                   <p>{handoff.summary}</p>
                   <small>{new Date(handoff.updated_at).toLocaleString()}</small>
-                </article>
+                </button>
               ))}
             </div>
           ) : null}

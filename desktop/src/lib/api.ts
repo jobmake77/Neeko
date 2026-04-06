@@ -5,6 +5,7 @@ import {
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  PromotionHandoffExport,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './types';
@@ -90,11 +91,17 @@ export const api = {
     request<PromotionHandoff>(`/api/conversations/${encodeURIComponent(conversationId)}/promotion-handoffs`, {
       method: 'POST',
     }),
+  getPromotionHandoff: (handoffId: string) =>
+    request<PromotionHandoff>(`/api/promotion-handoffs/${encodeURIComponent(handoffId)}`),
   updatePromotionHandoff: (handoffId: string, status: PromotionHandoff['status']) =>
     request<PromotionHandoff>(`/api/promotion-handoffs/${encodeURIComponent(handoffId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     }),
+  exportPromotionHandoff: (handoffId: string, format: PromotionHandoffExport['format']) =>
+    request<PromotionHandoffExport>(
+      `/api/promotion-handoffs/${encodeURIComponent(handoffId)}/export?format=${encodeURIComponent(format)}`
+    ),
   refreshConversationSummary: (id: string) =>
     request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/refresh-summary`, {
       method: 'POST',

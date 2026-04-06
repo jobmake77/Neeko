@@ -92,6 +92,7 @@
 18. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
 19. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
 20. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
+21. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
 
 ### 3.2 默认写回规则
 
@@ -142,6 +143,8 @@
 1. `GET /api/personas/:slug/promotion-handoffs`
 2. `POST /api/conversations/:id/promotion-handoffs`
 3. `PATCH /api/promotion-handoffs/:id`
+4. `GET /api/promotion-handoffs/:id`
+5. `GET /api/promotion-handoffs/:id/export?format=markdown|json`
 
 ## 6. 下一步
 

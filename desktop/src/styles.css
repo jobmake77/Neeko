@@ -173,6 +173,25 @@ button {
   line-height: 1.45;
 }
 
+.handoff-meta-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.handoff-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.handoff-item-card {
+  padding: 12px;
+  background: rgba(248, 245, 239, 0.92);
+}
+
 .badge,
 .status-chip {
   display: inline-flex;

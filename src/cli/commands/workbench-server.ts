@@ -218,6 +218,15 @@ export async function cmdWorkbenchServer(
       }
 
       const handoffMatch = path.match(/^\/api\/promotion-handoffs\/([^/]+)$/);
+      if (req.method === 'GET' && handoffMatch) {
+        const handoff = service.getPromotionHandoff(decodeURIComponent(handoffMatch[1]));
+        if (!handoff) {
+          writeJson(res, 404, { error: 'Promotion handoff not found' });
+          return;
+        }
+        writeJson(res, 200, handoff);
+        return;
+      }
       if (req.method === 'PATCH' && handoffMatch) {
         const body = await readBody(req);
         const status = getString(body.status) as 'drafted' | 'queued' | 'archived' | undefined;
@@ -228,6 +237,14 @@ export async function cmdWorkbenchServer(
           return;
         }
         writeJson(res, 200, handoff);
+        return;
+      }
+
+      const handoffExportMatch = path.match(/^\/api\/promotion-handoffs\/([^/]+)\/export$/);
+      if (req.method === 'GET' && handoffExportMatch) {
+        const requestedFormat = getString(url.searchParams.get('format'));
+        const format = requestedFormat === 'json' ? 'json' : 'markdown';
+        writeJson(res, 200, service.exportPromotionHandoff(decodeURIComponent(handoffExportMatch[1]), format));
         return;
       }
 

@@ -55,6 +55,46 @@ type WorkbenchFormDefaults = {
   exportOutputDir: string;
 };
 
+function toUserMessage(error: unknown): string {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+
+  if (message.includes('clipboard')) {
+    return 'Clipboard access is not available right now. Please try again.';
+  }
+  if (message.includes('conversation not found') || message.includes('thread not found')) {
+    return 'This thread is no longer available.';
+  }
+  if (message.includes('persona not found') || message.includes('profile not found')) {
+    return 'This persona is no longer available.';
+  }
+  if (message.includes('run not found')) {
+    return 'This run is no longer available.';
+  }
+  if (
+    message.includes('candidate not found') ||
+    message.includes('handoff not found') ||
+    message.includes('training prep not found') ||
+    message.includes('not found')
+  ) {
+    return 'The requested item is no longer available.';
+  }
+  if (message.includes('required') || message.includes('missing')) {
+    return 'Some required information is still missing.';
+  }
+  if (message.includes('qdrant') || message.includes('memory service')) {
+    return 'The local memory service is still getting ready. Please try again shortly.';
+  }
+  if (
+    message.includes('timeout') ||
+    message.includes('fetch') ||
+    message.includes('network') ||
+    message.includes('connection')
+  ) {
+    return 'The workbench is handling a temporary issue. Please try again shortly.';
+  }
+  return 'The workbench could not finish this action right now.';
+}
+
 export default function App() {
   const initialDefaults = (() => {
     try {
@@ -148,6 +188,10 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [formDefaults, setFormDefaults] = useState(initialDefaults);
 
+  function reportError(error: unknown) {
+    setError(toUserMessage(error));
+  }
+
   useEffect(() => {
     void refreshHealth();
     void refreshPersonas();
@@ -217,7 +261,7 @@ export default function App() {
           await refreshRuns(selectedPersonaSlug ?? undefined);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        reportError(err);
       }
     }, 2000);
     return () => window.clearInterval(timer);
@@ -235,7 +279,7 @@ export default function App() {
       setError(null);
     } catch (err) {
       setServiceHealthy(false);
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -247,7 +291,7 @@ export default function App() {
         setSelectedPersonaSlug(data[0].slug);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -257,7 +301,7 @@ export default function App() {
       setSelectedPersona(profile);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -272,7 +316,7 @@ export default function App() {
         setSelectedConversationId(null);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -296,7 +340,7 @@ export default function App() {
       setTrainingPreps(nextTrainingPreps);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -306,7 +350,7 @@ export default function App() {
       setRecentRuns(runs);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -318,7 +362,7 @@ export default function App() {
       setSelectedConversationId(conversation.id);
       setActiveView('Chat');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -333,7 +377,7 @@ export default function App() {
       await refreshConversation(selectedConversationId);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -351,7 +395,7 @@ export default function App() {
       setTrainingPreps([]);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -377,7 +421,7 @@ export default function App() {
       await refreshThreads(selectedPersonaSlug);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -401,7 +445,7 @@ export default function App() {
       setNotice('Message sent.');
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     } finally {
       setChatLoading(false);
     }
@@ -416,7 +460,7 @@ export default function App() {
       await refreshRuns(selectedPersonaSlug ?? undefined);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -428,7 +472,7 @@ export default function App() {
       setActiveTab('Training');
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -440,7 +484,7 @@ export default function App() {
       setNotice(`Candidate marked ${status}.`);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -455,7 +499,7 @@ export default function App() {
       setNotice(promotionState === 'ready' ? 'Candidate added to promotion-ready queue.' : 'Candidate removed from promotion-ready queue.');
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -472,7 +516,7 @@ export default function App() {
         setPromotionHandoffs((current) => [handoff, ...current]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -485,7 +529,7 @@ export default function App() {
       setNotice(`Handoff marked ${status}.`);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -496,7 +540,7 @@ export default function App() {
       setNotice(`${exported.filename} copied to clipboard.`);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -509,7 +553,7 @@ export default function App() {
       setNotice('Training prep artifact created.');
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -519,7 +563,7 @@ export default function App() {
       setNotice('Message copied to clipboard.');
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -529,7 +573,7 @@ export default function App() {
       setNotice(`${label} copied to clipboard.`);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 
@@ -564,7 +608,7 @@ export default function App() {
       setNotice(`${payload.sourceKind} evidence imported into workbench.`);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     } finally {
       setImportLoading(false);
     }
@@ -577,7 +621,7 @@ export default function App() {
       setNotice(`${exported.filename} copied to clipboard.`);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      reportError(err);
     }
   }
 

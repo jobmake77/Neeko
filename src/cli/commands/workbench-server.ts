@@ -36,6 +36,17 @@ function getBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function toClientSafeError(error: unknown): string {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  if (message.includes('not found')) return 'Requested resource is not available right now.';
+  if (message.includes('required')) return 'Some required information is missing.';
+  if (message.includes('qdrant')) return 'Local memory service is not ready yet. Please try again shortly.';
+  if (message.includes('timeout') || message.includes('fetch') || message.includes('network') || message.includes('connection')) {
+    return 'The local service is still working through a temporary issue. Please try again shortly.';
+  }
+  return 'The workbench could not finish this action right now.';
+}
+
 export async function cmdWorkbenchServer(
   options: WorkbenchServerOptions = {},
   cliEntryPath = process.argv[1]
@@ -393,7 +404,8 @@ export async function cmdWorkbenchServer(
 
       writeJson(res, 404, { error: 'Not found' });
     } catch (error) {
-      writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      console.error('[workbench-server]', error);
+      writeJson(res, 500, { error: toClientSafeError(error) });
     }
   });
   await new Promise<void>((resolve, reject) => {

@@ -43,6 +43,33 @@ export function ChatWorkspace({
     () => evidenceImports.find((item) => item.id === selectedEvidenceImportId) ?? evidenceImports[0] ?? null,
     [evidenceImports, selectedEvidenceImportId]
   );
+  const intakeChecks = useMemo(() => {
+    const errors: string[] = [];
+    const source = sourcePath.trim();
+    const manifest = targetManifestPath.trim();
+
+    if (!personaSlug) errors.push('Select a persona before importing evidence.');
+    if (!source) errors.push('Add a source file path.');
+    if (!manifest) errors.push('Add a target manifest path.');
+    if (source && !source.startsWith('/')) errors.push('Use an absolute local path for the source file.');
+    if (manifest && !manifest.startsWith('/')) errors.push('Use an absolute local path for the target manifest.');
+    if (source && manifest && source === manifest) errors.push('Source and target manifest must be different files.');
+    if (manifest && !manifest.toLowerCase().endsWith('.json')) errors.push('Target manifest should be a JSON file.');
+
+    const warnings: string[] = [];
+    const normalizedSource = source.toLowerCase();
+    if (sourceKind === 'chat' && source) {
+      const looksLikeChatExport = ['.json', '.jsonl', '.txt', '.md'].some((suffix) => normalizedSource.endsWith(suffix));
+      if (!looksLikeChatExport) warnings.push('Chat imports work best with JSON, JSONL, TXT, or Markdown exports.');
+    }
+    if (sourceKind === 'video' && source) {
+      const looksLikeVideoOrTranscript = ['.mp4', '.mov', '.m4v', '.mp3', '.wav', '.m4a', '.webm', '.json', '.jsonl', '.txt', '.md', '.srt', '.vtt']
+        .some((suffix) => normalizedSource.endsWith(suffix));
+      if (!looksLikeVideoOrTranscript) warnings.push('Video intake works best with local media files or transcript exports.');
+    }
+
+    return { errors, warnings, ready: errors.length === 0 };
+  }, [personaSlug, sourceKind, sourcePath, targetManifestPath]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -64,7 +91,7 @@ export function ChatWorkspace({
 
   const handleImportSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!sourcePath.trim() || !targetManifestPath.trim() || importLoading || !personaSlug) return;
+    if (!intakeChecks.ready || importLoading) return;
     await onImportEvidence({
       sourceKind,
       sourcePath: sourcePath.trim(),
@@ -147,10 +174,32 @@ export function ChatWorkspace({
             <span>Target Manifest Path</span>
             <input value={targetManifestPath} onChange={(event) => setTargetManifestPath(event.target.value)} placeholder="/absolute/path/to/target-manifest.json" />
           </label>
-          <button type="submit" className="action-button" disabled={!personaSlug || importLoading || !sourcePath.trim() || !targetManifestPath.trim()}>
+          <button type="submit" className="action-button" disabled={!intakeChecks.ready || importLoading}>
             {importLoading ? 'Importing...' : 'Import Evidence'}
           </button>
         </form>
+        <div className="writeback-summary">
+          <span className={intakeChecks.ready ? 'badge success' : 'badge warning'}>
+            {intakeChecks.ready ? 'Ready to import' : 'Needs attention'}
+          </span>
+          {sourceKind === 'chat' ? <span className="badge">chat intake</span> : <span className="badge">video intake</span>}
+        </div>
+        {intakeChecks.errors.length > 0 ? (
+          <article className="mini-card">
+            <strong>Import checks</strong>
+            {intakeChecks.errors.map((item) => (
+              <small key={item}>{item}</small>
+            ))}
+          </article>
+        ) : null}
+        {intakeChecks.warnings.length > 0 ? (
+          <article className="mini-card">
+            <strong>Import hints</strong>
+            {intakeChecks.warnings.map((item) => (
+              <small key={item}>{item}</small>
+            ))}
+          </article>
+        ) : null}
         {evidenceImports.length > 0 ? (
           <div className="evidence-import-list">
             {selectedEvidenceImport ? (

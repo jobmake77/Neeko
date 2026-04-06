@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
-import { basename, extname, join } from 'path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { basename, extname, isAbsolute, join } from 'path';
 import { spawn } from 'child_process';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
@@ -124,6 +124,26 @@ export interface TrainingPrepExport {
   format: 'markdown' | 'json';
   filename: string;
   content: string;
+}
+
+function validateWorkbenchFilePath(path: string, label: string, options?: { requireJson?: boolean }): void {
+  const normalized = path.trim();
+  if (!normalized) {
+    throw new Error(`${label} is required`);
+  }
+  if (!isAbsolute(normalized)) {
+    throw new Error(`${label} must use an absolute local path`);
+  }
+  if (!existsSync(normalized)) {
+    throw new Error(`${label} is not available right now`);
+  }
+  const stats = statSync(normalized);
+  if (!stats.isFile()) {
+    throw new Error(`${label} must point to a file`);
+  }
+  if (options?.requireJson && extname(normalized).toLowerCase() !== '.json') {
+    throw new Error(`${label} must be a json file`);
+  }
 }
 
 function readJsonFile<T>(path: string, fallback: T): T {
@@ -667,6 +687,11 @@ export class WorkbenchService {
 
   async importEvidence(input: WorkbenchEvidenceImportInput): Promise<WorkbenchEvidenceImport> {
     this.loadPersonaAssets(input.personaSlug);
+    validateWorkbenchFilePath(input.sourcePath, 'sourcePath');
+    validateWorkbenchFilePath(input.targetManifestPath, 'targetManifestPath', { requireJson: true });
+    if (input.sourcePath.trim() === input.targetManifestPath.trim()) {
+      throw new Error('sourcePath and targetManifestPath must be different files');
+    }
     const manifest = loadTargetManifest(input.targetManifestPath);
     const importId = crypto.randomUUID();
     const importDir = join(this.store.getEvidenceImportsDir(), importId);

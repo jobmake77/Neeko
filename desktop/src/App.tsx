@@ -81,6 +81,21 @@ function toUserMessage(error: unknown): string {
   if (message.includes('required') || message.includes('missing')) {
     return 'Some required information is still missing.';
   }
+  if (message.includes('absolute local file path')) {
+    return 'Please use an absolute local file path for this import.';
+  }
+  if (message.includes('choose a file instead of a folder')) {
+    return 'Please choose a file instead of a folder for this import.';
+  }
+  if (message.includes('valid json target manifest')) {
+    return 'Please choose a valid JSON target manifest file.';
+  }
+  if (message.includes('must be different files')) {
+    return 'Source and target manifest must be different files.';
+  }
+  if (message.includes('selected files is not available')) {
+    return 'One of the selected files is not available right now.';
+  }
   if (message.includes('qdrant') || message.includes('memory service')) {
     return 'The local memory service is still getting ready. Please try again shortly.';
   }

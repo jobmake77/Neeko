@@ -44,6 +44,11 @@ function toClientSafeError(error: unknown): string {
   const message = String(error instanceof Error ? error.message : error).toLowerCase();
   if (message.includes('not found')) return 'Requested resource is not available right now.';
   if (message.includes('required')) return 'Some required information is missing.';
+  if (message.includes('absolute local path')) return 'Please use an absolute local file path for this import.';
+  if (message.includes('must point to a file')) return 'Please choose a file instead of a folder for this import.';
+  if (message.includes('json file')) return 'Please choose a valid JSON target manifest file.';
+  if (message.includes('different files')) return 'Source and target manifest must be different files.';
+  if (message.includes('not available right now')) return 'One of the selected files is not available right now.';
   if (message.includes('qdrant')) return 'Local memory service is not ready yet. Please try again shortly.';
   if (message.includes('timeout') || message.includes('fetch') || message.includes('network') || message.includes('connection')) {
     return 'The local service is still working through a temporary issue. Please try again shortly.';

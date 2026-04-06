@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { NavView, PersonaSummary, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchRun } from '../lib/types';
 
 interface WorkbenchFormsProps {
@@ -105,6 +105,40 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   const latestTrainingPrep = trainingPreps[0] ?? null;
   const latestEvidenceImport = evidenceImports[0] ?? null;
   const currentRunPresentation = currentRun ? deriveWorkbenchRunPresentation(currentRun) : null;
+  const activeTrainingPrep = trainPrepArtifactId
+    ? trainingPreps.find((item) => item.id === trainPrepArtifactId) ?? null
+    : null;
+  const activeEvidenceImport = trainEvidenceImportId
+    ? evidenceImports.find((item) => item.id === trainEvidenceImportId) ?? null
+    : null;
+
+  useEffect(() => {
+    setTarget(defaultValues.createTarget);
+    setTargetManifest(defaultValues.createTargetManifest);
+    setChatPlatform(defaultValues.createChatPlatform);
+    setRounds(defaultValues.rounds);
+    setTrainingProfile(defaultValues.trainingProfile);
+    setInputRouting(defaultValues.inputRouting);
+    setTrainingSeedMode(defaultValues.trainingSeedMode);
+    setKimiStabilityMode(defaultValues.kimiStabilityMode);
+    setTrainMode(defaultValues.trainMode);
+    setTrainTrack(defaultValues.trainTrack);
+    setTrainRetries(defaultValues.trainRetries);
+    setTrainFromCheckpoint(defaultValues.trainFromCheckpoint);
+    setTrainPrepDocumentsPath(defaultValues.trainPrepDocumentsPath);
+    setTrainPrepEvidencePath(defaultValues.trainPrepEvidencePath);
+    setTrainPrepArtifactId(defaultValues.trainPrepArtifactId);
+    setTrainEvidenceImportId(defaultValues.trainEvidenceImportId);
+    setExperimentProfiles(defaultValues.experimentProfiles);
+    setQuestionsPerRound(defaultValues.questionsPerRound);
+    setExperimentCompareVariants(defaultValues.experimentCompareVariants);
+    setExperimentOutputDir(defaultValues.experimentOutputDir);
+    setExperimentGate(defaultValues.experimentGate);
+    setExperimentCompareInputRouting(defaultValues.experimentCompareInputRouting);
+    setExperimentCompareTrainingSeed(defaultValues.experimentCompareTrainingSeed);
+    setExportFormat(defaultValues.exportFormat);
+    setExportOutputDir(defaultValues.exportOutputDir);
+  }, [defaultValues]);
 
   const buildTrainingPayload = (smoke = false) => {
     if (!selectedPersona) return null;
@@ -602,6 +636,26 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           </button>
         ) : null}
       </form>
+      {activeView === 'Train' && (activeTrainingPrep || activeEvidenceImport || trainPrepDocumentsPath || trainPrepEvidencePath) ? (
+        <div className="settings-card">
+          <strong>Attached Training Context</strong>
+          <p>
+            {activeTrainingPrep
+              ? 'This run will start from the selected training prep artifact.'
+              : activeEvidenceImport
+                ? 'This run will start from the selected evidence intake context.'
+                : 'This run includes manually attached training context paths.'}
+          </p>
+          <div className="writeback-summary">
+            {activeTrainingPrep ? <span className="badge success">prep attached</span> : null}
+            {activeEvidenceImport ? <span className="badge success">intake attached</span> : null}
+            {trainPrepArtifactId ? <span className="badge">{trainPrepArtifactId}</span> : null}
+            {trainEvidenceImportId ? <span className="badge">{trainEvidenceImportId}</span> : null}
+          </div>
+          {trainPrepDocumentsPath ? <code>{trainPrepDocumentsPath}</code> : null}
+          {trainPrepEvidencePath ? <code>{trainPrepEvidencePath}</code> : null}
+        </div>
+      ) : null}
       {currentRun ? (
         <div className="run-card">
           <strong>{currentRun.type}</strong>

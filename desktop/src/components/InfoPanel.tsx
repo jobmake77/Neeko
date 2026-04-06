@@ -58,6 +58,11 @@ export function InfoPanel({
   const readyCount = candidates.filter((item) => item.promotion_state === 'ready').length;
   const selectedHandoff = promotionHandoffs.find((item) => item.id === selectedHandoffId) ?? promotionHandoffs[0] ?? null;
   const selectedPrep = trainingPreps.find((item) => item.id === selectedPrepId) ?? trainingPreps[0] ?? null;
+  const runContext = (runReport?.context && typeof runReport.context === 'object') ? runReport.context as Record<string, unknown> : null;
+  const prepContext =
+    runContext && typeof runContext.prep_context === 'object' && runContext.prep_context
+      ? runContext.prep_context as Record<string, unknown>
+      : null;
   const filteredCandidates = useMemo(() => {
     const base =
       candidateFilter === 'all'
@@ -402,7 +407,24 @@ export function InfoPanel({
               <strong>{runReport.run.type}</strong>
               <p>{runReport.run.summary ?? runReport.run.status}</p>
               {runReport.run.report_path ? <code>{runReport.run.report_path}</code> : null}
+              {runReport.context_path ? <code>{runReport.context_path}</code> : null}
+              {prepContext ? (
+                <div className="inspector-section">
+                  <h3>Prep Context</h3>
+                  {typeof prepContext.prep_documents_path === 'string' ? <code>{prepContext.prep_documents_path}</code> : null}
+                  {typeof prepContext.prep_evidence_path === 'string' ? <code>{prepContext.prep_evidence_path}</code> : null}
+                  <div className="writeback-summary">
+                    {typeof prepContext.prep_artifact_id === 'string' ? (
+                      <span className="badge">{prepContext.prep_artifact_id}</span>
+                    ) : null}
+                    {typeof prepContext.evidence_import_id === 'string' ? (
+                      <span className="badge">{prepContext.evidence_import_id}</span>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
               {runReport.report ? <pre>{JSON.stringify(runReport.report, null, 2).slice(0, 2400)}</pre> : null}
+              {runReport.context ? <pre>{JSON.stringify(runReport.context, null, 2).slice(0, 1600)}</pre> : null}
               {runReport.log_tail ? <pre>{runReport.log_tail}</pre> : null}
             </article>
           ) : <div className="empty-state">No active run selected.</div>}

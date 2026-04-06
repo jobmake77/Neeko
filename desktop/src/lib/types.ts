@@ -196,5 +196,7 @@ export interface WorkbenchRun {
 export interface WorkbenchRunReport {
   run: WorkbenchRun;
   report?: unknown;
+  context?: unknown;
+  context_path?: string;
   log_tail?: string;
 }

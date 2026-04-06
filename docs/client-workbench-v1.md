@@ -212,6 +212,7 @@
 5. 导入结果快速回看
 6. Train 面板直接展示最近的 `training prep / evidence intake` 资产路径，支持一键带入训练表单
 7. Train launch 支持清空 prep context，避免不同资产之间误串
+8. 右侧 `Training` 面板会同时显示 `training-report` 与 `training-context`，可直接审计 `prep_context`
 
 ## 7. 下一步
 

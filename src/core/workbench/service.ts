@@ -862,6 +862,8 @@ export class WorkbenchService {
     const run = this.getRunStatus(runId);
     if (!run) return null;
     let report: unknown;
+    let context: unknown;
+    let contextPath: string | undefined;
     const logTail = this.readLogTail(run.log_path);
     if (run.report_path && existsSync(run.report_path)) {
       if (run.report_path.endsWith('.json')) {
@@ -870,7 +872,15 @@ export class WorkbenchService {
         report = { path: run.report_path };
       }
     }
-    return { run, report, log_tail: logTail };
+    if (run.type === 'train') {
+      contextPath = join(settings.getPersonaDir(run.persona_slug ?? ''), 'training-context.json');
+      if (run.persona_slug && existsSync(contextPath)) {
+        context = readJsonFile(contextPath, null);
+      } else {
+        contextPath = undefined;
+      }
+    }
+    return { run, report, context, context_path: contextPath, log_tail: logTail };
   }
 
   private readPersonaSummary(slug: string): PersonaSummary | null {

@@ -386,6 +386,20 @@ export default function App() {
     }
   }
 
+  async function handleCandidatePromotionState(
+    candidateId: string,
+    promotionState: MemoryCandidate['promotion_state']
+  ) {
+    if (!selectedConversationId) return;
+    try {
+      const result = await api.setCandidatePromotionState(selectedConversationId, candidateId, promotionState);
+      setCandidates(result.candidates);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function handleApiBaseUrlChange(value: string) {
     setApiBaseUrlState(value);
     setApiBaseUrl(value);
@@ -443,6 +457,7 @@ export default function App() {
         currentRunId={currentRun?.id ?? null}
         onSelectRun={handleSelectRun}
         onReviewCandidate={handleReviewCandidate}
+        onSetCandidatePromotionState={handleCandidatePromotionState}
         runReport={runReport}
       />
     </div>

@@ -69,6 +69,18 @@ export const api = {
         body: JSON.stringify({ status }),
       }
     ),
+  setCandidatePromotionState: (
+    conversationId: string,
+    candidateId: string,
+    promotionState: MemoryCandidate['promotion_state']
+  ) =>
+    request<{ candidate: MemoryCandidate; candidates: MemoryCandidate[] }>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/writeback-candidates/${encodeURIComponent(candidateId)}/promotion-state`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ promotion_state: promotionState }),
+      }
+    ),
   refreshConversationSummary: (id: string) =>
     request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/refresh-summary`, {
       method: 'POST',

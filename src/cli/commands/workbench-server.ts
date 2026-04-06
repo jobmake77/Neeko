@@ -174,6 +174,24 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const candidatePromotionMatch = path.match(/^\/api\/conversations\/([^/]+)\/writeback-candidates\/([^/]+)\/promotion-state$/);
+      if (req.method === 'PATCH' && candidatePromotionMatch) {
+        const body = await readBody(req);
+        const promotionState = getString(body.promotion_state) as 'idle' | 'ready' | undefined;
+        if (!promotionState) throw new Error('promotion_state is required');
+        const result = service.setCandidatePromotionState(
+          decodeURIComponent(candidatePromotionMatch[1]),
+          decodeURIComponent(candidatePromotionMatch[2]),
+          promotionState
+        );
+        if (!result) {
+          writeJson(res, 404, { error: 'Candidate not found' });
+          return;
+        }
+        writeJson(res, 200, result);
+        return;
+      }
+
       const refreshSummaryMatch = path.match(/^\/api\/conversations\/([^/]+)\/refresh-summary$/);
       if (req.method === 'POST' && refreshSummaryMatch) {
         const bundle = service.refreshConversationSummary(decodeURIComponent(refreshSummaryMatch[1]));

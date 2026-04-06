@@ -86,6 +86,7 @@ export interface MemoryCandidate {
   content: string;
   confidence: number;
   status: 'pending' | 'accepted' | 'rejected';
+  promotion_state: 'idle' | 'ready';
   created_at: string;
 }
 

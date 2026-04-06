@@ -42,6 +42,7 @@ export const MemoryCandidateSchema = z.object({
   content: z.string(),
   confidence: z.number().min(0).max(1),
   status: z.enum(['pending', 'accepted', 'rejected']).default('pending'),
+  promotion_state: z.enum(['idle', 'ready']).default('idle'),
   created_at: z.string().datetime(),
 });
 export type MemoryCandidate = z.infer<typeof MemoryCandidateSchema>;

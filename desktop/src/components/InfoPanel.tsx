@@ -14,6 +14,7 @@ interface InfoPanelProps {
   currentRunId: string | null;
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
   onReviewCandidate: (candidateId: string, status: MemoryCandidate['status']) => Promise<void>;
+  onSetCandidatePromotionState: (candidateId: string, promotionState: MemoryCandidate['promotion_state']) => Promise<void>;
   runReport: WorkbenchRunReport | null;
 }
 
@@ -27,18 +28,23 @@ export function InfoPanel({
   currentRunId,
   onSelectRun,
   onReviewCandidate,
+  onSetCandidatePromotionState,
   runReport,
 }: InfoPanelProps) {
-  const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected'>('all');
+  const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected' | 'ready_queue'>('all');
   const [candidateSort, setCandidateSort] = useState<'newest' | 'oldest' | 'confidence_desc' | 'confidence_asc'>('newest');
   const latestAssistant = [...(bundle?.messages ?? [])].reverse().find((item) => item.role === 'assistant');
   const pendingCount = candidates.filter((item) => item.status === 'pending').length;
   const acceptedCount = candidates.filter((item) => item.status === 'accepted').length;
   const rejectedCount = candidates.filter((item) => item.status === 'rejected').length;
+  const readyCount = candidates.filter((item) => item.promotion_state === 'ready').length;
   const filteredCandidates = useMemo(() => {
-    const base = candidateFilter === 'all'
-      ? [...candidates]
-      : candidates.filter((item) => item.status === candidateFilter);
+    const base =
+      candidateFilter === 'all'
+        ? [...candidates]
+        : candidateFilter === 'ready_queue'
+          ? candidates.filter((item) => item.promotion_state === 'ready')
+          : candidates.filter((item) => item.status === candidateFilter);
     if (candidateSort === 'oldest') {
       return base.sort((a, b) => a.created_at.localeCompare(b.created_at));
     }
@@ -114,6 +120,7 @@ export function InfoPanel({
             <span className="badge">{pendingCount} pending</span>
             <span className="badge success">{acceptedCount} accepted</span>
             <span className="badge warning">{rejectedCount} rejected</span>
+            <span className="badge">{readyCount} ready</span>
           </div>
           <div className="writeback-controls">
             <label className="field compact-field">
@@ -123,6 +130,7 @@ export function InfoPanel({
                 <option value="pending">pending</option>
                 <option value="accepted">accepted</option>
                 <option value="rejected">rejected</option>
+                <option value="ready_queue">ready queue</option>
               </select>
             </label>
             <label className="field compact-field">
@@ -139,7 +147,9 @@ export function InfoPanel({
             <article key={item.id} className="mini-card">
               <strong>{item.candidate_type}</strong>
               <p>{item.content}</p>
-              <small>{Math.round(item.confidence * 100)}% · {item.status} · {new Date(item.created_at).toLocaleString()}</small>
+              <small>
+                {Math.round(item.confidence * 100)}% · {item.status} · promo {item.promotion_state} · {new Date(item.created_at).toLocaleString()}
+              </small>
               <div className="candidate-actions">
                 <button
                   type="button"
@@ -164,6 +174,22 @@ export function InfoPanel({
                   onClick={() => void onReviewCandidate(item.id, 'rejected')}
                 >
                   Reject
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  disabled={item.status !== 'accepted' || item.promotion_state === 'ready'}
+                  onClick={() => void onSetCandidatePromotionState(item.id, 'ready')}
+                >
+                  Queue
+                </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  disabled={item.promotion_state === 'idle'}
+                  onClick={() => void onSetCandidatePromotionState(item.id, 'idle')}
+                >
+                  Clear Queue
                 </button>
               </div>
             </article>

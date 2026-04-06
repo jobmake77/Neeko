@@ -89,6 +89,7 @@
 15. Settings 支持手动刷新 service 健康状态并展示本地启动命令
 16. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
 17. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
+18. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
 
 ### 3.2 默认写回规则
 

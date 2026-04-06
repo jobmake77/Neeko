@@ -299,7 +299,34 @@ export class WorkbenchService {
     if (!['pending', 'accepted', 'rejected'].includes(status)) {
       throw new Error(`Unsupported candidate status: ${status}`);
     }
-    const updated = this.store.updateMemoryCandidate(conversationId, candidateId, { status });
+    const updated = this.store.updateMemoryCandidate(
+      conversationId,
+      candidateId,
+      status === 'accepted'
+        ? { status }
+        : { status, promotion_state: 'idle' }
+    );
+    if (!updated) return null;
+    return {
+      candidate: updated,
+      candidates: this.store.listMemoryCandidates(conversationId),
+    };
+  }
+
+  setCandidatePromotionState(
+    conversationId: string,
+    candidateId: string,
+    promotionState: MemoryCandidate['promotion_state']
+  ): { candidate: MemoryCandidate; candidates: MemoryCandidate[] } | null {
+    if (!['idle', 'ready'].includes(promotionState)) {
+      throw new Error(`Unsupported promotion state: ${promotionState}`);
+    }
+    const current = this.store.listMemoryCandidates(conversationId).find((item) => item.id === candidateId);
+    if (!current) return null;
+    if (promotionState === 'ready' && current.status !== 'accepted') {
+      throw new Error('Only accepted candidates can enter the promotion-ready queue.');
+    }
+    const updated = this.store.updateMemoryCandidate(conversationId, candidateId, { promotion_state: promotionState });
     if (!updated) return null;
     return {
       candidate: updated,
@@ -482,6 +509,7 @@ export class WorkbenchService {
       content: sentence,
       confidence: Math.max(0.45, Math.min(0.85, 0.48 + (citations.length * 0.06) + (index === 0 ? 0.06 : 0))),
       status: 'pending',
+      promotion_state: 'idle',
       created_at: new Date().toISOString(),
     }));
   }

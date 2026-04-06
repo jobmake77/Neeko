@@ -367,6 +367,17 @@ select:focus {
   gap: 8px;
 }
 
+.checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding-top: 28px;
+}
+
+.checkbox-field input {
+  width: auto;
+}
+
 .field span,
 .helper-text,
 .empty-state,
@@ -386,6 +397,23 @@ pre {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.settings-card {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .run-history-header {

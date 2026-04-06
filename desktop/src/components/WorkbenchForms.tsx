@@ -13,13 +13,29 @@ interface WorkbenchFormsProps {
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
   apiBaseUrl: string;
   onApiBaseUrlChange: (value: string) => void;
+  onRefreshHealth: () => Promise<void>;
   defaultValues: {
     createTarget: string;
+    createTargetManifest: string;
+    createChatPlatform: string;
     rounds: string;
     trainingProfile: string;
     inputRouting: string;
+    trainingSeedMode: string;
+    kimiStabilityMode: string;
+    trainMode: string;
+    trainTrack: string;
+    trainRetries: string;
+    trainFromCheckpoint: string;
+    experimentProfiles: string;
     questionsPerRound: string;
+    experimentCompareVariants: string;
+    experimentOutputDir: string;
+    experimentGate: boolean;
+    experimentCompareInputRouting: boolean;
+    experimentCompareTrainingSeed: boolean;
     exportFormat: string;
+    exportOutputDir: string;
   };
   onDefaultValuesChange: (patch: Partial<WorkbenchFormsProps['defaultValues']>) => void;
   serviceHealthy: boolean;
@@ -38,16 +54,32 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     onSelectRun,
     apiBaseUrl,
     onApiBaseUrlChange,
+    onRefreshHealth,
     defaultValues,
     onDefaultValuesChange,
     serviceHealthy,
   } = props;
   const [target, setTarget] = useState(defaultValues.createTarget);
+  const [targetManifest, setTargetManifest] = useState(defaultValues.createTargetManifest);
+  const [chatPlatform, setChatPlatform] = useState(defaultValues.createChatPlatform);
   const [rounds, setRounds] = useState(defaultValues.rounds);
   const [trainingProfile, setTrainingProfile] = useState(defaultValues.trainingProfile);
   const [inputRouting, setInputRouting] = useState(defaultValues.inputRouting);
+  const [trainingSeedMode, setTrainingSeedMode] = useState(defaultValues.trainingSeedMode);
+  const [kimiStabilityMode, setKimiStabilityMode] = useState(defaultValues.kimiStabilityMode);
+  const [trainMode, setTrainMode] = useState(defaultValues.trainMode);
+  const [trainTrack, setTrainTrack] = useState(defaultValues.trainTrack);
+  const [trainRetries, setTrainRetries] = useState(defaultValues.trainRetries);
+  const [trainFromCheckpoint, setTrainFromCheckpoint] = useState(defaultValues.trainFromCheckpoint);
+  const [experimentProfiles, setExperimentProfiles] = useState(defaultValues.experimentProfiles);
   const [questionsPerRound, setQuestionsPerRound] = useState(defaultValues.questionsPerRound);
+  const [experimentCompareVariants, setExperimentCompareVariants] = useState(defaultValues.experimentCompareVariants);
+  const [experimentOutputDir, setExperimentOutputDir] = useState(defaultValues.experimentOutputDir);
+  const [experimentGate, setExperimentGate] = useState(defaultValues.experimentGate);
+  const [experimentCompareInputRouting, setExperimentCompareInputRouting] = useState(defaultValues.experimentCompareInputRouting);
+  const [experimentCompareTrainingSeed, setExperimentCompareTrainingSeed] = useState(defaultValues.experimentCompareTrainingSeed);
   const [exportFormat, setExportFormat] = useState(defaultValues.exportFormat);
+  const [exportOutputDir, setExportOutputDir] = useState(defaultValues.exportOutputDir);
 
   const title = useMemo(() => {
     if (activeView === 'Create') return 'Create Persona';
@@ -60,26 +92,53 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (activeView === 'Create') {
-      await onCreatePersona({ target, rounds: Number(rounds), trainingProfile, inputRouting });
+      await onCreatePersona({
+        target,
+        targetManifest: targetManifest || undefined,
+        chatPlatform,
+        rounds: Number(rounds),
+        trainingProfile,
+        inputRouting,
+        trainingSeedMode,
+        kimiStabilityMode,
+      });
       return;
     }
     if (!selectedPersona) return;
     if (activeView === 'Train') {
-      await onStartTraining({ slug: selectedPersona.slug, rounds: Number(rounds), trainingProfile, inputRouting });
+      await onStartTraining({
+        slug: selectedPersona.slug,
+        mode: trainMode,
+        rounds: Number(rounds),
+        track: trainTrack,
+        trainingProfile,
+        inputRouting,
+        trainingSeedMode,
+        retries: Number(trainRetries),
+        fromCheckpoint: trainFromCheckpoint || undefined,
+        kimiStabilityMode,
+      });
       return;
     }
     if (activeView === 'Experiment') {
       await onStartExperiment({
         slug: selectedPersona.slug,
+        profiles: experimentProfiles || undefined,
         rounds: Number(rounds),
         questionsPerRound: Number(questionsPerRound),
+        outputDir: experimentOutputDir || undefined,
+        gate: experimentGate,
         inputRouting,
-        compareInputRouting: true,
+        trainingSeedMode,
+        compareInputRouting: experimentCompareInputRouting,
+        compareTrainingSeed: experimentCompareTrainingSeed,
+        compareVariants: experimentCompareVariants || undefined,
+        kimiStabilityMode,
       });
       return;
     }
     if (activeView === 'Export') {
-      await onExportPersona({ slug: selectedPersona.slug, format: exportFormat });
+      await onExportPersona({ slug: selectedPersona.slug, format: exportFormat, outputDir: exportOutputDir || undefined });
     }
   };
 
@@ -99,9 +158,19 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           <span>Workbench server URL</span>
           <input value={apiBaseUrl} onChange={(event) => onApiBaseUrlChange(event.target.value)} />
         </label>
+        <div className="settings-actions">
+          <button type="button" className="action-button secondary" onClick={() => void onRefreshHealth()}>
+            Refresh Connection
+          </button>
+        </div>
         <p className="helper-text">
           The desktop shell talks to the structured local API. Default is `http://127.0.0.1:4310`.
         </p>
+        <div className="settings-card">
+          <strong>Recommended local flow</strong>
+          <code>npm run workbench:server</code>
+          <code>npm --prefix desktop run dev</code>
+        </div>
       </section>
     );
   }
@@ -127,6 +196,36 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
               }}
               placeholder="@karpathy or local file"
             />
+          </label>
+        ) : null}
+
+        {activeView === 'Create' ? (
+          <label className="field">
+            <span>Target manifest</span>
+            <input
+              value={targetManifest}
+              onChange={(event) => {
+                setTargetManifest(event.target.value);
+                onDefaultValuesChange({ createTargetManifest: event.target.value });
+              }}
+              placeholder="/path/to/target-manifest.json"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Create' ? (
+          <label className="field">
+            <span>Chat platform</span>
+            <select
+              value={chatPlatform}
+              onChange={(event) => {
+                setChatPlatform(event.target.value);
+                onDefaultValuesChange({ createChatPlatform: event.target.value });
+              }}
+            >
+              <option value="wechat">wechat</option>
+              <option value="feishu">feishu</option>
+            </select>
           </label>
         ) : null}
 
@@ -180,6 +279,116 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           </label>
         ) : null}
 
+        {activeView === 'Experiment' || activeView === 'Train' || activeView === 'Create' ? (
+          <label className="field">
+            <span>Training seed mode</span>
+            <select
+              value={trainingSeedMode}
+              onChange={(event) => {
+                setTrainingSeedMode(event.target.value);
+                onDefaultValuesChange({ trainingSeedMode: event.target.value });
+              }}
+            >
+              <option value="off">off</option>
+              <option value="topics">topics</option>
+              <option value="signals">signals</option>
+            </select>
+          </label>
+        ) : null}
+
+        {activeView === 'Experiment' || activeView === 'Train' || activeView === 'Create' ? (
+          <label className="field">
+            <span>Kimi stability mode</span>
+            <select
+              value={kimiStabilityMode}
+              onChange={(event) => {
+                setKimiStabilityMode(event.target.value);
+                onDefaultValuesChange({ kimiStabilityMode: event.target.value });
+              }}
+            >
+              <option value="standard">standard</option>
+              <option value="tight_runtime">tight_runtime</option>
+              <option value="sparse_director">sparse_director</option>
+              <option value="hybrid">hybrid</option>
+            </select>
+          </label>
+        ) : null}
+
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>Mode</span>
+            <select
+              value={trainMode}
+              onChange={(event) => {
+                setTrainMode(event.target.value);
+                onDefaultValuesChange({ trainMode: event.target.value });
+              }}
+            >
+              <option value="quick">quick</option>
+              <option value="full">full</option>
+            </select>
+          </label>
+        ) : null}
+
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>Track</span>
+            <select
+              value={trainTrack}
+              onChange={(event) => {
+                setTrainTrack(event.target.value);
+                onDefaultValuesChange({ trainTrack: event.target.value });
+              }}
+            >
+              <option value="full_serial">full_serial</option>
+              <option value="persona_extract">persona_extract</option>
+              <option value="work_execute">work_execute</option>
+            </select>
+          </label>
+        ) : null}
+
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>Retries</span>
+            <input
+              value={trainRetries}
+              onChange={(event) => {
+                setTrainRetries(event.target.value);
+                onDefaultValuesChange({ trainRetries: event.target.value });
+              }}
+              inputMode="numeric"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Train' ? (
+          <label className="field">
+            <span>From checkpoint</span>
+            <input
+              value={trainFromCheckpoint}
+              onChange={(event) => {
+                setTrainFromCheckpoint(event.target.value);
+                onDefaultValuesChange({ trainFromCheckpoint: event.target.value });
+              }}
+              placeholder="latest or checkpoint id"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Experiment' ? (
+          <label className="field">
+            <span>Profiles</span>
+            <input
+              value={experimentProfiles}
+              onChange={(event) => {
+                setExperimentProfiles(event.target.value);
+                onDefaultValuesChange({ experimentProfiles: event.target.value });
+              }}
+              placeholder="baseline,full"
+            />
+          </label>
+        ) : null}
+
         {activeView === 'Experiment' ? (
           <label className="field">
             <span>Questions / round</span>
@@ -191,6 +400,76 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
               }}
               inputMode="numeric"
             />
+          </label>
+        ) : null}
+
+        {activeView === 'Experiment' ? (
+          <label className="field">
+            <span>Compare variants</span>
+            <input
+              value={experimentCompareVariants}
+              onChange={(event) => {
+                setExperimentCompareVariants(event.target.value);
+                onDefaultValuesChange({ experimentCompareVariants: event.target.value });
+              }}
+              placeholder="legacy:off,v2:off,v2:signals"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Experiment' ? (
+          <label className="field">
+            <span>Output dir</span>
+            <input
+              value={experimentOutputDir}
+              onChange={(event) => {
+                setExperimentOutputDir(event.target.value);
+                onDefaultValuesChange({ experimentOutputDir: event.target.value });
+              }}
+              placeholder="/path/to/experiment-output"
+            />
+          </label>
+        ) : null}
+
+        {activeView === 'Experiment' ? (
+          <label className="field checkbox-field">
+            <input
+              type="checkbox"
+              checked={experimentGate}
+              onChange={(event) => {
+                setExperimentGate(event.target.checked);
+                onDefaultValuesChange({ experimentGate: event.target.checked });
+              }}
+            />
+            <span>Enable gate</span>
+          </label>
+        ) : null}
+
+        {activeView === 'Experiment' ? (
+          <label className="field checkbox-field">
+            <input
+              type="checkbox"
+              checked={experimentCompareInputRouting}
+              onChange={(event) => {
+                setExperimentCompareInputRouting(event.target.checked);
+                onDefaultValuesChange({ experimentCompareInputRouting: event.target.checked });
+              }}
+            />
+            <span>Compare input routing</span>
+          </label>
+        ) : null}
+
+        {activeView === 'Experiment' ? (
+          <label className="field checkbox-field">
+            <input
+              type="checkbox"
+              checked={experimentCompareTrainingSeed}
+              onChange={(event) => {
+                setExperimentCompareTrainingSeed(event.target.checked);
+                onDefaultValuesChange({ experimentCompareTrainingSeed: event.target.checked });
+              }}
+            />
+            <span>Compare training seed</span>
           </label>
         ) : null}
 
@@ -206,6 +485,20 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
             >
               <option value="openclaw">openclaw</option>
             </select>
+          </label>
+        ) : null}
+
+        {activeView === 'Export' ? (
+          <label className="field">
+            <span>Output dir</span>
+            <input
+              value={exportOutputDir}
+              onChange={(event) => {
+                setExportOutputDir(event.target.value);
+                onDefaultValuesChange({ exportOutputDir: event.target.value });
+              }}
+              placeholder="/path/to/export-output"
+            />
           </label>
         ) : null}
 

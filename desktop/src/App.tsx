@@ -24,34 +24,81 @@ const PERSONA_KEY = 'neeko.workbench.selectedPersona';
 const THREAD_KEY = 'neeko.workbench.selectedConversation';
 const FORM_DEFAULTS_KEY = 'neeko.workbench.formDefaults';
 
+type WorkbenchFormDefaults = {
+  createTarget: string;
+  createTargetManifest: string;
+  createChatPlatform: string;
+  rounds: string;
+  trainingProfile: string;
+  inputRouting: string;
+  trainingSeedMode: string;
+  kimiStabilityMode: string;
+  trainMode: string;
+  trainTrack: string;
+  trainRetries: string;
+  trainFromCheckpoint: string;
+  experimentProfiles: string;
+  questionsPerRound: string;
+  experimentCompareVariants: string;
+  experimentOutputDir: string;
+  experimentGate: boolean;
+  experimentCompareInputRouting: boolean;
+  experimentCompareTrainingSeed: boolean;
+  exportFormat: string;
+  exportOutputDir: string;
+};
+
 export default function App() {
   const initialDefaults = (() => {
     try {
       const raw = window.localStorage.getItem(FORM_DEFAULTS_KEY);
-      const parsed = raw ? JSON.parse(raw) as Partial<{
-        createTarget: string;
-        rounds: string;
-        trainingProfile: string;
-        inputRouting: string;
-        questionsPerRound: string;
-        exportFormat: string;
-      }> : {};
+      const parsed = raw ? JSON.parse(raw) as Partial<WorkbenchFormDefaults> : {};
       return {
         createTarget: parsed.createTarget ?? '',
+        createTargetManifest: parsed.createTargetManifest ?? '',
+        createChatPlatform: parsed.createChatPlatform ?? 'wechat',
         rounds: parsed.rounds ?? '1',
         trainingProfile: parsed.trainingProfile ?? 'full',
         inputRouting: parsed.inputRouting ?? 'legacy',
+        trainingSeedMode: parsed.trainingSeedMode ?? 'off',
+        kimiStabilityMode: parsed.kimiStabilityMode ?? 'standard',
+        trainMode: parsed.trainMode ?? 'quick',
+        trainTrack: parsed.trainTrack ?? 'full_serial',
+        trainRetries: parsed.trainRetries ?? '2',
+        trainFromCheckpoint: parsed.trainFromCheckpoint ?? '',
+        experimentProfiles: parsed.experimentProfiles ?? '',
         questionsPerRound: parsed.questionsPerRound ?? '5',
+        experimentCompareVariants: parsed.experimentCompareVariants ?? '',
+        experimentOutputDir: parsed.experimentOutputDir ?? '',
+        experimentGate: parsed.experimentGate ?? false,
+        experimentCompareInputRouting: parsed.experimentCompareInputRouting ?? true,
+        experimentCompareTrainingSeed: parsed.experimentCompareTrainingSeed ?? false,
         exportFormat: parsed.exportFormat ?? 'openclaw',
+        exportOutputDir: parsed.exportOutputDir ?? '',
       };
     } catch {
       return {
         createTarget: '',
+        createTargetManifest: '',
+        createChatPlatform: 'wechat',
         rounds: '1',
         trainingProfile: 'full',
         inputRouting: 'legacy',
+        trainingSeedMode: 'off',
+        kimiStabilityMode: 'standard',
+        trainMode: 'quick',
+        trainTrack: 'full_serial',
+        trainRetries: '2',
+        trainFromCheckpoint: '',
+        experimentProfiles: '',
         questionsPerRound: '5',
+        experimentCompareVariants: '',
+        experimentOutputDir: '',
+        experimentGate: false,
+        experimentCompareInputRouting: true,
+        experimentCompareTrainingSeed: false,
         exportFormat: 'openclaw',
+        exportOutputDir: '',
       };
     }
   })();
@@ -334,9 +381,7 @@ export default function App() {
     void refreshHealth();
   }
 
-  function handleFormDefaultsChange(
-    patch: Partial<typeof formDefaults>
-  ) {
+  function handleFormDefaultsChange(patch: Partial<WorkbenchFormDefaults>) {
     setFormDefaults((current) => ({ ...current, ...patch }));
   }
 
@@ -369,6 +414,7 @@ export default function App() {
             onSelectRun={handleSelectRun}
             apiBaseUrl={apiBaseUrl}
             onApiBaseUrlChange={handleApiBaseUrlChange}
+            onRefreshHealth={refreshHealth}
             defaultValues={formDefaults}
             onDefaultValuesChange={handleFormDefaultsChange}
             serviceHealthy={serviceHealthy}

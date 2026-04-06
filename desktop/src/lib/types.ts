@@ -119,6 +119,59 @@ export interface PromotionHandoffExport {
   content: string;
 }
 
+export interface EvidenceImportArtifacts {
+  evidence_index_path: string;
+  evidence_stats_path: string;
+  speaker_summary_path: string;
+  scene_summary_path: string;
+  target_manifest_path?: string;
+  documents_path: string;
+}
+
+export interface WorkbenchEvidenceImport {
+  id: string;
+  persona_slug: string;
+  conversation_id?: string;
+  source_kind: 'chat' | 'video';
+  source_platform?: string;
+  source_path: string;
+  target_manifest_path: string;
+  status: 'completed' | 'failed';
+  item_count: number;
+  summary: string;
+  stats: {
+    raw_messages: number;
+    sessions: number;
+    windows: number;
+    target_windows: number;
+    context_only_windows: number;
+    downgraded_scene_items: number;
+    blocked_scene_items: number;
+    cross_session_stable_items: number;
+    speaker_role_counts: Record<string, number>;
+    scene_counts: Record<string, number>;
+    modality_counts: Record<string, number>;
+    source_type_counts: Record<string, number>;
+  };
+  artifacts: EvidenceImportArtifacts;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TrainingPrepArtifact {
+  id: string;
+  persona_slug: string;
+  conversation_id?: string;
+  handoff_id: string;
+  status: 'drafted' | 'exported';
+  item_count: number;
+  summary: string;
+  evidence_index_path: string;
+  documents_path: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WorkbenchRun {
   id: string;
   type: 'create' | 'train' | 'experiment' | 'export';

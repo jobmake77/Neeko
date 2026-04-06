@@ -6,6 +6,8 @@ import {
   PersonaWorkbenchProfile,
   PromotionHandoff,
   PromotionHandoffExport,
+  TrainingPrepArtifact,
+  WorkbenchEvidenceImport,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './types';
@@ -47,6 +49,15 @@ export const api = {
       body: JSON.stringify({ title }),
     }),
   getConversation: (id: string) => request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}`),
+  listEvidenceImports: (slug: string, conversationId?: string) =>
+    request<WorkbenchEvidenceImport[]>(
+      `/api/personas/${encodeURIComponent(slug)}/evidence-imports${conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''}`
+    ),
+  importEvidence: (slug: string, payload: Record<string, unknown>) =>
+    request<WorkbenchEvidenceImport>(`/api/personas/${encodeURIComponent(slug)}/evidence-imports`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   renameConversation: (id: string, title: string) =>
     request<Conversation>(`/api/conversations/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -102,6 +113,14 @@ export const api = {
     request<PromotionHandoffExport>(
       `/api/promotion-handoffs/${encodeURIComponent(handoffId)}/export?format=${encodeURIComponent(format)}`
     ),
+  listTrainingPreps: (slug: string, conversationId?: string) =>
+    request<TrainingPrepArtifact[]>(
+      `/api/personas/${encodeURIComponent(slug)}/training-preps${conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''}`
+    ),
+  createTrainingPrep: (handoffId: string) =>
+    request<TrainingPrepArtifact>(`/api/promotion-handoffs/${encodeURIComponent(handoffId)}/training-preps`, {
+      method: 'POST',
+    }),
   refreshConversationSummary: (id: string) =>
     request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/refresh-summary`, {
       method: 'POST',

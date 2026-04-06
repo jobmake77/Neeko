@@ -86,6 +86,36 @@ export async function cmdWorkbenchServer(
         writeJson(res, 200, service.listPromotionHandoffs(personaSlug, conversationId));
         return;
       }
+      const personaEvidenceImportsMatch = path.match(/^\/api\/personas\/([^/]+)\/evidence-imports$/);
+      if (req.method === 'GET' && personaEvidenceImportsMatch) {
+        const personaSlug = decodeURIComponent(personaEvidenceImportsMatch[1]);
+        const conversationId = getString(url.searchParams.get('conversationId'));
+        writeJson(res, 200, service.listEvidenceImports(personaSlug, conversationId));
+        return;
+      }
+      if (req.method === 'POST' && personaEvidenceImportsMatch) {
+        const body = await readBody(req);
+        const sourcePath = getString(body.sourcePath);
+        const targetManifestPath = getString(body.targetManifestPath);
+        if (!sourcePath) throw new Error('sourcePath is required');
+        if (!targetManifestPath) throw new Error('targetManifestPath is required');
+        writeJson(res, 200, await service.importEvidence({
+          personaSlug: decodeURIComponent(personaEvidenceImportsMatch[1]),
+          conversationId: getString(body.conversationId),
+          sourceKind: (getString(body.sourceKind) as 'chat' | 'video' | undefined) ?? 'chat',
+          sourcePath,
+          targetManifestPath,
+          chatPlatform: getString(body.chatPlatform) as 'wechat' | 'feishu' | undefined,
+        }));
+        return;
+      }
+      const personaTrainingPrepMatch = path.match(/^\/api\/personas\/([^/]+)\/training-preps$/);
+      if (req.method === 'GET' && personaTrainingPrepMatch) {
+        const personaSlug = decodeURIComponent(personaTrainingPrepMatch[1]);
+        const conversationId = getString(url.searchParams.get('conversationId'));
+        writeJson(res, 200, service.listTrainingPrepArtifacts(personaSlug, conversationId));
+        return;
+      }
       if (req.method === 'POST' && personaConversationsMatch) {
         const body = await readBody(req);
         const conversation = service.createConversation(
@@ -245,6 +275,11 @@ export async function cmdWorkbenchServer(
         const requestedFormat = getString(url.searchParams.get('format'));
         const format = requestedFormat === 'json' ? 'json' : 'markdown';
         writeJson(res, 200, service.exportPromotionHandoff(decodeURIComponent(handoffExportMatch[1]), format));
+        return;
+      }
+      const handoffTrainingPrepMatch = path.match(/^\/api\/promotion-handoffs\/([^/]+)\/training-preps$/);
+      if (req.method === 'POST' && handoffTrainingPrepMatch) {
+        writeJson(res, 200, service.createTrainingPrepFromHandoff(decodeURIComponent(handoffTrainingPrepMatch[1])));
         return;
       }
 

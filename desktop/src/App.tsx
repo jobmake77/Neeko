@@ -15,6 +15,8 @@ import {
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  TrainingPrepArtifact,
+  WorkbenchEvidenceImport,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './lib/types';
@@ -123,11 +125,15 @@ export default function App() {
   const [bundle, setBundle] = useState<ConversationBundle | null>(null);
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
   const [promotionHandoffs, setPromotionHandoffs] = useState<PromotionHandoff[]>([]);
+  const [evidenceImports, setEvidenceImports] = useState<WorkbenchEvidenceImport[]>([]);
+  const [trainingPreps, setTrainingPreps] = useState<TrainingPrepArtifact[]>([]);
   const [recentRuns, setRecentRuns] = useState<WorkbenchRun[]>([]);
   const [currentRun, setCurrentRun] = useState<WorkbenchRun | null>(null);
   const [runReport, setRunReport] = useState<WorkbenchRunReport | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [formDefaults, setFormDefaults] = useState(initialDefaults);
 
   useEffect(() => {
@@ -147,6 +153,8 @@ export default function App() {
       setBundle(null);
       setCandidates([]);
       setPromotionHandoffs([]);
+      setEvidenceImports([]);
+      setTrainingPreps([]);
       return;
     }
     void refreshConversation(selectedConversationId);
@@ -173,6 +181,12 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(FORM_DEFAULTS_KEY, JSON.stringify(formDefaults));
   }, [formDefaults]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 3200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (!currentRun || currentRun.status !== 'running') return;
@@ -257,9 +271,17 @@ export default function App() {
       const nextHandoffs = selectedPersonaSlug
         ? await api.listPromotionHandoffs(selectedPersonaSlug, id)
         : [];
+      const nextImports = selectedPersonaSlug
+        ? await api.listEvidenceImports(selectedPersonaSlug, id)
+        : [];
+      const nextTrainingPreps = selectedPersonaSlug
+        ? await api.listTrainingPreps(selectedPersonaSlug, id)
+        : [];
       setBundle(nextBundle);
       setCandidates(nextCandidates);
       setPromotionHandoffs(nextHandoffs);
+      setEvidenceImports(nextImports);
+      setTrainingPreps(nextTrainingPreps);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -313,6 +335,8 @@ export default function App() {
       setBundle(null);
       setCandidates([]);
       setPromotionHandoffs([]);
+      setEvidenceImports([]);
+      setTrainingPreps([]);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -327,9 +351,17 @@ export default function App() {
       const nextHandoffs = selectedPersonaSlug
         ? await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId)
         : [];
+      const nextImports = selectedPersonaSlug
+        ? await api.listEvidenceImports(selectedPersonaSlug, selectedConversationId)
+        : [];
+      const nextTrainingPreps = selectedPersonaSlug
+        ? await api.listTrainingPreps(selectedPersonaSlug, selectedConversationId)
+        : [];
       setBundle(nextBundle);
       setCandidates(nextCandidates);
       setPromotionHandoffs(nextHandoffs);
+      setEvidenceImports(nextImports);
+      setTrainingPreps(nextTrainingPreps);
       await refreshThreads(selectedPersonaSlug);
       setError(null);
     } catch (err) {
@@ -354,6 +386,7 @@ export default function App() {
       setCandidates(nextCandidates);
       await refreshThreads(selectedPersonaSlug);
       setActiveTab('Citations');
+      setNotice('Message sent.');
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -392,6 +425,7 @@ export default function App() {
     try {
       const result = await api.reviewMemoryCandidate(selectedConversationId, candidateId, status);
       setCandidates(result.candidates);
+      setNotice(`Candidate marked ${status}.`);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -406,6 +440,7 @@ export default function App() {
     try {
       const result = await api.setCandidatePromotionState(selectedConversationId, candidateId, promotionState);
       setCandidates(result.candidates);
+      setNotice(promotionState === 'ready' ? 'Candidate added to promotion-ready queue.' : 'Candidate removed from promotion-ready queue.');
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -419,6 +454,7 @@ export default function App() {
       const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
       setPromotionHandoffs(nextHandoffs);
       setActiveTab('Writeback');
+      setNotice('Promotion handoff created.');
       setError(null);
       if (!nextHandoffs.some((item) => item.id === handoff.id)) {
         setPromotionHandoffs((current) => [handoff, ...current]);
@@ -434,6 +470,7 @@ export default function App() {
       await api.updatePromotionHandoff(handoffId, status);
       const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
       setPromotionHandoffs(nextHandoffs);
+      setNotice(`Handoff marked ${status}.`);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -444,9 +481,70 @@ export default function App() {
     try {
       const exported = await api.exportPromotionHandoff(handoffId, format);
       await navigator.clipboard.writeText(exported.content);
+      setNotice(`${exported.filename} copied to clipboard.`);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleCreateTrainingPrep(handoffId: string) {
+    if (!selectedPersonaSlug || !selectedConversationId) return;
+    try {
+      await api.createTrainingPrep(handoffId);
+      const nextTrainingPreps = await api.listTrainingPreps(selectedPersonaSlug, selectedConversationId);
+      setTrainingPreps(nextTrainingPreps);
+      setNotice('Training prep artifact created.');
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleCopyMessage(content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setNotice('Message copied to clipboard.');
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleImportEvidence(payload: {
+    sourceKind: 'chat' | 'video';
+    sourcePath: string;
+    targetManifestPath: string;
+    chatPlatform?: 'wechat' | 'feishu';
+  }) {
+    if (!selectedPersonaSlug) return;
+    setImportLoading(true);
+    try {
+      let conversationId = selectedConversationId;
+      if (!conversationId) {
+        const created = await api.createConversation(selectedPersonaSlug, 'Evidence Intake');
+        conversationId = created.id;
+        setSelectedConversationId(created.id);
+      }
+      await api.importEvidence(selectedPersonaSlug, {
+        conversationId,
+        sourceKind: payload.sourceKind,
+        sourcePath: payload.sourcePath,
+        targetManifestPath: payload.targetManifestPath,
+        chatPlatform: payload.chatPlatform,
+      });
+      if (selectedPersonaSlug) {
+        await refreshThreads(selectedPersonaSlug);
+      }
+      if (conversationId) {
+        await refreshConversation(conversationId);
+      }
+      setNotice(`${payload.sourceKind} evidence imported into workbench.`);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImportLoading(false);
     }
   }
 
@@ -475,7 +573,17 @@ export default function App() {
       />
       <main className="workspace-container">
         {activeView === 'Chat' ? (
-          <ChatWorkspace bundle={bundle} loading={chatLoading} onSend={handleSendMessage} />
+          <ChatWorkspace
+            bundle={bundle}
+            loading={chatLoading}
+            personaSlug={selectedPersonaSlug}
+            evidenceImports={evidenceImports}
+            importLoading={importLoading}
+            notice={notice}
+            onSend={handleSendMessage}
+            onCopyMessage={handleCopyMessage}
+            onImportEvidence={handleImportEvidence}
+          />
         ) : (
           <WorkbenchForms
             activeView={activeView as Exclude<NavView, 'Chat'>}
@@ -504,6 +612,7 @@ export default function App() {
         bundle={bundle}
         candidates={candidates}
         promotionHandoffs={promotionHandoffs}
+        trainingPreps={trainingPreps}
         recentRuns={recentRuns}
         currentRunId={currentRun?.id ?? null}
         onSelectRun={handleSelectRun}
@@ -512,6 +621,7 @@ export default function App() {
         onCreatePromotionHandoff={handleCreatePromotionHandoff}
         onUpdatePromotionHandoff={handleUpdatePromotionHandoff}
         onExportPromotionHandoff={handleExportPromotionHandoff}
+        onCreateTrainingPrep={handleCreateTrainingPrep}
         runReport={runReport}
       />
     </div>

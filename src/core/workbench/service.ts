@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { basename, extname, join } from 'path';
 import { spawn } from 'child_process';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
@@ -9,7 +9,18 @@ import { MemoryStore } from '../memory/store.js';
 import { MemoryNode } from '../models/memory.js';
 import { Persona, PersonaSchema } from '../models/persona.js';
 import { Soul, SoulSchema } from '../models/soul.js';
+import { EvidenceItem } from '../models/evidence.js';
 import { loadSkillLibrary } from '../skills/library.js';
+import { RawDocument } from '../models/memory.js';
+import {
+  buildChatEvidenceBatchFromFile,
+  buildStandaloneEvidenceBatch,
+  buildVideoTranscriptEvidenceBatch,
+  convertEvidenceItemsToDocuments,
+  loadTargetManifest,
+  writeEvidenceArtifacts,
+} from '../pipeline/evidence-layer.js';
+import { VideoAdapter } from '../pipeline/ingestion/video.js';
 import {
   CitationItem,
   Conversation,
@@ -19,7 +30,9 @@ import {
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  TrainingPrepArtifact,
   SessionSummary,
+  WorkbenchEvidenceImport,
   WorkbenchRun,
   WorkbenchRunReport,
 } from '../models/workbench.js';
@@ -73,6 +86,15 @@ export interface WorkbenchExportInput {
   slug: string;
   format?: string;
   outputDir?: string;
+}
+
+export interface WorkbenchEvidenceImportInput {
+  personaSlug: string;
+  conversationId?: string;
+  sourceKind: 'chat' | 'video';
+  sourcePath: string;
+  targetManifestPath: string;
+  chatPlatform?: 'wechat' | 'feishu';
 }
 
 export interface PersonaResponseMeta {
@@ -182,6 +204,126 @@ function renderPromotionHandoffMarkdown(handoff: PromotionHandoff): string {
     lines.push(`   - created_at: ${item.created_at}`);
   });
   return lines.join('\n');
+}
+
+function buildEvidenceImportSummary(sourceKind: WorkbenchEvidenceImport['source_kind'], stats: WorkbenchEvidenceImport['stats']): string {
+  return [
+    `${sourceKind} import`,
+    `${stats.windows} evidence windows`,
+    `${stats.cross_session_stable_items} stable`,
+    `${stats.blocked_scene_items} blocked-scene`,
+  ].join(' · ');
+}
+
+function buildTrainingPrepSummary(handoff: PromotionHandoff, docs: RawDocument[]): string {
+  return [
+    `training prep from handoff`,
+    `${handoff.items.length} handoff items`,
+    `${docs.length} training documents`,
+    handoff.summary,
+  ].join(' · ');
+}
+
+function createTranscriptDoc(
+  sourcePath: string,
+  content: string,
+  metadata: Record<string, unknown> = {},
+  publishedAt?: string
+): RawDocument {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    source_type: 'video',
+    source_url: sourcePath,
+    source_platform: 'video_transcript',
+    content,
+    author: String(metadata.speaker_name ?? metadata.speaker ?? 'unknown'),
+    published_at: publishedAt,
+    fetched_at: now,
+    metadata: {
+      filename: basename(sourcePath),
+      speaker_segments: [],
+      nonverbal_signals: [],
+      ...metadata,
+    },
+  };
+}
+
+function safeIso(value: unknown): string | undefined {
+  const text = String(value ?? '').trim();
+  if (!text) return undefined;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function parseTranscriptSourceFile(sourcePath: string): RawDocument[] | null {
+  const ext = extname(sourcePath).toLowerCase();
+  if (!['.txt', '.md', '.json', '.jsonl', '.ndjson'].includes(ext)) return null;
+  const raw = readFileSync(sourcePath, 'utf-8').trim();
+  if (!raw) return [];
+
+  if (ext === '.txt' || ext === '.md') {
+    return [createTranscriptDoc(sourcePath, raw)];
+  }
+
+  if (ext === '.jsonl' || ext === '.ndjson') {
+    return raw
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .map((segment) =>
+        createTranscriptDoc(
+          sourcePath,
+          String(segment.text ?? segment.content ?? '').trim(),
+          {
+            speaker_name: segment.speaker_name ?? segment.speaker,
+            speaker_role: segment.speaker_role,
+            segment_start_ms: segment.segment_start_ms ?? segment.start_ms,
+            segment_end_ms: segment.segment_end_ms ?? segment.end_ms,
+            segment_start_iso: segment.segment_start_iso ?? segment.start_iso,
+            segment_end_iso: segment.segment_end_iso ?? segment.end_iso,
+            speaker_segments: Array.isArray(segment.speaker_segments) ? segment.speaker_segments : [],
+            nonverbal_signals: Array.isArray(segment.nonverbal_signals) ? segment.nonverbal_signals : [],
+          },
+          safeIso(segment.segment_start_iso ?? segment.start_iso ?? segment.timestamp)
+        )
+      )
+      .filter((doc) => doc.content.length > 0);
+  }
+
+  const parsed = JSON.parse(raw) as unknown;
+  const segments =
+    Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).segments)
+        ? (parsed as Record<string, unknown>).segments as Record<string, unknown>[]
+        : null;
+  if (!segments) {
+    const singleton = parsed as Record<string, unknown>;
+    const content = String(singleton.text ?? singleton.content ?? '').trim();
+    return content ? [createTranscriptDoc(sourcePath, content, singleton)] : [];
+  }
+
+  return segments
+    .map((segment) =>
+      createTranscriptDoc(
+        sourcePath,
+        String(segment.text ?? segment.content ?? '').trim(),
+        {
+          speaker_name: segment.speaker_name ?? segment.speaker,
+          speaker_role: segment.speaker_role,
+          segment_start_ms: segment.segment_start_ms ?? segment.start_ms ?? segment.start,
+          segment_end_ms: segment.segment_end_ms ?? segment.end_ms ?? segment.end,
+          segment_start_iso: segment.segment_start_iso ?? segment.start_iso,
+          segment_end_iso: segment.segment_end_iso ?? segment.end_iso,
+          speaker_segments: Array.isArray(segment.speaker_segments) ? segment.speaker_segments : [],
+          nonverbal_signals: Array.isArray(segment.nonverbal_signals) ? segment.nonverbal_signals : [],
+        },
+        safeIso(segment.segment_start_iso ?? segment.start_iso ?? segment.timestamp)
+      )
+    )
+    .filter((doc) => doc.content.length > 0);
 }
 
 export class WorkbenchService {
@@ -358,6 +500,14 @@ export class WorkbenchService {
     return this.store.listPromotionHandoffs(personaSlug, conversationId);
   }
 
+  listEvidenceImports(personaSlug: string, conversationId?: string): WorkbenchEvidenceImport[] {
+    return this.store.listEvidenceImports(personaSlug, conversationId);
+  }
+
+  listTrainingPrepArtifacts(personaSlug: string, conversationId?: string): TrainingPrepArtifact[] {
+    return this.store.listTrainingPrepArtifacts(personaSlug, conversationId);
+  }
+
   getPromotionHandoff(handoffId: string): PromotionHandoff | null {
     return this.store.getPromotionHandoff(handoffId);
   }
@@ -472,6 +622,107 @@ export class WorkbenchService {
       filename: `${filenameBase}.md`,
       content: renderPromotionHandoffMarkdown(handoff),
     };
+  }
+
+  async importEvidence(input: WorkbenchEvidenceImportInput): Promise<WorkbenchEvidenceImport> {
+    this.loadPersonaAssets(input.personaSlug);
+    const manifest = loadTargetManifest(input.targetManifestPath);
+    const importId = crypto.randomUUID();
+    const importDir = join(this.store.getEvidenceImportsDir(), importId);
+    mkdirSync(importDir, { recursive: true });
+
+    let batch;
+    let sourceDocs: RawDocument[] = [];
+    if (input.sourceKind === 'chat') {
+      batch = await buildChatEvidenceBatchFromFile(input.sourcePath, {
+        manifest,
+        sourceType: input.chatPlatform ?? 'wechat',
+        sourceUrl: input.sourcePath,
+      });
+    } else {
+      sourceDocs = parseTranscriptSourceFile(input.sourcePath) ?? [];
+      if (sourceDocs.length === 0) {
+        const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+        sourceDocs = await adapter.fetch(input.sourcePath);
+      }
+      batch = buildVideoTranscriptEvidenceBatch(sourceDocs, manifest);
+    }
+
+    const docs = convertEvidenceItemsToDocuments(batch.items, sourceDocs);
+    const artifacts = writeEvidenceArtifacts(importDir, batch, manifest);
+    const documentsPath = join(importDir, 'documents.json');
+    writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+
+    return this.store.saveEvidenceImport({
+      id: importId,
+      persona_slug: input.personaSlug,
+      conversation_id: input.conversationId,
+      source_kind: input.sourceKind,
+      source_platform: input.sourceKind === 'chat' ? input.chatPlatform : 'video_transcript',
+      source_path: input.sourcePath,
+      target_manifest_path: input.targetManifestPath,
+      status: 'completed',
+      item_count: batch.items.length,
+      summary: buildEvidenceImportSummary(input.sourceKind, batch.stats),
+      stats: batch.stats,
+      artifacts: {
+        ...artifacts,
+        documents_path: documentsPath,
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  createTrainingPrepFromHandoff(handoffId: string): TrainingPrepArtifact {
+    const handoff = this.store.getPromotionHandoff(handoffId);
+    if (!handoff) {
+      throw new Error(`Promotion handoff "${handoffId}" not found.`);
+    }
+
+    const prepId = crypto.randomUUID();
+    const prepDir = join(this.store.getTrainingPrepDir(), prepId);
+    mkdirSync(prepDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    const docs: RawDocument[] = handoff.items.map((item, index) => ({
+      id: crypto.randomUUID(),
+      source_type: 'custom',
+      source_url: `workbench:handoff:${handoff.id}`,
+      source_platform: 'workbench_training_prep',
+      content: item.content,
+      author: handoff.persona_slug,
+      published_at: item.created_at,
+      fetched_at: now,
+      metadata: {
+        handoff_id: handoff.id,
+        candidate_id: item.candidate_id,
+        candidate_type: item.candidate_type,
+        source_message_ids: item.source_message_ids,
+        session_summary: handoff.session_summary,
+        handoff_index: index,
+      },
+    }));
+
+    const prepBatch = buildStandaloneEvidenceBatch(docs, { sourceLabel: 'workbench_training_prep' });
+    const evidenceItems: EvidenceItem[] = prepBatch.items;
+    const batchArtifacts = writeEvidenceArtifacts(prepDir, prepBatch);
+    const documentsPath = join(prepDir, 'documents.json');
+    writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+
+    return this.store.saveTrainingPrepArtifact({
+      id: prepId,
+      persona_slug: handoff.persona_slug,
+      conversation_id: handoff.conversation_id,
+      handoff_id: handoff.id,
+      status: 'drafted',
+      item_count: docs.length,
+      summary: buildTrainingPrepSummary(handoff, docs),
+      evidence_index_path: batchArtifacts.evidence_index_path,
+      documents_path: documentsPath,
+      created_at: now,
+      updated_at: now,
+    });
   }
 
   createPersona(input: WorkbenchCreateInput): WorkbenchRun {

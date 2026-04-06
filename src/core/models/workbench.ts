@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EvidenceStatsSchema } from './evidence.js';
 
 export const CitationItemSchema = z.object({
   id: z.string(),
@@ -70,6 +71,49 @@ export const PromotionHandoffSchema = z.object({
   updated_at: z.string().datetime(),
 });
 export type PromotionHandoff = z.infer<typeof PromotionHandoffSchema>;
+
+export const WorkbenchEvidenceImportArtifactsSchema = z.object({
+  evidence_index_path: z.string(),
+  evidence_stats_path: z.string(),
+  speaker_summary_path: z.string(),
+  scene_summary_path: z.string(),
+  target_manifest_path: z.string().optional(),
+  documents_path: z.string(),
+});
+export type WorkbenchEvidenceImportArtifacts = z.infer<typeof WorkbenchEvidenceImportArtifactsSchema>;
+
+export const WorkbenchEvidenceImportSchema = z.object({
+  id: z.string().uuid(),
+  persona_slug: z.string(),
+  conversation_id: z.string().uuid().optional(),
+  source_kind: z.enum(['chat', 'video']),
+  source_platform: z.string().optional(),
+  source_path: z.string(),
+  target_manifest_path: z.string(),
+  status: z.enum(['completed', 'failed']).default('completed'),
+  item_count: z.number().int().min(0),
+  summary: z.string(),
+  stats: EvidenceStatsSchema,
+  artifacts: WorkbenchEvidenceImportArtifactsSchema,
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+export type WorkbenchEvidenceImport = z.infer<typeof WorkbenchEvidenceImportSchema>;
+
+export const TrainingPrepArtifactSchema = z.object({
+  id: z.string().uuid(),
+  persona_slug: z.string(),
+  conversation_id: z.string().uuid().optional(),
+  handoff_id: z.string().uuid(),
+  status: z.enum(['drafted', 'exported']).default('drafted'),
+  item_count: z.number().int().min(0),
+  summary: z.string(),
+  evidence_index_path: z.string(),
+  documents_path: z.string(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+export type TrainingPrepArtifact = z.infer<typeof TrainingPrepArtifactSchema>;
 
 export const SessionSummarySchema = z.object({
   conversation_id: z.string().uuid(),

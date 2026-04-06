@@ -13,6 +13,10 @@ import {
   PromotionHandoffSchema,
   SessionSummary,
   SessionSummarySchema,
+  TrainingPrepArtifact,
+  TrainingPrepArtifactSchema,
+  WorkbenchEvidenceImport,
+  WorkbenchEvidenceImportSchema,
   WorkbenchRun,
   WorkbenchRunSchema,
 } from '../models/workbench.js';
@@ -42,7 +46,9 @@ export class WorkbenchStore {
     this.baseDir = baseDir;
     ensureDir(this.baseDir);
     ensureDir(this.getConversationsDir());
+    ensureDir(this.getEvidenceImportsDir());
     ensureDir(this.getHandoffsDir());
+    ensureDir(this.getTrainingPrepDir());
     ensureDir(this.getRunsDir());
   }
 
@@ -56,6 +62,14 @@ export class WorkbenchStore {
 
   getHandoffsDir(): string {
     return join(this.baseDir, 'handoffs');
+  }
+
+  getEvidenceImportsDir(): string {
+    return join(this.baseDir, 'evidence-imports');
+  }
+
+  getTrainingPrepDir(): string {
+    return join(this.baseDir, 'training-preps');
   }
 
   private getConversationDir(id: string): string {
@@ -84,6 +98,14 @@ export class WorkbenchStore {
 
   private getHandoffPath(id: string): string {
     return join(this.getHandoffsDir(), `${id}.json`);
+  }
+
+  private getEvidenceImportPath(id: string): string {
+    return join(this.getEvidenceImportsDir(), `${id}.json`);
+  }
+
+  private getTrainingPrepPath(id: string): string {
+    return join(this.getTrainingPrepDir(), `${id}.json`);
   }
 
   listRuns(personaSlug?: string): WorkbenchRun[] {
@@ -252,5 +274,51 @@ export class WorkbenchStore {
     const current = this.getPromotionHandoff(id);
     if (!current) return null;
     return this.savePromotionHandoff({ ...current, ...patch });
+  }
+
+  saveEvidenceImport(entry: WorkbenchEvidenceImport): WorkbenchEvidenceImport {
+    const parsed = WorkbenchEvidenceImportSchema.parse(entry);
+    writeJsonFile(this.getEvidenceImportPath(parsed.id), parsed);
+    return parsed;
+  }
+
+  getEvidenceImport(id: string): WorkbenchEvidenceImport | null {
+    const raw = readJsonFile<WorkbenchEvidenceImport | null>(this.getEvidenceImportPath(id), null);
+    if (!raw) return null;
+    return WorkbenchEvidenceImportSchema.parse(raw);
+  }
+
+  listEvidenceImports(personaSlug?: string, conversationId?: string): WorkbenchEvidenceImport[] {
+    if (!existsSync(this.getEvidenceImportsDir())) return [];
+    return readdirSync(this.getEvidenceImportsDir(), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => this.getEvidenceImport(entry.name.replace(/\.json$/, '')))
+      .filter((item): item is WorkbenchEvidenceImport => Boolean(item))
+      .filter((item) => !personaSlug || item.persona_slug === personaSlug)
+      .filter((item) => !conversationId || item.conversation_id === conversationId)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  saveTrainingPrepArtifact(entry: TrainingPrepArtifact): TrainingPrepArtifact {
+    const parsed = TrainingPrepArtifactSchema.parse(entry);
+    writeJsonFile(this.getTrainingPrepPath(parsed.id), parsed);
+    return parsed;
+  }
+
+  getTrainingPrepArtifact(id: string): TrainingPrepArtifact | null {
+    const raw = readJsonFile<TrainingPrepArtifact | null>(this.getTrainingPrepPath(id), null);
+    if (!raw) return null;
+    return TrainingPrepArtifactSchema.parse(raw);
+  }
+
+  listTrainingPrepArtifacts(personaSlug?: string, conversationId?: string): TrainingPrepArtifact[] {
+    if (!existsSync(this.getTrainingPrepDir())) return [];
+    return readdirSync(this.getTrainingPrepDir(), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => this.getTrainingPrepArtifact(entry.name.replace(/\.json$/, '')))
+      .filter((item): item is TrainingPrepArtifact => Boolean(item))
+      .filter((item) => !personaSlug || item.persona_slug === personaSlug)
+      .filter((item) => !conversationId || item.conversation_id === conversationId)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   }
 }

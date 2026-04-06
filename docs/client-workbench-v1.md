@@ -93,6 +93,8 @@
 19. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
 20. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
 21. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
+22. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
+23. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
 
 ### 3.2 默认写回规则
 
@@ -102,6 +104,7 @@
 4. 不直接写 `Soul`
 5. 不自动晋升为正式长期记忆
 6. `promotion-ready` 只生成 handoff artifact，不自动提升为正式记忆
+7. `training prep` 只生成 workbench 内部训练输入包，不直接进入正式训练写回
 
 ### 3.3 当前限制
 
@@ -109,6 +112,7 @@
 2. 会话候选生成目前先用轻量启发式，不额外增加一层昂贵 LLM 审核
 3. create/train/experiment/export 仍由现有 CLI 执行，本地 server 负责结构化调度与状态持久化
 4. handoff 目前仍是本地交接层，不包含正式审核流与一键写入能力
+5. 视频原始媒体文件仍依赖转写能力；但 transcript-first 文件已经可以直接接入 workbench
 
 ## 5. 当前工作台新增交接层
 
@@ -145,9 +149,52 @@
 3. `PATCH /api/promotion-handoffs/:id`
 4. `GET /api/promotion-handoffs/:id`
 5. `GET /api/promotion-handoffs/:id/export?format=markdown|json`
+6. `GET /api/personas/:slug/evidence-imports`
+7. `POST /api/personas/:slug/evidence-imports`
+8. `GET /api/personas/:slug/training-preps`
+9. `POST /api/promotion-handoffs/:id/training-preps`
 
-## 6. 下一步
+## 6. 当前新增工作流
+
+### 6.1 Evidence Intake
+
+工作台聊天页现在支持：
+
+1. 导入聊天记录文件
+2. 导入视频 transcript 文件
+3. 绑定 `target manifest`
+4. 把 Evidence Layer 产物落到 workbench 本地资产目录
+
+当前视频入口有两条路：
+
+1. `transcript-first`：`.txt/.md/.json/.jsonl` transcript 直接导入
+2. 原始媒体文件：仍走转写能力
+
+### 6.2 Training Prep Adapter
+
+当前写回安全链路已经延长为：
+
+`memory candidates -> promotion-ready queue -> handoff artifact -> training prep artifact`
+
+`training prep artifact` 的职责是：
+
+1. 把 handoff 候选转成可训练输入包
+2. 生成 `documents.json`
+3. 生成 `evidence-index.jsonl`
+4. 继续和正式 `Soul / Memory` 隔离
+
+### 6.3 Chat UX 收尾
+
+聊天工作区已补：
+
+1. `Cmd/Ctrl + Enter` 快速发送
+2. 单条消息复制
+3. notice 提示
+4. 聊天页内直接做 Evidence Intake
+5. 导入结果快速回看
+
+## 7. 下一步
 
 1. 验证 `workbench-server` 与桌面前端联调
 2. 视本地环境补齐 Tauri 构建链路
-3. 继续把聊天 / 视频证据层接入这套工作台，而不影响现有培养主线
+3. 把 `training prep` 往后接成真正的训练整理流和审核流，而不影响现有培养主线

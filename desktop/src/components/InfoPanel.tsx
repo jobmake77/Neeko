@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
+import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, TrainingPrepArtifact, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
 import { ConversationBundle } from '../lib/types';
 
 const TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Writeback', 'Training'];
@@ -11,6 +11,7 @@ interface InfoPanelProps {
   bundle: ConversationBundle | null;
   candidates: MemoryCandidate[];
   promotionHandoffs: PromotionHandoff[];
+  trainingPreps: TrainingPrepArtifact[];
   recentRuns: WorkbenchRun[];
   currentRunId: string | null;
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
@@ -19,6 +20,7 @@ interface InfoPanelProps {
   onCreatePromotionHandoff: () => Promise<void>;
   onUpdatePromotionHandoff: (handoffId: string, status: PromotionHandoff['status']) => Promise<void>;
   onExportPromotionHandoff: (handoffId: string, format: 'markdown' | 'json') => Promise<void>;
+  onCreateTrainingPrep: (handoffId: string) => Promise<void>;
   runReport: WorkbenchRunReport | null;
 }
 
@@ -29,6 +31,7 @@ export function InfoPanel({
   bundle,
   candidates,
   promotionHandoffs,
+  trainingPreps,
   recentRuns,
   currentRunId,
   onSelectRun,
@@ -37,6 +40,7 @@ export function InfoPanel({
   onCreatePromotionHandoff,
   onUpdatePromotionHandoff,
   onExportPromotionHandoff,
+  onCreateTrainingPrep,
   runReport,
 }: InfoPanelProps) {
   const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected' | 'ready_queue'>('all');
@@ -194,6 +198,13 @@ export function InfoPanel({
                 >
                   Copy JSON
                 </button>
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={() => void onCreateTrainingPrep(selectedHandoff.id)}
+                >
+                  Create Training Prep
+                </button>
               </div>
               <div className="handoff-item-list">
                 {selectedHandoff.items.map((item) => (
@@ -304,6 +315,20 @@ export function InfoPanel({
                   <p>{handoff.summary}</p>
                   <small>{new Date(handoff.updated_at).toLocaleString()}</small>
                 </button>
+              ))}
+            </div>
+          ) : null}
+          {trainingPreps.length > 0 ? (
+            <div className="inspector-section">
+              <h3>Training Prep</h3>
+              {trainingPreps.slice(0, 3).map((prep) => (
+                <article key={prep.id} className="mini-card">
+                  <strong>{prep.status}</strong>
+                  <p>{prep.summary}</p>
+                  <small>{new Date(prep.updated_at).toLocaleString()}</small>
+                  <code>{prep.documents_path}</code>
+                  <code>{prep.evidence_index_path}</code>
+                </article>
               ))}
             </div>
           ) : null}

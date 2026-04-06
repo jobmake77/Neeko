@@ -27,6 +27,26 @@ export function ChatWorkspace({ bundle, loading, onSend }: ChatWorkspaceProps) {
         </div>
         {bundle?.session_summary ? <span className="badge">{bundle.session_summary.candidate_count} candidates</span> : null}
       </div>
+      {bundle ? (
+        <div className="thread-meta-grid">
+          <div className="meta-card">
+            <strong>Created</strong>
+            <span>{new Date(bundle.conversation.created_at).toLocaleString()}</span>
+          </div>
+          <div className="meta-card">
+            <strong>Updated</strong>
+            <span>{new Date(bundle.conversation.updated_at).toLocaleString()}</span>
+          </div>
+          <div className="meta-card">
+            <strong>Messages</strong>
+            <span>{bundle.conversation.message_count}</span>
+          </div>
+          <div className="meta-card">
+            <strong>Summary Updated</strong>
+            <span>{bundle.session_summary ? new Date(bundle.session_summary.updated_at).toLocaleString() : 'Not yet'}</span>
+          </div>
+        </div>
+      ) : null}
       {bundle?.session_summary ? (
         <div className="session-summary-card">
           <strong>Session Summary</strong>

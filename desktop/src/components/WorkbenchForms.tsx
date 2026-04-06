@@ -13,6 +13,15 @@ interface WorkbenchFormsProps {
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
   apiBaseUrl: string;
   onApiBaseUrlChange: (value: string) => void;
+  defaultValues: {
+    createTarget: string;
+    rounds: string;
+    trainingProfile: string;
+    inputRouting: string;
+    questionsPerRound: string;
+    exportFormat: string;
+  };
+  onDefaultValuesChange: (patch: Partial<WorkbenchFormsProps['defaultValues']>) => void;
   serviceHealthy: boolean;
 }
 
@@ -29,14 +38,16 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     onSelectRun,
     apiBaseUrl,
     onApiBaseUrlChange,
+    defaultValues,
+    onDefaultValuesChange,
     serviceHealthy,
   } = props;
-  const [target, setTarget] = useState('');
-  const [rounds, setRounds] = useState('1');
-  const [trainingProfile, setTrainingProfile] = useState('full');
-  const [inputRouting, setInputRouting] = useState('legacy');
-  const [questionsPerRound, setQuestionsPerRound] = useState('5');
-  const [exportFormat, setExportFormat] = useState('openclaw');
+  const [target, setTarget] = useState(defaultValues.createTarget);
+  const [rounds, setRounds] = useState(defaultValues.rounds);
+  const [trainingProfile, setTrainingProfile] = useState(defaultValues.trainingProfile);
+  const [inputRouting, setInputRouting] = useState(defaultValues.inputRouting);
+  const [questionsPerRound, setQuestionsPerRound] = useState(defaultValues.questionsPerRound);
+  const [exportFormat, setExportFormat] = useState(defaultValues.exportFormat);
 
   const title = useMemo(() => {
     if (activeView === 'Create') return 'Create Persona';
@@ -108,21 +119,41 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         {activeView === 'Create' ? (
           <label className="field">
             <span>Target</span>
-            <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="@karpathy or local file" />
+            <input
+              value={target}
+              onChange={(event) => {
+                setTarget(event.target.value);
+                onDefaultValuesChange({ createTarget: event.target.value });
+              }}
+              placeholder="@karpathy or local file"
+            />
           </label>
         ) : null}
 
         {activeView !== 'Export' ? (
           <label className="field">
             <span>Rounds</span>
-            <input value={rounds} onChange={(event) => setRounds(event.target.value)} inputMode="numeric" />
+            <input
+              value={rounds}
+              onChange={(event) => {
+                setRounds(event.target.value);
+                onDefaultValuesChange({ rounds: event.target.value });
+              }}
+              inputMode="numeric"
+            />
           </label>
         ) : null}
 
         {activeView !== 'Export' ? (
           <label className="field">
             <span>Training profile</span>
-            <select value={trainingProfile} onChange={(event) => setTrainingProfile(event.target.value)}>
+            <select
+              value={trainingProfile}
+              onChange={(event) => {
+                setTrainingProfile(event.target.value);
+                onDefaultValuesChange({ trainingProfile: event.target.value });
+              }}
+            >
               <option value="baseline">baseline</option>
               <option value="full">full</option>
               <option value="a1">a1</option>
@@ -136,7 +167,13 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         {activeView === 'Experiment' || activeView === 'Train' || activeView === 'Create' ? (
           <label className="field">
             <span>Input routing</span>
-            <select value={inputRouting} onChange={(event) => setInputRouting(event.target.value)}>
+            <select
+              value={inputRouting}
+              onChange={(event) => {
+                setInputRouting(event.target.value);
+                onDefaultValuesChange({ inputRouting: event.target.value });
+              }}
+            >
               <option value="legacy">legacy</option>
               <option value="v2">v2</option>
             </select>
@@ -146,14 +183,27 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         {activeView === 'Experiment' ? (
           <label className="field">
             <span>Questions / round</span>
-            <input value={questionsPerRound} onChange={(event) => setQuestionsPerRound(event.target.value)} inputMode="numeric" />
+            <input
+              value={questionsPerRound}
+              onChange={(event) => {
+                setQuestionsPerRound(event.target.value);
+                onDefaultValuesChange({ questionsPerRound: event.target.value });
+              }}
+              inputMode="numeric"
+            />
           </label>
         ) : null}
 
         {activeView === 'Export' ? (
           <label className="field">
             <span>Format</span>
-            <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
+            <select
+              value={exportFormat}
+              onChange={(event) => {
+                setExportFormat(event.target.value);
+                onDefaultValuesChange({ exportFormat: event.target.value });
+              }}
+            >
               <option value="openclaw">openclaw</option>
             </select>
           </label>

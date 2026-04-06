@@ -234,6 +234,32 @@ button {
   line-height: 1.5;
 }
 
+.thread-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 22px 16px;
+}
+
+.meta-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.meta-card strong {
+  font-size: 0.82rem;
+  color: #5d626e;
+}
+
+.meta-card span {
+  line-height: 1.4;
+}
+
 .message-bubble {
   max-width: 84%;
   padding: 14px 16px;
@@ -461,5 +487,9 @@ pre {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .thread-meta-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }

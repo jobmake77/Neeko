@@ -22,8 +22,39 @@ const ACTIVE_VIEW_KEY = 'neeko.workbench.activeView';
 const ACTIVE_TAB_KEY = 'neeko.workbench.activeTab';
 const PERSONA_KEY = 'neeko.workbench.selectedPersona';
 const THREAD_KEY = 'neeko.workbench.selectedConversation';
+const FORM_DEFAULTS_KEY = 'neeko.workbench.formDefaults';
 
 export default function App() {
+  const initialDefaults = (() => {
+    try {
+      const raw = window.localStorage.getItem(FORM_DEFAULTS_KEY);
+      const parsed = raw ? JSON.parse(raw) as Partial<{
+        createTarget: string;
+        rounds: string;
+        trainingProfile: string;
+        inputRouting: string;
+        questionsPerRound: string;
+        exportFormat: string;
+      }> : {};
+      return {
+        createTarget: parsed.createTarget ?? '',
+        rounds: parsed.rounds ?? '1',
+        trainingProfile: parsed.trainingProfile ?? 'full',
+        inputRouting: parsed.inputRouting ?? 'legacy',
+        questionsPerRound: parsed.questionsPerRound ?? '5',
+        exportFormat: parsed.exportFormat ?? 'openclaw',
+      };
+    } catch {
+      return {
+        createTarget: '',
+        rounds: '1',
+        trainingProfile: 'full',
+        inputRouting: 'legacy',
+        questionsPerRound: '5',
+        exportFormat: 'openclaw',
+      };
+    }
+  })();
   const [activeView, setActiveView] = useState<NavView>(
     () => (window.localStorage.getItem(ACTIVE_VIEW_KEY) as NavView | null) ?? 'Chat'
   );
@@ -48,6 +79,7 @@ export default function App() {
   const [runReport, setRunReport] = useState<WorkbenchRunReport | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [formDefaults, setFormDefaults] = useState(initialDefaults);
 
   useEffect(() => {
     void refreshHealth();
@@ -87,6 +119,10 @@ export default function App() {
     if (selectedConversationId) window.localStorage.setItem(THREAD_KEY, selectedConversationId);
     else window.localStorage.removeItem(THREAD_KEY);
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(FORM_DEFAULTS_KEY, JSON.stringify(formDefaults));
+  }, [formDefaults]);
 
   useEffect(() => {
     if (!currentRun || currentRun.status !== 'running') return;
@@ -298,6 +334,12 @@ export default function App() {
     void refreshHealth();
   }
 
+  function handleFormDefaultsChange(
+    patch: Partial<typeof formDefaults>
+  ) {
+    setFormDefaults((current) => ({ ...current, ...patch }));
+  }
+
   return (
     <div className="app-shell">
       <NavigationRail activeView={activeView} onChange={setActiveView} />
@@ -327,6 +369,8 @@ export default function App() {
             onSelectRun={handleSelectRun}
             apiBaseUrl={apiBaseUrl}
             onApiBaseUrlChange={handleApiBaseUrlChange}
+            defaultValues={formDefaults}
+            onDefaultValuesChange={handleFormDefaultsChange}
             serviceHealthy={serviceHealthy}
           />
         )}

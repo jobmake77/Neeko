@@ -83,6 +83,8 @@
 9. 聊天主区显式展示 session summary
 10. run report 附带 log tail，可在客户端内直接查看最近运行输出
 11. 线程基础管理：rename / delete / refresh summary
+12. workbench 表单默认值本地持久化
+13. 聊天区线程详情卡：created / updated / message_count / summary_updated
 
 ### 3.2 默认写回规则
 

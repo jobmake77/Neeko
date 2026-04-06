@@ -96,6 +96,8 @@
 22. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
 23. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
 24. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
+25. Train 面板支持 `Run Smoke`，可用安全默认参数做一次低成本训练链路验证
+26. Chat 区可以直接查看 Evidence Intake 的 `speaker_role / scene / stable items` 指标
 
 ### 3.2 默认写回规则
 
@@ -213,6 +215,33 @@
 6. Train 面板直接展示最近的 `training prep / evidence intake` 资产路径，支持一键带入训练表单
 7. Train launch 支持清空 prep context，避免不同资产之间误串
 8. 右侧 `Training` 面板会同时显示 `training-report` 与 `training-context`，可直接审计 `prep_context`
+9. Train 面板支持 `Run Smoke`，默认走 `quick + 1 round + persona_extract`
+
+## 6.4 Smoke 与 Provider 治理
+
+为了让 workbench 能更稳定地做“先验证链路，再决定是否正式训练”，当前新增了两层保护：
+
+1. `Run Smoke`
+2. provider-aware preflight
+
+`Run Smoke` 的目标是：
+
+1. 用最低成本验证 train launch、prep context、日志与 report 链路
+2. 尽量避免直接触发长轮数训练
+3. 为客户端保留一个可重复的健康检查入口
+
+当前 smoke 默认：
+
+1. `mode=quick`
+2. `rounds=1`
+3. `track=persona_extract`
+4. 保留 `prep_context`
+
+当前 preflight 治理：
+
+1. 对 Kimi 增加 provider-aware 的 text/structured probe 重试
+2. 第二次 structured probe 自动切到更轻量的 schema
+3. 对 Kimi 提高 probe timeout，减少 20s 内 structured preflight 的误杀
 
 ## 7. 下一步
 

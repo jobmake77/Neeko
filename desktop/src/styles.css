@@ -314,6 +314,31 @@ button {
   gap: 10px;
 }
 
+.evidence-import-detail {
+  grid-column: 1 / -1;
+}
+
+.evidence-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.metric-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(248, 245, 239, 0.92);
+}
+
+.metric-group strong {
+  font-size: 0.82rem;
+  color: #3d4350;
+}
+
 .message-bubble {
   max-width: 84%;
   padding: 14px 16px;
@@ -604,6 +629,10 @@ pre {
 
   .evidence-intake-form,
   .evidence-import-list {
+    grid-template-columns: 1fr;
+  }
+
+  .evidence-metric-grid {
     grid-template-columns: 1fr;
   }
 }

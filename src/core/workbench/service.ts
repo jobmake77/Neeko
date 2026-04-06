@@ -65,6 +65,7 @@ export interface WorkbenchTrainingInput {
   prepEvidencePath?: string;
   prepArtifactId?: string;
   evidenceImportId?: string;
+  smoke?: boolean;
 }
 
 export interface WorkbenchExperimentInput {
@@ -801,21 +802,36 @@ export class WorkbenchService {
   }
 
   startTraining(input: WorkbenchTrainingInput): WorkbenchRun {
+    const isSmoke = input.smoke === true;
     const args = ['train', input.slug];
-    if (input.mode) args.push('--mode', input.mode);
-    if (typeof input.rounds === 'number') args.push('--rounds', String(input.rounds));
-    if (input.track) args.push('--track', input.track);
+    args.push('--mode', isSmoke ? 'quick' : (input.mode ?? 'quick'));
+    args.push('--rounds', String(isSmoke ? 1 : (typeof input.rounds === 'number' ? input.rounds : 1)));
+    args.push('--track', isSmoke ? 'persona_extract' : (input.track ?? 'full_serial'));
     if (input.trainingProfile) args.push('--training-profile', input.trainingProfile);
     if (input.inputRouting) args.push('--input-routing', input.inputRouting);
     if (input.trainingSeedMode) args.push('--training-seed-mode', input.trainingSeedMode);
-    if (typeof input.retries === 'number') args.push('--retries', String(input.retries));
-    if (input.fromCheckpoint) args.push('--from-checkpoint', input.fromCheckpoint);
+    args.push('--retries', String(typeof input.retries === 'number' ? input.retries : 2));
+    if (!isSmoke && input.fromCheckpoint) args.push('--from-checkpoint', input.fromCheckpoint);
     if (input.kimiStabilityMode) args.push('--kimi-stability-mode', input.kimiStabilityMode);
     if (input.prepDocumentsPath) args.push('--prep-documents-path', input.prepDocumentsPath);
     if (input.prepEvidencePath) args.push('--prep-evidence-path', input.prepEvidencePath);
     if (input.prepArtifactId) args.push('--prep-artifact-id', input.prepArtifactId);
     if (input.evidenceImportId) args.push('--evidence-import-id', input.evidenceImportId);
-    return this.startCliRun('train', input.slug, args, join(settings.getPersonaDir(input.slug), 'training-report.json'));
+    return this.startCliRun(
+      'train',
+      input.slug,
+      args,
+      join(settings.getPersonaDir(input.slug), 'training-report.json'),
+      {
+        env: isSmoke
+          ? {
+            NEEKO_PREFLIGHT_TRAIN_TIMEOUT_MS: process.env.NEEKO_PREFLIGHT_TRAIN_TIMEOUT_MS ?? '60000',
+            NEEKO_RETRY_PROVIDER_TIMEOUT_MAX: process.env.NEEKO_RETRY_PROVIDER_TIMEOUT_MAX ?? '2',
+          }
+          : undefined,
+        summaryLabel: isSmoke ? 'train smoke' : 'train',
+      }
+    );
   }
 
   startExperiment(input: WorkbenchExperimentInput): WorkbenchRun {
@@ -852,7 +868,12 @@ export class WorkbenchService {
       return this.store.updateRun(run.id, {
         status: inferredStatus,
         finished_at: new Date().toISOString(),
-        summary: inferredStatus === 'completed' ? run.summary ?? 'Run finished.' : run.summary ?? 'Process exited unexpectedly.',
+        summary: inferExitedRunSummary(run.summary, inferredStatus),
+      });
+    }
+    if ((run.status === 'completed' || run.status === 'failed') && typeof run.summary === 'string' && run.summary.endsWith(' started')) {
+      return this.store.updateRun(run.id, {
+        summary: inferExitedRunSummary(run.summary, run.status),
       });
     }
     return run;
@@ -983,7 +1004,11 @@ export class WorkbenchService {
     type: WorkbenchRun['type'],
     personaSlug: string | undefined,
     args: string[],
-    reportPath?: string
+    reportPath?: string,
+    options?: {
+      env?: Record<string, string>;
+      summaryLabel?: string;
+    }
   ): WorkbenchRun {
     const runId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
@@ -992,10 +1017,11 @@ export class WorkbenchService {
     const logPath = join(logDir, `${runId}.log`);
     const child = spawn(process.execPath, [this.cliEntryPath, ...args], {
       cwd: this.repoRoot,
-      env: { ...process.env, NEEKO_CLI_FORCE_EXIT: '1' },
+      env: { ...process.env, NEEKO_CLI_FORCE_EXIT: '1', ...(options?.env ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
     });
+    const summaryLabel = options?.summaryLabel ?? type;
 
     child.stdout.on('data', (chunk) => {
       writeFileSync(logPath, String(chunk), { flag: 'a' });
@@ -1011,7 +1037,7 @@ export class WorkbenchService {
       status: 'running',
       started_at: startedAt,
       report_path: reportPath,
-      summary: `${type} started`,
+      summary: `${summaryLabel} started`,
       log_path: logPath,
       pid: child.pid,
       command: [process.execPath, this.cliEntryPath, ...args],
@@ -1019,7 +1045,7 @@ export class WorkbenchService {
 
     child.on('exit', (code) => {
       const status = code === 0 ? 'completed' : 'failed';
-      const summary = code === 0 ? `${type} completed` : `${type} failed with exit code ${code}`;
+      const summary = code === 0 ? `${summaryLabel} completed` : `${summaryLabel} failed with exit code ${code}`;
       this.store.updateRun(runId, {
         status,
         finished_at: new Date().toISOString(),
@@ -1058,4 +1084,14 @@ export class WorkbenchService {
       return false;
     }
   }
+}
+
+function inferExitedRunSummary(summary: string | undefined, status: 'completed' | 'failed'): string {
+  if (!summary) {
+    return status === 'completed' ? 'Run finished.' : 'Process exited unexpectedly.';
+  }
+  if (summary.endsWith(' started')) {
+    return summary.replace(/ started$/, status === 'completed' ? ' completed' : ' failed');
+  }
+  return status === 'completed' ? summary : `${summary} (process exited)`;
 }

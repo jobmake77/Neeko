@@ -22,19 +22,13 @@ export function resolvePreferredProviderName(): ProviderName | undefined {
   return undefined;
 }
 
-/**
- * 返回当前可用的 LLM 模型实例。
- * 优先使用 activeProvider 对应的 key；若该 key 为空则按顺序 fallback 到第一个有值的 provider。
- */
-export function resolveModel(): LanguageModelV1 {
+function getProviderResolutionContext() {
   const cfg = settings.getAll();
-
   const anthropicKey = String(cfg.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '').trim();
-  const openaiKey    = String(cfg.openaiApiKey    || process.env.OPENAI_API_KEY    || '').trim();
-  const kimiKey      = String(cfg.kimiApiKey      || process.env.KIMI_API_KEY      || '').trim();
-  const geminiKey    = String(cfg.geminiApiKey    || process.env.GEMINI_API_KEY    || '').trim();
-  const deepseekKey  = String(cfg.deepseekApiKey  || process.env.DEEPSEEK_API_KEY  || '').trim();
-
+  const openaiKey = String(cfg.openaiApiKey || process.env.OPENAI_API_KEY || '').trim();
+  const kimiKey = String(cfg.kimiApiKey || process.env.KIMI_API_KEY || '').trim();
+  const geminiKey = String(cfg.geminiApiKey || process.env.GEMINI_API_KEY || '').trim();
+  const deepseekKey = String(cfg.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim();
   const preferred = resolvePreferredProviderName();
   const rawDefaultModel = String(cfg.defaultModel ?? '').trim();
   const kimiModelFromEnv = String(process.env.NEEKO_KIMI_MODEL ?? process.env.KIMI_MODEL ?? '').trim();
@@ -47,7 +41,6 @@ export function resolveModel(): LanguageModelV1 {
       'moonshot-v1-128k'
     );
 
-  // Build ordered list: preferred first, then rest
   const order = [
     preferred,
     'claude', 'openai', 'kimi', 'gemini', 'deepseek',
@@ -55,43 +48,76 @@ export function resolveModel(): LanguageModelV1 {
   const seen = new Set<string>();
   const deduped = order.filter((p) => !seen.has(p) && seen.add(p));
 
-  for (const provider of deduped) {
-    if (provider === 'claude' && anthropicKey) {
-      process.env.ANTHROPIC_API_KEY = anthropicKey;
+  return {
+    anthropicKey,
+    openaiKey,
+    kimiKey,
+    geminiKey,
+    deepseekKey,
+    isKimiCodeKey,
+    kimiModel,
+    deduped,
+  };
+}
+
+export function resolveModelProviderName(): ProviderName {
+  const ctx = getProviderResolutionContext();
+
+  for (const provider of ctx.deduped) {
+    if (provider === 'claude' && ctx.anthropicKey) return 'claude';
+    if (provider === 'openai' && ctx.openaiKey) return 'openai';
+    if (provider === 'kimi' && ctx.kimiKey) return 'kimi';
+    if (provider === 'gemini' && ctx.geminiKey) return 'gemini';
+    if (provider === 'deepseek' && ctx.deepseekKey) return 'deepseek';
+  }
+
+  throw new Error('未配置任何 LLM API Key。请在 Web UI 设置页填写至少一个模型的 API Key 并保存。');
+}
+
+/**
+ * 返回当前可用的 LLM 模型实例。
+ * 优先使用 activeProvider 对应的 key；若该 key 为空则按顺序 fallback 到第一个有值的 provider。
+ */
+export function resolveModel(): LanguageModelV1 {
+  const ctx = getProviderResolutionContext();
+
+  for (const provider of ctx.deduped) {
+    if (provider === 'claude' && ctx.anthropicKey) {
+      process.env.ANTHROPIC_API_KEY = ctx.anthropicKey;
       console.error(`[model] 使用 Claude（Anthropic）`);
       return anthropic('claude-sonnet-4-6') as unknown as LanguageModelV1;
     }
-    if (provider === 'openai' && openaiKey) {
-      process.env.OPENAI_API_KEY = openaiKey;
+    if (provider === 'openai' && ctx.openaiKey) {
+      process.env.OPENAI_API_KEY = ctx.openaiKey;
       console.error(`[model] 使用 OpenAI（gpt-4o-mini）`);
       return openai('gpt-4o-mini') as unknown as LanguageModelV1;
     }
-    if (provider === 'kimi' && kimiKey) {
-      if (isKimiCodeKey) {
-        console.error(`[model] 使用 Kimi Code（Anthropic兼容） model=${kimiModel}`);
+    if (provider === 'kimi' && ctx.kimiKey) {
+      if (ctx.isKimiCodeKey) {
+        console.error(`[model] 使用 Kimi Code（Anthropic兼容） model=${ctx.kimiModel}`);
         const kimiCoding = createAnthropic({
           baseURL: 'https://api.kimi.com/coding/v1',
-          apiKey: kimiKey,
+          apiKey: ctx.kimiKey,
         });
-        return kimiCoding(kimiModel as any) as unknown as LanguageModelV1;
+        return kimiCoding(ctx.kimiModel as any) as unknown as LanguageModelV1;
       }
-      console.error(`[model] 使用 Kimi（月之暗面 OpenAI兼容） model=${kimiModel}`);
+      console.error(`[model] 使用 Kimi（月之暗面 OpenAI兼容） model=${ctx.kimiModel}`);
       const kimiOpenAI = createOpenAI({
         baseURL: 'https://api.moonshot.cn/v1',
-        apiKey: kimiKey,
+        apiKey: ctx.kimiKey,
       });
-      return kimiOpenAI(kimiModel) as unknown as LanguageModelV1;
+      return kimiOpenAI(ctx.kimiModel) as unknown as LanguageModelV1;
     }
-    if (provider === 'gemini' && geminiKey) {
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = geminiKey;
+    if (provider === 'gemini' && ctx.geminiKey) {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = ctx.geminiKey;
       console.error(`[model] 使用 Gemini（Google）`);
       return google('gemini-1.5-flash') as unknown as LanguageModelV1;
     }
-    if (provider === 'deepseek' && deepseekKey) {
+    if (provider === 'deepseek' && ctx.deepseekKey) {
       console.error(`[model] 使用 DeepSeek`);
       const deepseek = createOpenAI({
         baseURL: 'https://api.deepseek.com/v1',
-        apiKey: deepseekKey,
+        apiKey: ctx.deepseekKey,
       });
       return deepseek('deepseek-chat') as unknown as LanguageModelV1;
     }

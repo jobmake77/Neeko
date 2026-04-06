@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useState } from 'react';
+import { FormEvent, KeyboardEvent, useMemo, useState } from 'react';
 import { ConversationBundle, WorkbenchEvidenceImport } from '../lib/types';
 
 interface ChatWorkspaceProps {
@@ -10,6 +10,7 @@ interface ChatWorkspaceProps {
   notice: string | null;
   onSend: (message: string) => Promise<void>;
   onCopyMessage: (content: string) => Promise<void>;
+  onCopyValue: (value: string, label: string) => Promise<void>;
   onImportEvidence: (payload: {
     sourceKind: 'chat' | 'video';
     sourcePath: string;
@@ -27,6 +28,7 @@ export function ChatWorkspace({
   notice,
   onSend,
   onCopyMessage,
+  onCopyValue,
   onImportEvidence,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('');
@@ -34,6 +36,11 @@ export function ChatWorkspace({
   const [chatPlatform, setChatPlatform] = useState<'wechat' | 'feishu'>('wechat');
   const [sourcePath, setSourcePath] = useState('');
   const [targetManifestPath, setTargetManifestPath] = useState('');
+  const [selectedEvidenceImportId, setSelectedEvidenceImportId] = useState<string | null>(null);
+  const selectedEvidenceImport = useMemo(
+    () => evidenceImports.find((item) => item.id === selectedEvidenceImportId) ?? evidenceImports[0] ?? null,
+    [evidenceImports, selectedEvidenceImportId]
+  );
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -63,6 +70,11 @@ export function ChatWorkspace({
       chatPlatform: sourceKind === 'chat' ? chatPlatform : undefined,
     });
   };
+
+  const topEntries = (value: Record<string, number>, limit = 4) =>
+    Object.entries(value)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit);
 
   return (
     <section className="workspace panel">
@@ -139,7 +151,55 @@ export function ChatWorkspace({
         </form>
         {evidenceImports.length > 0 ? (
           <div className="evidence-import-list">
-            {evidenceImports.slice(0, 3).map((item) => (
+            {selectedEvidenceImport ? (
+              <article className="mini-card evidence-import-detail">
+                <div className="list-card-top">
+                  <strong>Selected Intake</strong>
+                  <span className="badge">{selectedEvidenceImport.source_kind}</span>
+                </div>
+                <p>{selectedEvidenceImport.summary}</p>
+                <small>{new Date(selectedEvidenceImport.updated_at).toLocaleString()}</small>
+                <div className="writeback-summary">
+                  <span className="badge">{selectedEvidenceImport.stats.sessions} sessions</span>
+                  <span className="badge">{selectedEvidenceImport.stats.windows} windows</span>
+                  <span className="badge success">{selectedEvidenceImport.stats.cross_session_stable_items} stable</span>
+                  <span className="badge warning">{selectedEvidenceImport.stats.blocked_scene_items} blocked</span>
+                </div>
+                <div className="evidence-metric-grid">
+                  <div className="metric-group">
+                    <strong>Speaker Roles</strong>
+                    {topEntries(selectedEvidenceImport.stats.speaker_role_counts).map(([key, count]) => (
+                      <small key={key}>{key}: {count}</small>
+                    ))}
+                  </div>
+                  <div className="metric-group">
+                    <strong>Scenes</strong>
+                    {topEntries(selectedEvidenceImport.stats.scene_counts).map(([key, count]) => (
+                      <small key={key}>{key}: {count}</small>
+                    ))}
+                  </div>
+                </div>
+                <code>{selectedEvidenceImport.artifacts.documents_path}</code>
+                <code>{selectedEvidenceImport.artifacts.evidence_index_path}</code>
+                <div className="message-actions">
+                  <button
+                    type="button"
+                    className="action-button secondary"
+                    onClick={() => void onCopyValue(selectedEvidenceImport.artifacts.documents_path, 'Evidence documents path')}
+                  >
+                    Copy Docs Path
+                  </button>
+                  <button
+                    type="button"
+                    className="action-button secondary"
+                    onClick={() => void onCopyValue(selectedEvidenceImport.artifacts.evidence_index_path, 'Evidence index path')}
+                  >
+                    Copy Evidence Path
+                  </button>
+                </div>
+              </article>
+            ) : null}
+            {evidenceImports.slice(0, 5).map((item) => (
               <article key={item.id} className="mini-card">
                 <div className="list-card-top">
                   <strong>{item.source_kind}</strong>
@@ -147,6 +207,19 @@ export function ChatWorkspace({
                 </div>
                 <p>{item.summary}</p>
                 <small>{new Date(item.updated_at).toLocaleString()}</small>
+                <div className="writeback-summary">
+                  <span className="badge">{item.stats.windows} windows</span>
+                  <span className="badge success">{item.stats.cross_session_stable_items} stable</span>
+                </div>
+                <div className="message-actions">
+                  <button
+                    type="button"
+                    className="action-button secondary"
+                    onClick={() => setSelectedEvidenceImportId(item.id)}
+                  >
+                    Inspect
+                  </button>
+                </div>
               </article>
             ))}
           </div>

@@ -105,6 +105,27 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   const latestTrainingPrep = trainingPreps[0] ?? null;
   const latestEvidenceImport = evidenceImports[0] ?? null;
 
+  const buildTrainingPayload = (smoke = false) => {
+    if (!selectedPersona) return null;
+    return {
+      slug: selectedPersona.slug,
+      mode: smoke ? 'quick' : trainMode,
+      rounds: smoke ? 1 : Number(rounds),
+      track: smoke ? 'persona_extract' : trainTrack,
+      trainingProfile,
+      inputRouting,
+      trainingSeedMode,
+      retries: Number(trainRetries),
+      fromCheckpoint: smoke ? undefined : (trainFromCheckpoint || undefined),
+      kimiStabilityMode,
+      prepDocumentsPath: trainPrepDocumentsPath || undefined,
+      prepEvidencePath: trainPrepEvidencePath || undefined,
+      prepArtifactId: trainPrepArtifactId || undefined,
+      evidenceImportId: trainEvidenceImportId || undefined,
+      smoke,
+    };
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (activeView === 'Create') {
@@ -122,22 +143,9 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     }
     if (!selectedPersona) return;
     if (activeView === 'Train') {
-      await onStartTraining({
-        slug: selectedPersona.slug,
-        mode: trainMode,
-        rounds: Number(rounds),
-        track: trainTrack,
-        trainingProfile,
-        inputRouting,
-        trainingSeedMode,
-        retries: Number(trainRetries),
-        fromCheckpoint: trainFromCheckpoint || undefined,
-        kimiStabilityMode,
-        prepDocumentsPath: trainPrepDocumentsPath || undefined,
-        prepEvidencePath: trainPrepEvidencePath || undefined,
-        prepArtifactId: trainPrepArtifactId || undefined,
-        evidenceImportId: trainEvidenceImportId || undefined,
-      });
+      const payload = buildTrainingPayload(false);
+      if (!payload) return;
+      await onStartTraining(payload);
       return;
     }
     if (activeView === 'Experiment') {
@@ -194,6 +202,12 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       </section>
     );
   }
+
+  const handleLaunchSmoke = async () => {
+    const payload = buildTrainingPayload(true);
+    if (!payload) return;
+    await onStartTraining(payload);
+  };
 
   return (
     <section className="workspace panel form-panel">
@@ -581,6 +595,11 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         <button type="submit" className="primary-button" disabled={activeView !== 'Create' && !selectedPersona}>
           Launch {activeView}
         </button>
+        {activeView === 'Train' ? (
+          <button type="button" className="action-button secondary" disabled={!selectedPersona} onClick={() => void handleLaunchSmoke()}>
+            Run Smoke
+          </button>
+        ) : null}
       </form>
       {currentRun ? (
         <div className="run-card">

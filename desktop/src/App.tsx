@@ -615,6 +615,7 @@ export default function App() {
             notice={notice}
             onSend={handleSendMessage}
             onCopyMessage={handleCopyMessage}
+            onCopyValue={handleCopyValue}
             onImportEvidence={handleImportEvidence}
           />
         ) : (

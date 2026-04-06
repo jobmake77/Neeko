@@ -321,6 +321,7 @@ export async function cmdWorkbenchServer(
           prepEvidencePath: getString(body.prepEvidencePath),
           prepArtifactId: getString(body.prepArtifactId),
           evidenceImportId: getString(body.evidenceImportId),
+          smoke: getBoolean(body.smoke),
         }));
         return;
       }

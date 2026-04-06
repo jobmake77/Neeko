@@ -1,4 +1,4 @@
-import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, WorkbenchRunReport } from '../lib/types';
+import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
 import { ConversationBundle } from '../lib/types';
 
 const TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Writeback', 'Training'];
@@ -9,10 +9,23 @@ interface InfoPanelProps {
   profile: PersonaWorkbenchProfile | null;
   bundle: ConversationBundle | null;
   candidates: MemoryCandidate[];
+  recentRuns: WorkbenchRun[];
+  currentRunId: string | null;
+  onSelectRun: (run: WorkbenchRun) => Promise<void>;
   runReport: WorkbenchRunReport | null;
 }
 
-export function InfoPanel({ activeTab, onTabChange, profile, bundle, candidates, runReport }: InfoPanelProps) {
+export function InfoPanel({
+  activeTab,
+  onTabChange,
+  profile,
+  bundle,
+  candidates,
+  recentRuns,
+  currentRunId,
+  onSelectRun,
+  runReport,
+}: InfoPanelProps) {
   const latestAssistant = [...(bundle?.messages ?? [])].reverse().find((item) => item.role === 'assistant');
 
   return (
@@ -87,6 +100,18 @@ export function InfoPanel({ activeTab, onTabChange, profile, bundle, candidates,
 
       {activeTab === 'Training' ? (
         <div className="inspector-section">
+          {recentRuns.map((run) => (
+            <button
+              key={run.id}
+              type="button"
+              className={run.id === currentRunId ? 'mini-card active-card' : 'mini-card'}
+              onClick={() => void onSelectRun(run)}
+            >
+              <strong>{run.type}</strong>
+              <p>{run.summary ?? run.status}</p>
+              <small>{new Date(run.started_at).toLocaleString()}</small>
+            </button>
+          ))}
           {runReport ? (
             <article className="mini-card">
               <strong>{runReport.run.type}</strong>

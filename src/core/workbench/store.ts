@@ -75,6 +75,16 @@ export class WorkbenchStore {
     return join(this.getRunsDir(), `${id}.json`);
   }
 
+  listRuns(personaSlug?: string): WorkbenchRun[] {
+    if (!existsSync(this.getRunsDir())) return [];
+    return readdirSync(this.getRunsDir(), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => this.getRun(entry.name.replace(/\.json$/, '')))
+      .filter((item): item is WorkbenchRun => Boolean(item))
+      .filter((item) => !personaSlug || item.persona_slug === personaSlug)
+      .sort((a, b) => b.started_at.localeCompare(a.started_at));
+  }
+
   saveConversation(conversation: Conversation): Conversation {
     const parsed = ConversationSchema.parse(conversation);
     ensureDir(this.getConversationDir(parsed.id));

@@ -150,6 +150,10 @@ export class WorkbenchService {
     return this.store.listConversations(personaSlug);
   }
 
+  listRuns(personaSlug?: string): WorkbenchRun[] {
+    return this.store.listRuns(personaSlug);
+  }
+
   getConversation(conversationId: string): ConversationBundle | null {
     return this.store.getConversationBundle(conversationId);
   }

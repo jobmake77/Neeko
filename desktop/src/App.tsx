@@ -18,18 +18,32 @@ import {
   WorkbenchRunReport,
 } from './lib/types';
 
+const ACTIVE_VIEW_KEY = 'neeko.workbench.activeView';
+const ACTIVE_TAB_KEY = 'neeko.workbench.activeTab';
+const PERSONA_KEY = 'neeko.workbench.selectedPersona';
+const THREAD_KEY = 'neeko.workbench.selectedConversation';
+
 export default function App() {
-  const [activeView, setActiveView] = useState<NavView>('Chat');
-  const [activeTab, setActiveTab] = useState<InfoTab>('Soul');
+  const [activeView, setActiveView] = useState<NavView>(
+    () => (window.localStorage.getItem(ACTIVE_VIEW_KEY) as NavView | null) ?? 'Chat'
+  );
+  const [activeTab, setActiveTab] = useState<InfoTab>(
+    () => (window.localStorage.getItem(ACTIVE_TAB_KEY) as InfoTab | null) ?? 'Soul'
+  );
   const [apiBaseUrl, setApiBaseUrlState] = useState(getApiBaseUrl());
   const [serviceHealthy, setServiceHealthy] = useState(false);
   const [personas, setPersonas] = useState<PersonaSummary[]>([]);
-  const [selectedPersonaSlug, setSelectedPersonaSlug] = useState<string | null>(null);
+  const [selectedPersonaSlug, setSelectedPersonaSlug] = useState<string | null>(
+    () => window.localStorage.getItem(PERSONA_KEY)
+  );
   const [selectedPersona, setSelectedPersona] = useState<PersonaWorkbenchProfile | null>(null);
   const [threads, setThreads] = useState<Conversation[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
+    () => window.localStorage.getItem(THREAD_KEY)
+  );
   const [bundle, setBundle] = useState<ConversationBundle | null>(null);
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
+  const [recentRuns, setRecentRuns] = useState<WorkbenchRun[]>([]);
   const [currentRun, setCurrentRun] = useState<WorkbenchRun | null>(null);
   const [runReport, setRunReport] = useState<WorkbenchRunReport | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
@@ -44,6 +58,7 @@ export default function App() {
     if (!selectedPersonaSlug) return;
     void refreshPersona(selectedPersonaSlug);
     void refreshThreads(selectedPersonaSlug);
+    void refreshRuns(selectedPersonaSlug);
   }, [selectedPersonaSlug]);
 
   useEffect(() => {
@@ -56,6 +71,24 @@ export default function App() {
   }, [selectedConversationId]);
 
   useEffect(() => {
+    window.localStorage.setItem(ACTIVE_VIEW_KEY, activeView);
+  }, [activeView]);
+
+  useEffect(() => {
+    window.localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (selectedPersonaSlug) window.localStorage.setItem(PERSONA_KEY, selectedPersonaSlug);
+    else window.localStorage.removeItem(PERSONA_KEY);
+  }, [selectedPersonaSlug]);
+
+  useEffect(() => {
+    if (selectedConversationId) window.localStorage.setItem(THREAD_KEY, selectedConversationId);
+    else window.localStorage.removeItem(THREAD_KEY);
+  }, [selectedConversationId]);
+
+  useEffect(() => {
     if (!currentRun || currentRun.status !== 'running') return;
     const timer = window.setInterval(async () => {
       try {
@@ -64,16 +97,15 @@ export default function App() {
         if (run.status !== 'running') {
           const report = await api.getRunReport(run.id).catch(() => null);
           setRunReport(report);
-          if (activeView === 'Create') {
-            await refreshPersonas();
-          }
+          await refreshPersonas();
+          await refreshRuns(selectedPersonaSlug ?? undefined);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [currentRun, activeView]);
+  }, [currentRun, activeView, selectedPersonaSlug]);
 
   const selectedPersonaSummary = useMemo(
     () => personas.find((item) => item.slug === selectedPersonaSlug) ?? null,
@@ -140,6 +172,16 @@ export default function App() {
     }
   }
 
+  async function refreshRuns(personaSlug?: string) {
+    try {
+      const runs = await api.listRuns(personaSlug);
+      setRecentRuns(runs);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function handleCreateConversation() {
     if (!selectedPersonaSlug) return;
     try {
@@ -183,6 +225,19 @@ export default function App() {
       setCurrentRun(run);
       setRunReport(null);
       setActiveTab('Training');
+      await refreshRuns(selectedPersonaSlug ?? undefined);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleSelectRun(run: WorkbenchRun) {
+    try {
+      setCurrentRun(run);
+      const report = await api.getRunReport(run.id).catch(() => null);
+      setRunReport(report);
+      setActiveTab('Training');
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -213,10 +268,12 @@ export default function App() {
             activeView={activeView as Exclude<NavView, 'Chat'>}
             selectedPersona={selectedPersonaSummary}
             currentRun={currentRun}
+            recentRuns={recentRuns}
             onCreatePersona={(payload) => launchRun(api.createPersona(payload))}
             onStartTraining={(payload) => launchRun(api.startTraining(payload))}
             onStartExperiment={(payload) => launchRun(api.startExperiment(payload))}
             onExportPersona={(payload) => launchRun(api.exportPersona(payload))}
+            onSelectRun={handleSelectRun}
             apiBaseUrl={apiBaseUrl}
             onApiBaseUrlChange={handleApiBaseUrlChange}
             serviceHealthy={serviceHealthy}
@@ -230,6 +287,9 @@ export default function App() {
         profile={selectedPersona}
         bundle={bundle}
         candidates={candidates}
+        recentRuns={recentRuns}
+        currentRunId={currentRun?.id ?? null}
+        onSelectRun={handleSelectRun}
         runReport={runReport}
       />
     </div>

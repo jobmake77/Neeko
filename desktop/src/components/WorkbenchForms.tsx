@@ -5,10 +5,12 @@ interface WorkbenchFormsProps {
   activeView: Exclude<NavView, 'Chat'>;
   selectedPersona: PersonaSummary | null;
   currentRun: WorkbenchRun | null;
+  recentRuns: WorkbenchRun[];
   onCreatePersona: (payload: Record<string, unknown>) => Promise<void>;
   onStartTraining: (payload: Record<string, unknown>) => Promise<void>;
   onStartExperiment: (payload: Record<string, unknown>) => Promise<void>;
   onExportPersona: (payload: Record<string, unknown>) => Promise<void>;
+  onSelectRun: (run: WorkbenchRun) => Promise<void>;
   apiBaseUrl: string;
   onApiBaseUrlChange: (value: string) => void;
   serviceHealthy: boolean;
@@ -19,10 +21,12 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     activeView,
     selectedPersona,
     currentRun,
+    recentRuns,
     onCreatePersona,
     onStartTraining,
     onStartExperiment,
     onExportPersona,
+    onSelectRun,
     apiBaseUrl,
     onApiBaseUrlChange,
     serviceHealthy,
@@ -167,6 +171,25 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
             {currentRun.status} · {new Date(currentRun.started_at).toLocaleString()}
           </small>
           {currentRun.report_path ? <code>{currentRun.report_path}</code> : null}
+        </div>
+      ) : null}
+      {recentRuns.length > 0 ? (
+        <div className="run-history">
+          <div className="run-history-header">
+            <strong>Recent runs</strong>
+            <small>{selectedPersona ? selectedPersona.slug : 'global'}</small>
+          </div>
+          {recentRuns.slice(0, 6).map((run) => (
+            <button
+              key={run.id}
+              type="button"
+              className={run.id === currentRun?.id ? 'run-history-item active' : 'run-history-item'}
+              onClick={() => void onSelectRun(run)}
+            >
+              <span>{run.type}</span>
+              <span>{run.status}</span>
+            </button>
+          ))}
         </div>
       ) : null}
     </section>

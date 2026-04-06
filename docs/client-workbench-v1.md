@@ -77,6 +77,8 @@
 3. 单线程聊天闭环
 4. 回复返回 citation / persona dimension / writeback candidate 元信息
 5. create / train / experiment / export 的结构化触发与状态轮询
+6. recent runs 列表查看与历史 report 回看
+7. 工作台状态本地恢复：active view、active tab、selected persona、selected thread
 
 ### 3.2 默认写回规则
 

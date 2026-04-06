@@ -191,6 +191,12 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      if (req.method === 'GET' && path === '/api/runs') {
+        const personaSlug = url.searchParams.get('personaSlug') ?? undefined;
+        writeJson(res, 200, service.listRuns(personaSlug));
+        return;
+      }
+
       const runMatch = path.match(/^\/api\/runs\/([^/]+)$/);
       if (req.method === 'GET' && runMatch) {
         const run = service.getRunStatus(decodeURIComponent(runMatch[1]));

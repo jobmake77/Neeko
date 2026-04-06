@@ -60,6 +60,8 @@ export const api = {
     request<WorkbenchRun>('/api/runs/experiment', { method: 'POST', body: JSON.stringify(payload) }),
   exportPersona: (payload: Record<string, unknown>) =>
     request<WorkbenchRun>('/api/runs/export', { method: 'POST', body: JSON.stringify(payload) }),
+  listRuns: (personaSlug?: string) =>
+    request<WorkbenchRun[]>(`/api/runs${personaSlug ? `?personaSlug=${encodeURIComponent(personaSlug)}` : ''}`),
   getRun: (id: string) => request<WorkbenchRun>(`/api/runs/${encodeURIComponent(id)}`),
   getRunReport: (id: string) => request<WorkbenchRunReport>(`/api/runs/${encodeURIComponent(id)}/report`),
 };

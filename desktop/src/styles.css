@@ -308,11 +308,29 @@ button {
   padding-bottom: 14px;
 }
 
+.run-center-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(140px, 0.8fr));
+  gap: 12px;
+  padding: 0 14px 12px;
+}
+
+.run-center-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
 .run-center-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   padding: 0 14px 14px;
+}
+
+.run-center-empty {
+  margin: 0 14px 14px;
 }
 
 .workspace {
@@ -770,6 +788,10 @@ pre {
   }
 
   .thread-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .run-center-toolbar {
     grid-template-columns: 1fr;
   }
 

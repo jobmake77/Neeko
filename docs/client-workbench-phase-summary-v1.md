@@ -211,7 +211,7 @@
 
 当前主要边界包括：
 
-1. run center 还是轻量版，只覆盖最近 run 与状态查看
+1. run center 已经升级到 V2 的第一步，支持最近 run 的搜索、状态筛选、类型筛选和汇总 badge，但详情 drill-down 仍然偏轻量
 2. 线程还没有标签体系、分组体系和更强的历史管理
 3. citation / memory source 目前只到摘要和 id，还没有更深的 source drill-down
 4. handoff / prep 仍然主要是单线程内部链路，还没有更强的跨线程整理体验
@@ -223,12 +223,18 @@
 
 ### 6.1 Run Center V2
 
+当前已经完成：
+
+1. run 搜索
+2. run 状态过滤
+3. run 类型过滤
+4. 最近运行状态汇总 badge
+
 建议继续补：
 
-1. 更强的 run 历史筛选
-2. run 类型过滤
-3. run 详情 drill-down
-4. 更清晰的 create/train/experiment/export 汇总视图
+1. run 详情 drill-down
+2. 更清晰的 create/train/experiment/export 汇总视图
+3. 更长时间范围的 run 历史浏览
 
 ### 6.2 Source Drill-down
 

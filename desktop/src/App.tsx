@@ -203,6 +203,9 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [formDefaults, setFormDefaults] = useState(initialDefaults);
   const [runCenterOpen, setRunCenterOpen] = useState(false);
+  const [runQuery, setRunQuery] = useState('');
+  const [runStatusFilter, setRunStatusFilter] = useState<'all' | WorkbenchRun['status'] | 'recovering'>('all');
+  const [runTypeFilter, setRunTypeFilter] = useState<'all' | WorkbenchRun['type']>('all');
 
   function reportError(error: unknown) {
     setError(toUserMessage(error));
@@ -288,6 +291,29 @@ export default function App() {
     [personas, selectedPersonaSlug]
   );
   const activeRunBanner = useMemo(() => deriveActiveRunBanner(currentRun), [currentRun]);
+  const filteredRuns = useMemo(() => {
+    const normalizedQuery = runQuery.trim().toLowerCase();
+    return recentRuns.filter((run) => {
+      const matchesStatus =
+        runStatusFilter === 'all'
+          ? true
+          : runStatusFilter === 'recovering'
+            ? run.recovery_state === 'recovering'
+            : run.status === runStatusFilter;
+      const matchesType = runTypeFilter === 'all' ? true : run.type === runTypeFilter;
+      const matchesQuery = !normalizedQuery
+        ? true
+        : `${run.type} ${run.summary ?? ''} ${run.persona_slug ?? ''}`.toLowerCase().includes(normalizedQuery);
+      return matchesStatus && matchesType && matchesQuery;
+    });
+  }, [recentRuns, runQuery, runStatusFilter, runTypeFilter]);
+  const runCenterSummary = useMemo(() => {
+    const running = recentRuns.filter((run) => run.status === 'running').length;
+    const recovering = recentRuns.filter((run) => run.recovery_state === 'recovering').length;
+    const paused = recentRuns.filter((run) => run.status === 'failed').length;
+    const completed = recentRuns.filter((run) => run.status === 'completed').length;
+    return { running, recovering, paused, completed };
+  }, [recentRuns]);
 
   async function refreshHealth() {
     try {
@@ -724,8 +750,50 @@ export default function App() {
                 <h2>Recent Activity</h2>
               </div>
             </div>
+            <div className="run-center-toolbar">
+              <label className="field compact-field">
+                <span>Search</span>
+                <input
+                  value={runQuery}
+                  onChange={(event) => setRunQuery(event.target.value)}
+                  placeholder="Find a run"
+                />
+              </label>
+              <label className="field compact-field">
+                <span>Status</span>
+                <select
+                  value={runStatusFilter}
+                  onChange={(event) => setRunStatusFilter(event.target.value as 'all' | WorkbenchRun['status'] | 'recovering')}
+                >
+                  <option value="all">all</option>
+                  <option value="running">running</option>
+                  <option value="recovering">recovering</option>
+                  <option value="completed">completed</option>
+                  <option value="failed">paused</option>
+                </select>
+              </label>
+              <label className="field compact-field">
+                <span>Type</span>
+                <select
+                  value={runTypeFilter}
+                  onChange={(event) => setRunTypeFilter(event.target.value as 'all' | WorkbenchRun['type'])}
+                >
+                  <option value="all">all</option>
+                  <option value="create">create</option>
+                  <option value="train">train</option>
+                  <option value="experiment">experiment</option>
+                  <option value="export">export</option>
+                </select>
+              </label>
+            </div>
+            <div className="run-center-summary">
+              <span className="badge">{runCenterSummary.running} running</span>
+              <span className="badge success">{runCenterSummary.completed} completed</span>
+              <span className="badge success">{runCenterSummary.recovering} recovering</span>
+              <span className="badge warning">{runCenterSummary.paused} paused</span>
+            </div>
             <div className="run-center-list">
-              {recentRuns.slice(0, 8).map((run) => {
+              {filteredRuns.slice(0, 12).map((run) => {
                 const banner = deriveActiveRunBanner(run);
                 return (
                   <button
@@ -749,6 +817,9 @@ export default function App() {
                 );
               })}
             </div>
+            {filteredRuns.length === 0 ? (
+              <div className="empty-state run-center-empty">No runs match the current run center filters.</div>
+            ) : null}
           </section>
         ) : null}
         {activeView === 'Chat' ? (

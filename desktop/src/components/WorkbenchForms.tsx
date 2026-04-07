@@ -121,6 +121,17 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       trainMode,
     })
     : null;
+  const createGuidance = activeView === 'Create'
+    ? deriveCreateGuidance({
+      target,
+      targetManifest,
+      chatPlatform,
+      rounds,
+      trainingProfile,
+      inputRouting,
+      trainingSeedMode,
+    })
+    : null;
   const experimentGuidance = activeView === 'Experiment'
     ? deriveExperimentGuidance({
       selectedPersona,
@@ -298,6 +309,32 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           </div>
           <div className="workflow-step-list">
             {trainLaunchGuidance.actions.map((item) => (
+              <small key={item}>{item}</small>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {activeView === 'Create' && createGuidance ? (
+        <div className="settings-card workflow-card">
+          <div className="list-card-top">
+            <strong>Create Guidance</strong>
+            <span className={createGuidance.tone === 'good' ? 'badge success' : createGuidance.tone === 'warning' ? 'badge warning' : 'badge'}>
+              {createGuidance.statusLabel}
+            </span>
+          </div>
+          <p>{createGuidance.summary}</p>
+          <div className="workflow-stage-grid">
+            {createGuidance.stages.map((stage) => (
+              <div key={stage.label} className="workflow-stage-card">
+                <strong>{stage.label}</strong>
+                <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
+                  {stage.status}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="workflow-step-list">
+            {createGuidance.actions.map((item) => (
               <small key={item}>{item}</small>
             ))}
           </div>
@@ -919,6 +956,99 @@ function deriveWorkbenchRunPresentation(run: WorkbenchRun): {
   return {
     statusLabel: run.status,
     primaryMessage: run.summary ?? run.status,
+  };
+}
+
+function deriveCreateGuidance(input: {
+  target: string;
+  targetManifest: string;
+  chatPlatform: string;
+  rounds: string;
+  trainingProfile: string;
+  inputRouting: string;
+  trainingSeedMode: string;
+}): {
+  tone: 'good' | 'warning' | 'neutral';
+  statusLabel: string;
+  summary: string;
+  actions: string[];
+  stages: Array<{ label: string; status: string; tone: 'good' | 'warning' | 'neutral' }>;
+} {
+  const hasTarget = Boolean(input.target.trim());
+  const hasManifest = Boolean(input.targetManifest.trim());
+  const rounds = Number(input.rounds || '1');
+
+  const stages = [
+    {
+      label: 'Target',
+      status: hasTarget ? 'provided' : 'missing',
+      tone: hasTarget ? 'good' as const : 'warning' as const,
+    },
+    {
+      label: 'Manifest',
+      status: hasManifest ? 'attached' : 'optional',
+      tone: hasManifest ? 'good' as const : 'neutral' as const,
+    },
+    {
+      label: 'Profile',
+      status: input.trainingProfile,
+      tone: input.trainingProfile === 'full' ? 'good' as const : 'neutral' as const,
+    },
+    {
+      label: 'Routing',
+      status: `${input.inputRouting} / ${input.trainingSeedMode}`,
+      tone: input.inputRouting === 'v2' || input.trainingSeedMode !== 'off' ? 'good' as const : 'neutral' as const,
+    },
+  ];
+
+  if (!hasTarget) {
+    return {
+      tone: 'warning',
+      statusLabel: 'add target',
+      summary: 'A target is still missing, so persona creation cannot start yet.',
+      actions: [
+        'Add a target handle or local source identifier first.',
+        'If you are creating from private chat or video evidence, attach a target manifest as well.',
+      ],
+      stages,
+    };
+  }
+
+  if (!hasManifest) {
+    return {
+      tone: 'neutral',
+      statusLabel: 'manifest optional',
+      summary: `You can create directly from ${input.chatPlatform}, but a target manifest gives better speaker attribution when you move into chat or video evidence.`,
+      actions: [
+        'Proceed if this is a simple public-source create flow.',
+        'Add a target manifest now if you expect to use private chat or video evidence soon.',
+      ],
+      stages,
+    };
+  }
+
+  if (rounds <= 1) {
+    return {
+      tone: 'good',
+      statusLabel: 'start lean',
+      summary: 'This create setup is lightweight and suitable for a first pass persona bootstrap.',
+      actions: [
+        'Launch create now to generate the initial persona asset.',
+        'Use Train or Experiment afterward to deepen and validate the profile.',
+      ],
+      stages,
+    };
+  }
+
+  return {
+    tone: 'good',
+    statusLabel: 'ready to create',
+    summary: 'The create form has enough structure for a richer first-pass persona bootstrap.',
+    actions: [
+      'Launch create now to build the persona baseline.',
+      'After creation, move into Train or Experiment to validate routing and stability.',
+    ],
+    stages,
   };
 }
 

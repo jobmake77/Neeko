@@ -330,8 +330,31 @@ export function ChatWorkspace({
               <span>{new Date(item.created_at).toLocaleTimeString()}</span>
             </header>
             <p>{item.content}</p>
-            {item.persona_dimensions.length > 0 ? (
-              <footer>{item.persona_dimensions.join(' · ')}</footer>
+            {(item.persona_dimensions.length > 0 || item.citation_items.length > 0 || item.retrieved_memory_ids.length > 0) ? (
+              <div className="message-signal-stack">
+                <div className="writeback-summary">
+                  {item.persona_dimensions.length > 0 ? <span className="badge success">{item.persona_dimensions.length} dimensions</span> : null}
+                  {item.citation_items.length > 0 ? <span className="badge">{item.citation_items.length} citations</span> : null}
+                  {item.retrieved_memory_ids.length > 0 ? <span className="badge">{item.retrieved_memory_ids.length} memories</span> : null}
+                </div>
+                {item.persona_dimensions.length > 0 ? (
+                  <footer className="message-dimension-list">
+                    {item.persona_dimensions.map((dimension) => (
+                      <span key={dimension} className="badge">{dimension}</span>
+                    ))}
+                  </footer>
+                ) : null}
+                {item.citation_items.length > 0 ? (
+                  <div className="message-citation-list">
+                    {item.citation_items.slice(0, 3).map((citation) => (
+                      <article key={citation.id} className="message-citation-card">
+                        <strong>{citation.soul_dimension ?? citation.category ?? citation.id}</strong>
+                        <small>{citation.summary}</small>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             ) : null}
             <div className="message-actions">
               <button type="button" className="action-button secondary" onClick={() => void onCopyMessage(item.content)}>

@@ -423,6 +423,43 @@ button {
   font-size: 0.85rem;
 }
 
+.message-signal-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.message-dimension-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 0;
+}
+
+.message-citation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message-citation-card {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(247, 244, 237, 0.92);
+  border: 1px solid rgba(31, 36, 48, 0.08);
+}
+
+.message-citation-card strong,
+.message-citation-card small {
+  display: block;
+}
+
+.message-citation-card strong {
+  margin-bottom: 4px;
+  font-size: 0.82rem;
+}
+
 .message-actions {
   margin-top: 10px;
 }

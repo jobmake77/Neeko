@@ -304,6 +304,17 @@ button {
   margin: 6px 0 0;
 }
 
+.run-center-panel {
+  padding-bottom: 14px;
+}
+
+.run-center-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
 .workspace {
   display: flex;
   flex-direction: column;
@@ -499,6 +510,17 @@ button {
 
 .message-actions {
   margin-top: 10px;
+}
+
+.signal-toggle-button,
+.memory-chip-button {
+  cursor: pointer;
+}
+
+.message-memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .composer {
@@ -748,6 +770,10 @@ pre {
   }
 
   .thread-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .run-center-list {
     grid-template-columns: 1fr;
   }
 

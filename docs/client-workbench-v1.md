@@ -103,6 +103,8 @@
 28. 聊天消息卡会展示 persona dimensions、citation 数量、memory 命中数量与 citation 摘要
 29. Evidence Intake 导入前支持路径/manifest 本地预检查，服务端也有硬校验
 30. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
+31. 全局 `run status banner` 可跨页面提示当前运行状态，并展开最近运行列表
+32. 聊天消息的 citation / memory 来源支持展开查看与复制 memory id
 
 ### 3.2 默认写回规则
 
@@ -227,6 +229,8 @@
 11. 消息卡会显示 persona dimensions / citation / memory 命中摘要
 12. 线程栏支持 search + status filter，适合 thread 数量增多后的日常使用
 13. `Use For Training` 已打通 `evidence intake -> train` 与 `training prep -> train`
+14. 消息卡里的 signal 区现在支持展开 / 收起，避免长对话里信息过载
+15. citation 与 retrieved memory id 已经可以在消息卡中直观看到和复制
 
 ### 6.4 工作台 Guidance 层
 
@@ -237,6 +241,7 @@
 3. `Experiment Guidance`
 4. `Pipeline Status`
 5. `Suggested Next Step`
+6. `Run Status Banner`
 
 这层的职责是：
 
@@ -244,6 +249,7 @@
 2. 告诉用户下一步更适合做什么
 3. 把 “attach context / run smoke / expand corpus / create handoff / build prep / ready for PK” 这类动作前置
 4. 让 workbench 在日常使用上更接近真正的工作台，而不是若干独立入口的拼接
+5. 在不暴露底层技术细节的前提下，让用户始终知道系统当前在做什么
 
 ## 6.5 Smoke 与 Provider 治理
 

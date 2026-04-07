@@ -202,6 +202,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [formDefaults, setFormDefaults] = useState(initialDefaults);
+  const [runCenterOpen, setRunCenterOpen] = useState(false);
 
   function reportError(error: unknown) {
     setError(toUserMessage(error));
@@ -694,7 +695,11 @@ export default function App() {
       />
       <main className="workspace-container">
         {activeRunBanner ? (
-          <div className={`run-status-banner ${activeRunBanner.tone}`}>
+          <button
+            type="button"
+            className={`run-status-banner ${activeRunBanner.tone}`}
+            onClick={() => setRunCenterOpen((current) => !current)}
+          >
             <div>
               <strong>{activeRunBanner.title}</strong>
               <p>{activeRunBanner.summary}</p>
@@ -707,8 +712,44 @@ export default function App() {
               {typeof currentRun?.attempt_count === 'number' && currentRun.attempt_count > 1 ? (
                 <span className="badge">attempt {currentRun.attempt_count}</span>
               ) : null}
+              <span className="badge">{runCenterOpen ? 'hide runs' : 'open runs'}</span>
             </div>
-          </div>
+          </button>
+        ) : null}
+        {runCenterOpen && recentRuns.length > 0 ? (
+          <section className="panel run-center-panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Run Center</p>
+                <h2>Recent Activity</h2>
+              </div>
+            </div>
+            <div className="run-center-list">
+              {recentRuns.slice(0, 8).map((run) => {
+                const banner = deriveActiveRunBanner(run);
+                return (
+                  <button
+                    key={run.id}
+                    type="button"
+                    className={run.id === currentRun?.id ? 'mini-card active-card' : 'mini-card'}
+                    onClick={() => void handleSelectRun(run)}
+                  >
+                    <div className="list-card-top">
+                      <strong>{run.type}</strong>
+                      <span className={banner?.tone === 'good' ? 'badge success' : banner?.tone === 'warning' ? 'badge warning' : 'badge'}>
+                        {banner?.statusLabel ?? run.status}
+                      </span>
+                    </div>
+                    <p>{banner?.summary ?? run.summary ?? run.status}</p>
+                    <div className="writeback-summary">
+                      <span className="badge">{new Date(run.started_at).toLocaleString()}</span>
+                      {typeof run.attempt_count === 'number' && run.attempt_count > 1 ? <span className="badge">attempt {run.attempt_count}</span> : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
         ) : null}
         {activeView === 'Chat' ? (
           <ChatWorkspace

@@ -39,6 +39,7 @@ export function ChatWorkspace({
   const [sourcePath, setSourcePath] = useState('');
   const [targetManifestPath, setTargetManifestPath] = useState('');
   const [selectedEvidenceImportId, setSelectedEvidenceImportId] = useState<string | null>(null);
+  const [expandedSignalMessageIds, setExpandedSignalMessageIds] = useState<string[]>([]);
   const selectedEvidenceImport = useMemo(
     () => evidenceImports.find((item) => item.id === selectedEvidenceImportId) ?? evidenceImports[0] ?? null,
     [evidenceImports, selectedEvidenceImportId]
@@ -106,6 +107,14 @@ export function ChatWorkspace({
       .slice(0, limit);
   const intakeGuidance = selectedEvidenceImport ? deriveIntakeGuidance(selectedEvidenceImport) : null;
   const summaryFreshness = bundle ? deriveSummaryFreshness(bundle) : null;
+
+  function toggleSignalDetails(messageId: string) {
+    setExpandedSignalMessageIds((current) =>
+      current.includes(messageId)
+        ? current.filter((item) => item !== messageId)
+        : [...current, messageId]
+    );
+  }
 
   return (
     <section className="workspace panel">
@@ -336,23 +345,51 @@ export function ChatWorkspace({
                   {item.persona_dimensions.length > 0 ? <span className="badge success">{item.persona_dimensions.length} dimensions</span> : null}
                   {item.citation_items.length > 0 ? <span className="badge">{item.citation_items.length} citations</span> : null}
                   {item.retrieved_memory_ids.length > 0 ? <span className="badge">{item.retrieved_memory_ids.length} memories</span> : null}
+                  <button
+                    type="button"
+                    className="action-button secondary signal-toggle-button"
+                    onClick={() => toggleSignalDetails(item.id)}
+                  >
+                    {expandedSignalMessageIds.includes(item.id) ? 'Hide Details' : 'Show Details'}
+                  </button>
                 </div>
-                {item.persona_dimensions.length > 0 ? (
-                  <footer className="message-dimension-list">
-                    {item.persona_dimensions.map((dimension) => (
-                      <span key={dimension} className="badge">{dimension}</span>
-                    ))}
-                  </footer>
-                ) : null}
-                {item.citation_items.length > 0 ? (
-                  <div className="message-citation-list">
-                    {item.citation_items.slice(0, 3).map((citation) => (
-                      <article key={citation.id} className="message-citation-card">
-                        <strong>{citation.soul_dimension ?? citation.category ?? citation.id}</strong>
-                        <small>{citation.summary}</small>
-                      </article>
-                    ))}
-                  </div>
+                {expandedSignalMessageIds.includes(item.id) ? (
+                  <>
+                    {item.persona_dimensions.length > 0 ? (
+                      <footer className="message-dimension-list">
+                        {item.persona_dimensions.map((dimension) => (
+                          <span key={dimension} className="badge">{dimension}</span>
+                        ))}
+                      </footer>
+                    ) : null}
+                    {item.citation_items.length > 0 ? (
+                      <div className="message-citation-list">
+                        {item.citation_items.map((citation) => (
+                          <article key={citation.id} className="message-citation-card">
+                            <strong>{citation.soul_dimension ?? citation.category ?? citation.id}</strong>
+                            <small>{citation.summary}</small>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
+                    {item.retrieved_memory_ids.length > 0 ? (
+                      <div className="message-memory-list">
+                        <strong>Memory Sources</strong>
+                        <div className="writeback-summary">
+                          {item.retrieved_memory_ids.map((memoryId) => (
+                            <button
+                              key={memoryId}
+                              type="button"
+                              className="badge memory-chip-button"
+                              onClick={() => void onCopyValue(memoryId, 'Memory id')}
+                            >
+                              {memoryId}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
             ) : null}

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
+import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchMemoryNode, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
 import { ConversationBundle } from '../lib/types';
 
 const TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Writeback', 'Training'];
@@ -11,11 +11,13 @@ interface InfoPanelProps {
   bundle: ConversationBundle | null;
   candidates: MemoryCandidate[];
   evidenceImports: WorkbenchEvidenceImport[];
+  selectedMemoryNode: WorkbenchMemoryNode | null;
   promotionHandoffs: PromotionHandoff[];
   trainingPreps: TrainingPrepArtifact[];
   recentRuns: WorkbenchRun[];
   currentRunId: string | null;
   onSelectRun: (run: WorkbenchRun) => Promise<void>;
+  onInspectMemory: (memoryId: string) => Promise<void>;
   onReviewCandidate: (candidateId: string, status: MemoryCandidate['status']) => Promise<void>;
   onSetCandidatePromotionState: (candidateId: string, promotionState: MemoryCandidate['promotion_state']) => Promise<void>;
   onCreatePromotionHandoff: () => Promise<void>;
@@ -35,11 +37,13 @@ export function InfoPanel({
   bundle,
   candidates,
   evidenceImports,
+  selectedMemoryNode,
   promotionHandoffs,
   trainingPreps,
   recentRuns,
   currentRunId,
   onSelectRun,
+  onInspectMemory,
   onReviewCandidate,
   onSetCandidatePromotionState,
   onCreatePromotionHandoff,
@@ -157,10 +161,22 @@ export function InfoPanel({
                 >
                   Copy Memory Id
                 </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onInspectMemory(item.id)}
+                >
+                  Inspect Memory
+                </button>
                 {item.category ? <span className="badge">{item.category}</span> : null}
               </div>
             </article>
           ))}
+          {selectedMemoryNode ? (
+            <article className="mini-card memory-node-detail-card">
+              {renderMemoryNodeInspector(selectedMemoryNode, onCopyValue)}
+            </article>
+          ) : null}
           {!latestAssistant?.citation_items.length ? <div className="empty-state">No retrieved memory on the latest turn.</div> : null}
         </div>
       ) : null}
@@ -183,10 +199,22 @@ export function InfoPanel({
                 >
                   Copy Citation Id
                 </button>
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onInspectMemory(item.id)}
+                >
+                  Inspect Memory
+                </button>
                 {item.soul_dimension ? <span className="badge success">{item.soul_dimension}</span> : null}
               </div>
             </article>
           ))}
+          {selectedMemoryNode ? (
+            <article className="mini-card memory-node-detail-card">
+              {renderMemoryNodeInspector(selectedMemoryNode, onCopyValue)}
+            </article>
+          ) : null}
           {!latestAssistant?.citation_items.length ? <div className="empty-state">No citations for the current thread yet.</div> : null}
         </div>
       ) : null}
@@ -715,6 +743,96 @@ function deriveSourceMessages(
   return sourceMessageIds
     .map((id) => messageLookup.get(id))
     .filter((item): item is ConversationBundle['messages'][number] => Boolean(item));
+}
+
+function renderMemoryNodeInspector(
+  node: WorkbenchMemoryNode,
+  onCopyValue: (value: string, label: string) => Promise<void>
+) {
+  return (
+    <>
+      <div className="list-card-top">
+        <strong>Memory Detail</strong>
+        <span className={node.status === 'active' ? 'badge success' : 'badge warning'}>{node.status}</span>
+      </div>
+      <p>{node.summary}</p>
+      <div className="writeback-summary">
+        <span className="badge">{node.category}</span>
+        <span className="badge success">{node.soul_dimension}</span>
+        <span className="badge">{Math.round(node.confidence * 100)}%</span>
+        <span className="badge">{node.source_type}</span>
+        <span className="badge">{node.reinforcement_count} reinforcements</span>
+      </div>
+      <div className="candidate-actions">
+        <button
+          type="button"
+          className="action-button secondary"
+          onClick={() => void onCopyValue(node.id, 'Memory id')}
+        >
+          Copy Memory Id
+        </button>
+        <button
+          type="button"
+          className="action-button secondary"
+          onClick={() => void onCopyValue(node.source_chunk_id, 'Source chunk id')}
+        >
+          Copy Chunk Id
+        </button>
+        {node.source_url ? (
+          <button
+            type="button"
+            className="action-button secondary"
+            onClick={() => void onCopyValue(node.source_url ?? '', 'Source url')}
+          >
+            Copy Source Url
+          </button>
+        ) : null}
+      </div>
+      <div className="context-entry-list">
+        <article className="source-message-card">
+          <strong>Original Text</strong>
+          <small>{node.original_text}</small>
+        </article>
+        <article className="source-message-card">
+          <strong>Source Chunk</strong>
+          <small>{node.source_chunk_id}</small>
+        </article>
+        {node.source_url ? (
+          <article className="source-message-card">
+            <strong>Source Url</strong>
+            <small>{node.source_url}</small>
+          </article>
+        ) : null}
+        {node.time_reference ? (
+          <article className="source-message-card">
+            <strong>Time Reference</strong>
+            <small>{new Date(node.time_reference).toLocaleString()}</small>
+          </article>
+        ) : null}
+      </div>
+      {node.semantic_tags.length > 0 ? (
+        <div className="writeback-summary">
+          {node.semantic_tags.map((tag) => (
+            <span key={tag} className="badge">
+              {tag}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {node.relations.length > 0 ? (
+        <div className="context-entry-list">
+          <strong>Relations</strong>
+          {node.relations.map((relation) => (
+            <article key={`${relation.target_id}:${relation.relation_type}`} className="source-message-card">
+              <strong>{relation.relation_type}</strong>
+              <small>{relation.target_id}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      <small>Created {new Date(node.created_at).toLocaleString()} · Updated {new Date(node.updated_at).toLocaleString()}</small>
+    </>
+  );
 }
 
 function trimPreview(value: string, limit = 180): string {

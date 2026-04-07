@@ -244,6 +244,7 @@
 2. handoff item 可以回看到 source message 片段
 3. training run 可以看到关联的 prep / evidence import / context path / report path
 4. chat message 可以看到 writeback candidate id
+5. citation / memory 现在可以进一步展开到 memory node detail，查看 summary / original_text / source_type / source_url / tags / relations
 
 建议继续补：
 

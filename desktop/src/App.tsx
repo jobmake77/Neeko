@@ -17,6 +17,7 @@ import {
   PromotionHandoff,
   TrainingPrepArtifact,
   WorkbenchEvidenceImport,
+  WorkbenchMemoryNode,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './lib/types';
@@ -194,6 +195,7 @@ export default function App() {
   const [promotionHandoffs, setPromotionHandoffs] = useState<PromotionHandoff[]>([]);
   const [evidenceImports, setEvidenceImports] = useState<WorkbenchEvidenceImport[]>([]);
   const [trainingPreps, setTrainingPreps] = useState<TrainingPrepArtifact[]>([]);
+  const [selectedMemoryNode, setSelectedMemoryNode] = useState<WorkbenchMemoryNode | null>(null);
   const [recentRuns, setRecentRuns] = useState<WorkbenchRun[]>([]);
   const [currentRun, setCurrentRun] = useState<WorkbenchRun | null>(null);
   const [runReport, setRunReport] = useState<WorkbenchRunReport | null>(null);
@@ -218,6 +220,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedPersonaSlug) return;
+    setSelectedMemoryNode(null);
     void refreshPersona(selectedPersonaSlug);
     void refreshThreads(selectedPersonaSlug);
     void refreshRuns(selectedPersonaSlug);
@@ -230,6 +233,7 @@ export default function App() {
       setPromotionHandoffs([]);
       setEvidenceImports([]);
       setTrainingPreps([]);
+      setSelectedMemoryNode(null);
       return;
     }
     void refreshConversation(selectedConversationId);
@@ -381,6 +385,7 @@ export default function App() {
       setPromotionHandoffs(nextHandoffs);
       setEvidenceImports(nextImports);
       setTrainingPreps(nextTrainingPreps);
+      setSelectedMemoryNode(null);
       setError(null);
     } catch (err) {
       reportError(err);
@@ -436,6 +441,7 @@ export default function App() {
       setPromotionHandoffs([]);
       setEvidenceImports([]);
       setTrainingPreps([]);
+      setSelectedMemoryNode(null);
       setError(null);
     } catch (err) {
       reportError(err);
@@ -461,6 +467,7 @@ export default function App() {
       setPromotionHandoffs(nextHandoffs);
       setEvidenceImports(nextImports);
       setTrainingPreps(nextTrainingPreps);
+      setSelectedMemoryNode(null);
       await refreshThreads(selectedPersonaSlug);
       setError(null);
     } catch (err) {
@@ -614,6 +621,19 @@ export default function App() {
     try {
       await navigator.clipboard.writeText(value);
       setNotice(`${label} copied to clipboard.`);
+      setError(null);
+    } catch (err) {
+      reportError(err);
+    }
+  }
+
+  async function handleInspectMemory(memoryId: string) {
+    if (!selectedPersonaSlug) return;
+    try {
+      const node = await api.getMemoryNode(selectedPersonaSlug, memoryId);
+      setSelectedMemoryNode(node);
+      setActiveTab('Citations');
+      setNotice('Memory detail loaded.');
       setError(null);
     } catch (err) {
       reportError(err);
@@ -867,11 +887,13 @@ export default function App() {
         bundle={bundle}
         candidates={candidates}
         evidenceImports={evidenceImports}
+        selectedMemoryNode={selectedMemoryNode}
         promotionHandoffs={promotionHandoffs}
         trainingPreps={trainingPreps}
         recentRuns={recentRuns}
         currentRunId={currentRun?.id ?? null}
         onSelectRun={handleSelectRun}
+        onInspectMemory={handleInspectMemory}
         onReviewCandidate={handleReviewCandidate}
         onSetCandidatePromotionState={handleCandidatePromotionState}
         onCreatePromotionHandoff={handleCreatePromotionHandoff}

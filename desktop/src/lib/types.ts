@@ -41,6 +41,31 @@ export interface CitationItem {
   confidence?: number;
 }
 
+export interface WorkbenchMemoryNode {
+  id: string;
+  persona_id: string;
+  original_text: string;
+  summary: string;
+  category: 'belief' | 'value' | 'fact' | 'opinion' | 'behavior' | 'knowledge' | 'preference' | 'experience';
+  soul_dimension: 'language_style' | 'values' | 'thinking_patterns' | 'behavioral_traits' | 'knowledge_domains' | 'general';
+  source_chunk_id: string;
+  source_type: 'twitter' | 'wechat' | 'feishu' | 'article' | 'video' | 'custom';
+  source_url?: string;
+  time_reference?: string;
+  confidence: number;
+  reinforcement_count: number;
+  semantic_tags: string[];
+  status: 'active' | 'archived';
+  superseded_by?: string;
+  relations: Array<{
+    target_id: string;
+    relation_type: 'SUPPORTS' | 'CONTRADICTS' | 'TEMPORAL_FOLLOWS' | 'ELABORATES' | 'OPPOSES';
+    weight: number;
+  }>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Conversation {
   id: string;
   persona_slug: string;

@@ -418,6 +418,17 @@ export class WorkbenchService {
     return this.store.listConversations(personaSlug);
   }
 
+  async getMemoryNode(personaSlug: string, nodeId: string): Promise<MemoryNode | null> {
+    const { persona } = this.loadPersonaAssets(personaSlug);
+    const store = this.createMemoryStore();
+    try {
+      await store.ensureCollection(persona.memory_collection);
+    } catch {
+      return null;
+    }
+    return store.getById(persona.memory_collection, nodeId);
+  }
+
   listRuns(personaSlug?: string): WorkbenchRun[] {
     return this.store.listRuns(personaSlug);
   }
@@ -979,11 +990,7 @@ export class WorkbenchService {
     soul: Soul,
     messages: ConversationMessage[]
   ): Promise<PersonaResponseMeta> {
-    const store = new MemoryStore({
-      qdrantUrl: settings.get('qdrantUrl'),
-      qdrantApiKey: settings.get('qdrantApiKey'),
-      openaiApiKey: settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY,
-    });
+    const store = this.createMemoryStore();
     try {
       await store.ensureCollection(persona.memory_collection);
     } catch {
@@ -1037,6 +1044,14 @@ export class WorkbenchService {
       promotion_state: 'idle',
       created_at: new Date().toISOString(),
     }));
+  }
+
+  private createMemoryStore(): MemoryStore {
+    return new MemoryStore({
+      qdrantUrl: settings.get('qdrantUrl'),
+      qdrantApiKey: settings.get('qdrantApiKey'),
+      openaiApiKey: settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY,
+    });
   }
 
   private startCliRun(

@@ -9,6 +9,7 @@ import {
   TrainingPrepArtifact,
   TrainingPrepExport,
   WorkbenchEvidenceImport,
+  WorkbenchMemoryNode,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './types';
@@ -43,6 +44,8 @@ export const api = {
   health: () => request<{ ok: boolean; port: number }>('/health'),
   listPersonas: () => request<PersonaSummary[]>('/api/personas'),
   getPersona: (slug: string) => request<PersonaWorkbenchProfile>(`/api/personas/${encodeURIComponent(slug)}`),
+  getMemoryNode: (slug: string, nodeId: string) =>
+    request<WorkbenchMemoryNode>(`/api/personas/${encodeURIComponent(slug)}/memory-nodes/${encodeURIComponent(nodeId)}`),
   listConversations: (slug: string) => request<Conversation[]>(`/api/personas/${encodeURIComponent(slug)}/conversations`),
   createConversation: (slug: string, title?: string) =>
     request<Conversation>(`/api/personas/${encodeURIComponent(slug)}/conversations`, {

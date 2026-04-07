@@ -140,6 +140,20 @@ export class MemoryStore {
       .filter((n): n is MemoryNode => n !== null);
   }
 
+  async getById(collection: string, nodeId: string): Promise<MemoryNode | null> {
+    const result = await this.qdrant.scroll(collection, {
+      limit: 1,
+      with_payload: true,
+      with_vector: false,
+      filter: {
+        must: [{ key: 'id', match: { value: nodeId } }],
+      },
+    });
+
+    const point = result.points?.[0];
+    return this.payloadToNode((point?.payload ?? null) as QdrantPayload | null);
+  }
+
   async updateReinforcement(collection: string, nodeId: string, delta = 1): Promise<void> {
     // Qdrant doesn't support partial payload update for arrays natively
     // We'll just update the reinforcement_count field via set payload

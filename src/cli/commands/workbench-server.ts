@@ -93,6 +93,20 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const personaMemoryNodeMatch = path.match(/^\/api\/personas\/([^/]+)\/memory-nodes\/([^/]+)$/);
+      if (req.method === 'GET' && personaMemoryNodeMatch) {
+        const node = await service.getMemoryNode(
+          decodeURIComponent(personaMemoryNodeMatch[1]),
+          decodeURIComponent(personaMemoryNodeMatch[2])
+        );
+        if (!node) {
+          writeSafeError(res, 404, 'Memory node not found');
+          return;
+        }
+        writeJson(res, 200, node);
+        return;
+      }
+
       const personaConversationsMatch = path.match(/^\/api\/personas\/([^/]+)\/conversations$/);
       if (req.method === 'GET' && personaConversationsMatch) {
         writeJson(res, 200, service.listConversations(decodeURIComponent(personaConversationsMatch[1])));

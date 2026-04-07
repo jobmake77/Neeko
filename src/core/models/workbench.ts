@@ -17,6 +17,7 @@ export const WorkbenchMemorySourceAssetSchema = z.object({
   id: z.string().optional(),
   path: z.string().optional(),
   url: z.string().optional(),
+  preview: z.string().optional(),
   badges: z.array(z.string()).default([]),
   metadata: z.record(z.string(), z.string()).optional(),
 });

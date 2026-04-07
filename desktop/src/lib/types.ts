@@ -73,6 +73,7 @@ export interface WorkbenchMemorySourceAsset {
   id?: string;
   path?: string;
   url?: string;
+  preview?: string;
   badges?: string[];
   metadata?: Record<string, string>;
 }

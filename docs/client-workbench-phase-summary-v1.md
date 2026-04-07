@@ -246,6 +246,7 @@
 4. chat message 可以看到 writeback candidate id
 5. citation / memory 现在可以进一步展开到 memory node detail，查看 summary / original_text / source_type / source_url / tags / relations
 6. memory node 现在会解析统一的 source assets，优先接住 web url / local file / evidence import / training prep / promotion handoff / synthetic source
+7. source asset 现在可以直接显示 preview，优先展示本地文件、documents、evidence index 或 handoff 内容摘要
 
 建议继续补：
 

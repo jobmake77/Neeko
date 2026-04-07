@@ -259,6 +259,17 @@ function buildTrainingPrepSummary(handoff: PromotionHandoff, docs: RawDocument[]
   ].join(' · ');
 }
 
+function readPreviewFromPath(path?: string, maxChars = 900): string | undefined {
+  if (!path || !existsSync(path) || !statSync(path).isFile()) return undefined;
+  try {
+    const content = readFileSync(path, 'utf-8').replace(/\s+/g, ' ').trim();
+    if (!content) return undefined;
+    return content.length <= maxChars ? content : `${content.slice(0, maxChars).trimEnd()}...`;
+  } catch {
+    return undefined;
+  }
+}
+
 function renderTrainingPrepMarkdown(prep: TrainingPrepArtifact): string {
   return [
     '# Training Prep Artifact',
@@ -463,6 +474,7 @@ export class WorkbenchService {
           title: 'Local Source File',
           summary: sourceUrl,
           path: sourceUrl,
+          preview: readPreviewFromPath(sourceUrl),
           badges: [node.source_type, existsSync(sourceUrl) ? 'available' : 'missing'],
         });
       } else if (sourceUrl.startsWith('workbench:handoff:')) {
@@ -474,6 +486,7 @@ export class WorkbenchService {
             title: 'Promotion Handoff',
             summary: handoff.summary,
             id: handoff.id,
+            preview: renderPromotionHandoffMarkdown(handoff),
             badges: [handoff.status, `${handoff.items.length} items`],
             metadata: {
               conversation_id: handoff.conversation_id,
@@ -489,6 +502,7 @@ export class WorkbenchService {
                 summary: prep.summary,
                 id: prep.id,
                 path: prep.documents_path,
+                preview: readPreviewFromPath(prep.documents_path) ?? readPreviewFromPath(prep.evidence_index_path),
                 badges: [prep.status, `${prep.item_count} docs`],
                 metadata: {
                   evidence_index_path: prep.evidence_index_path,
@@ -513,6 +527,10 @@ export class WorkbenchService {
           summary: item.summary,
           id: item.id,
           path: item.artifacts.documents_path,
+          preview:
+            readPreviewFromPath(item.artifacts.documents_path) ??
+            readPreviewFromPath(item.artifacts.evidence_index_path) ??
+            readPreviewFromPath(item.source_path),
           badges: [item.source_kind, `${item.stats.windows} windows`, `${item.stats.cross_session_stable_items} stable`],
           metadata: {
             evidence_index_path: item.artifacts.evidence_index_path,
@@ -531,6 +549,7 @@ export class WorkbenchService {
           summary: item.summary,
           id: item.id,
           path: item.documents_path,
+          preview: readPreviewFromPath(item.documents_path) ?? readPreviewFromPath(item.evidence_index_path),
           badges: [item.status, `${item.item_count} docs`],
           metadata: {
             evidence_index_path: item.evidence_index_path,

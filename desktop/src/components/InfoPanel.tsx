@@ -842,6 +842,12 @@ function renderMemoryNodeInspector(
               <span className="badge">{asset.kind.replace(/_/g, ' ')}</span>
             </div>
             <small>{asset.summary}</small>
+            {asset.preview ? (
+              <article className="source-message-card compact-source-card">
+                <strong>Preview</strong>
+                <small>{trimPreview(asset.preview, 420)}</small>
+              </article>
+            ) : null}
             {asset.badges && asset.badges.length > 0 ? (
               <div className="writeback-summary">
                 {asset.badges.map((badge) => (

@@ -47,6 +47,16 @@ interface WorkbenchFormsProps {
   onDefaultValuesChange: (patch: Partial<WorkbenchFormsProps['defaultValues']>) => void;
   serviceHealthy: boolean;
   serviceConnectionState: 'checking' | 'connected' | 'recovering' | 'offline';
+  workbenchRepoRoot: string;
+  onWorkbenchRepoRootChange: (value: string) => void;
+  bootstrapStatus: {
+    mode: 'ready' | 'preparing_core' | 'missing_node' | 'needs_repo_root';
+    resolved_repo_root?: string | null;
+    node_available: boolean;
+    dist_ready: boolean;
+    service_managed: boolean;
+    message: string;
+  } | null;
 }
 
 export function WorkbenchForms(props: WorkbenchFormsProps) {
@@ -70,6 +80,9 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     onDefaultValuesChange,
     serviceHealthy,
     serviceConnectionState,
+    workbenchRepoRoot,
+    onWorkbenchRepoRootChange,
+    bootstrapStatus,
   } = props;
   const [target, setTarget] = useState(defaultValues.createTarget);
   const [targetManifest, setTargetManifest] = useState(defaultValues.createTargetManifest);
@@ -271,6 +284,14 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           <span>Workbench server URL</span>
           <input value={apiBaseUrl} onChange={(event) => onApiBaseUrlChange(event.target.value)} />
         </label>
+        <label className="field">
+          <span>Local Neeko repo path</span>
+          <input
+            value={workbenchRepoRoot}
+            onChange={(event) => onWorkbenchRepoRootChange(event.target.value)}
+            placeholder="/absolute/path/to/Neeko"
+          />
+        </label>
         <div className="settings-actions">
           <button type="button" className="action-button secondary" onClick={() => void onRefreshHealth()}>
             Refresh Connection
@@ -279,6 +300,37 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         <p className="helper-text">
           The desktop shell talks to the structured local API. Default is `http://127.0.0.1:4310`.
         </p>
+        <div className="settings-card">
+          <div className="list-card-top">
+            <strong>Bootstrap readiness</strong>
+            <span
+              className={
+                bootstrapStatus?.mode === 'ready'
+                  ? 'badge success'
+                  : bootstrapStatus?.mode === 'preparing_core'
+                    ? 'badge'
+                    : 'badge warning'
+              }
+            >
+              {bootstrapStatus?.mode ?? 'unknown'}
+            </span>
+          </div>
+          <p>{bootstrapStatus?.message ?? 'Bootstrap status is not available yet.'}</p>
+          <div className="writeback-summary">
+            <span className={bootstrapStatus?.node_available ? 'badge success' : 'badge warning'}>
+              node {bootstrapStatus?.node_available ? 'ready' : 'missing'}
+            </span>
+            <span className={bootstrapStatus?.dist_ready ? 'badge success' : 'badge warning'}>
+              core {bootstrapStatus?.dist_ready ? 'built' : 'pending'}
+            </span>
+            <span className={bootstrapStatus?.service_managed ? 'badge success' : 'badge'}>
+              {bootstrapStatus?.service_managed ? 'managed by desktop' : 'not managed yet'}
+            </span>
+          </div>
+          {bootstrapStatus?.resolved_repo_root ? (
+            <code>{bootstrapStatus.resolved_repo_root}</code>
+          ) : null}
+        </div>
         <div className="settings-card">
           <div className="list-card-top">
             <strong>Connection behavior</strong>

@@ -29,6 +29,7 @@ const ACTIVE_TAB_KEY = 'neeko.workbench.activeTab';
 const PERSONA_KEY = 'neeko.workbench.selectedPersona';
 const THREAD_KEY = 'neeko.workbench.selectedConversation';
 const FORM_DEFAULTS_KEY = 'neeko.workbench.formDefaults';
+const WORKBENCH_REPO_ROOT_KEY = 'neeko.workbench.repoRoot';
 
 type WorkbenchFormDefaults = {
   createTarget: string;
@@ -64,6 +65,15 @@ type BootstrapWorkbenchServiceResult = {
   status: 'spawned' | 'already_running';
   port: number;
   repo_root?: string | null;
+};
+
+type WorkbenchBootstrapStatus = {
+  mode: 'ready' | 'preparing_core' | 'missing_node' | 'needs_repo_root';
+  resolved_repo_root?: string | null;
+  node_available: boolean;
+  dist_ready: boolean;
+  service_managed: boolean;
+  message: string;
 };
 
 function toUserMessage(error: unknown): string {
@@ -192,6 +202,10 @@ export default function App() {
   const [apiBaseUrl, setApiBaseUrlState] = useState(getApiBaseUrl());
   const [serviceHealthy, setServiceHealthy] = useState(false);
   const [serviceConnectionState, setServiceConnectionState] = useState<ServiceConnectionState>('checking');
+  const [workbenchRepoRoot, setWorkbenchRepoRoot] = useState(
+    () => window.localStorage.getItem(WORKBENCH_REPO_ROOT_KEY) ?? ''
+  );
+  const [bootstrapStatus, setBootstrapStatus] = useState<WorkbenchBootstrapStatus | null>(null);
   const [personas, setPersonas] = useState<PersonaSummary[]>([]);
   const [selectedPersonaSlug, setSelectedPersonaSlug] = useState<string | null>(
     () => window.localStorage.getItem(PERSONA_KEY)
@@ -275,6 +289,22 @@ export default function App() {
   }, [formDefaults]);
 
   useEffect(() => {
+    if (workbenchRepoRoot.trim()) {
+      window.localStorage.setItem(WORKBENCH_REPO_ROOT_KEY, workbenchRepoRoot.trim());
+    } else {
+      window.localStorage.removeItem(WORKBENCH_REPO_ROOT_KEY);
+    }
+  }, [workbenchRepoRoot]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const timer = window.setTimeout(() => {
+      void refreshBootstrapStatus(workbenchRepoRoot);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [workbenchRepoRoot]);
+
+  useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(null), 3200);
     return () => window.clearTimeout(timer);
@@ -333,6 +363,7 @@ export default function App() {
   }, [recentRuns]);
 
   async function initializeWorkbench() {
+    await refreshBootstrapStatus(workbenchRepoRoot);
     const connected = await refreshHealth({ allowRecover: true, silent: true });
     if (connected) {
       await refreshPersonas();
@@ -767,6 +798,7 @@ export default function App() {
   }
 
   async function handleRefreshConnection() {
+    await refreshBootstrapStatus(workbenchRepoRoot);
     const connected = await refreshHealth({ allowRecover: true, silent: false });
     if (connected) {
       await refreshPersonas();
@@ -784,14 +816,19 @@ export default function App() {
     }
     setServiceConnectionState('recovering');
     try {
-      const result = await bootstrapWorkbenchService(getLocalWorkbenchPort(baseUrl));
+      const result = await bootstrapWorkbenchService(getLocalWorkbenchPort(baseUrl), workbenchRepoRoot);
       const recovered = await waitForServiceHealth();
       if (!recovered) {
+        await refreshBootstrapStatus(workbenchRepoRoot);
         return false;
       }
       setServiceHealthy(true);
       setServiceConnectionState('connected');
       setError(null);
+      await refreshBootstrapStatus(result.repo_root ?? workbenchRepoRoot);
+      if (result.repo_root) {
+        setWorkbenchRepoRoot(result.repo_root);
+      }
       setNotice(
         result.status === 'spawned'
           ? 'Local workbench service recovered.'
@@ -801,6 +838,23 @@ export default function App() {
     } catch {
       return false;
     }
+  }
+
+  async function refreshBootstrapStatus(repoRoot = workbenchRepoRoot) {
+    if (!isTauriRuntime()) {
+      setBootstrapStatus(null);
+      return;
+    }
+    try {
+      const status = await getWorkbenchBootstrapStatus(repoRoot);
+      setBootstrapStatus(status);
+    } catch {
+      setBootstrapStatus(null);
+    }
+  }
+
+  function handleWorkbenchRepoRootChange(value: string) {
+    setWorkbenchRepoRoot(value);
   }
 
   function handleFormDefaultsChange(patch: Partial<WorkbenchFormDefaults>) {
@@ -958,6 +1012,9 @@ export default function App() {
             onDefaultValuesChange={handleFormDefaultsChange}
             serviceHealthy={serviceHealthy}
             serviceConnectionState={serviceConnectionState}
+            workbenchRepoRoot={workbenchRepoRoot}
+            onWorkbenchRepoRootChange={handleWorkbenchRepoRootChange}
+            bootstrapStatus={bootstrapStatus}
           />
         )}
         {error ? <div className="error-banner">{error}</div> : null}
@@ -1016,8 +1073,20 @@ function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-async function bootstrapWorkbenchService(port: number): Promise<BootstrapWorkbenchServiceResult> {
-  return invoke<BootstrapWorkbenchServiceResult>('bootstrap_workbench_service', { port });
+async function bootstrapWorkbenchService(
+  port: number,
+  repoRoot?: string
+): Promise<BootstrapWorkbenchServiceResult> {
+  return invoke<BootstrapWorkbenchServiceResult>('bootstrap_workbench_service', {
+    port,
+    repoRoot: repoRoot?.trim() || undefined,
+  });
+}
+
+async function getWorkbenchBootstrapStatus(repoRoot: string): Promise<WorkbenchBootstrapStatus> {
+  return invoke<WorkbenchBootstrapStatus>('get_workbench_bootstrap_status', {
+    repoRoot: repoRoot.trim() || undefined,
+  });
 }
 
 async function waitForServiceHealth(attempts = 12, delayMs = 700): Promise<boolean> {

@@ -55,6 +55,7 @@
 5. `Export` 负责导出
 6. `Settings` 负责本地服务与连接状态
 7. 桌面端现在会在本地 URL 下自动恢复 `workbench-server`
+8. 桌面端现在允许显式配置本地 `repo root`，并把 bootstrap readiness 作为状态卡展示出来
 
 ### 2.3 工作台 guidance 层已经补齐
 
@@ -99,6 +100,7 @@
 3. `running / recovering / completed / paused, progress saved` 的产品态表达
 4. 自动恢复后的 attempt 展示
 5. 本地 service 自动检测、自动拉起、自动重连
+6. 本地 core 定位状态可解释：repo root / Node / dist readiness / desktop managed service
 
 这件事的意义在于：
 
@@ -217,7 +219,7 @@
 2. 线程还没有标签体系、分组体系和更强的历史管理
 3. citation / memory source 已经进入第一层下钻，但 retrieved memory 到正式来源资产的链路还不够深
 4. handoff / prep 仍然主要是单线程内部链路，还没有更强的跨线程整理体验
-5. 桌面端已经能完成本机 Rust 编译与原生启动验证，但“完全脱离源码仓库的独立本地 service 打包”还没有收口
+5. 桌面端已经能完成本机 Rust 编译与原生启动验证，也能通过显式 repo path 配置支持更灵活的本地 core 定位；但“完全脱离源码仓库的独立本地 service 打包”还没有收口
 
 ## 6. 下一阶段最值得继续补什么
 

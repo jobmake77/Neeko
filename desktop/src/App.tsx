@@ -286,6 +286,7 @@ export default function App() {
     () => personas.find((item) => item.slug === selectedPersonaSlug) ?? null,
     [personas, selectedPersonaSlug]
   );
+  const activeRunBanner = useMemo(() => deriveActiveRunBanner(currentRun), [currentRun]);
 
   async function refreshHealth() {
     try {
@@ -692,6 +693,23 @@ export default function App() {
         onRefreshSummary={handleRefreshSummary}
       />
       <main className="workspace-container">
+        {activeRunBanner ? (
+          <div className={`run-status-banner ${activeRunBanner.tone}`}>
+            <div>
+              <strong>{activeRunBanner.title}</strong>
+              <p>{activeRunBanner.summary}</p>
+            </div>
+            <div className="writeback-summary">
+              <span className={activeRunBanner.tone === 'good' ? 'badge success' : activeRunBanner.tone === 'warning' ? 'badge warning' : 'badge'}>
+                {activeRunBanner.statusLabel}
+              </span>
+              <span className="badge">{currentRun?.type ?? 'run'}</span>
+              {typeof currentRun?.attempt_count === 'number' && currentRun.attempt_count > 1 ? (
+                <span className="badge">attempt {currentRun.attempt_count}</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         {activeView === 'Chat' ? (
           <ChatWorkspace
             bundle={bundle}
@@ -754,4 +772,51 @@ export default function App() {
       />
     </div>
   );
+}
+
+function deriveActiveRunBanner(run: WorkbenchRun | null): {
+  tone: 'good' | 'warning' | 'neutral';
+  title: string;
+  statusLabel: string;
+  summary: string;
+} | null {
+  if (!run) return null;
+
+  if (run.recovery_state === 'recovering') {
+    return {
+      tone: 'good',
+      title: 'Automatic recovery in progress',
+      statusLabel: 'recovering',
+      summary: 'The system is reusing saved progress and retrying this run automatically.',
+    };
+  }
+
+  if (run.status === 'running') {
+    return {
+      tone: 'neutral',
+      title: 'Run in progress',
+      statusLabel: 'running',
+      summary: run.summary ?? 'The current workbench run is still in progress.',
+    };
+  }
+
+  if (run.status === 'failed') {
+    return {
+      tone: 'warning',
+      title: 'Run paused',
+      statusLabel: 'progress saved',
+      summary: 'This run paused before finishing, but progress was kept safe for a later retry.',
+    };
+  }
+
+  if (run.status === 'completed') {
+    return {
+      tone: 'good',
+      title: 'Latest run completed',
+      statusLabel: 'completed',
+      summary: run.summary ?? 'The latest workbench run completed successfully.',
+    };
+  }
+
+  return null;
 }

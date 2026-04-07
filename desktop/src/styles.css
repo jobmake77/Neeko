@@ -274,6 +274,36 @@ button {
   gap: 12px;
 }
 
+.run-status-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.run-status-banner.good {
+  background: rgba(232, 248, 238, 0.86);
+  border-color: rgba(42, 133, 85, 0.18);
+}
+
+.run-status-banner.warning {
+  background: rgba(255, 245, 231, 0.9);
+  border-color: rgba(240, 167, 63, 0.2);
+}
+
+.run-status-banner.neutral {
+  background: rgba(245, 247, 252, 0.9);
+  border-color: rgba(32, 82, 156, 0.14);
+}
+
+.run-status-banner p {
+  margin: 6px 0 0;
+}
+
 .workspace {
   display: flex;
   flex-direction: column;

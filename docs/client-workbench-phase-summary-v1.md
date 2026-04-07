@@ -35,34 +35,28 @@
 3. 用本地结构化 API 承接 UI 调用
 4. 把“培养、训练、实验、导出、交流”统一到一个工作台里
 
-### 2.2 工作台六个主工作面已经成型
+### 2.2 工作台主壳层已经完成极简重排
 
-当前桌面工作台已经形成稳定的六个主工作面：
+当前桌面工作台已经不再维持“控制台式六面并列”，而是切成两层主结构：
 
 1. `Chat`
-2. `Create`
-3. `Train`
-4. `Experiment`
-5. `Export`
-6. `Settings`
+2. `Settings`
 
 其中：
 
-1. `Chat` 负责线程交流、Evidence Intake、消息信号查看
-2. `Create` 负责 persona 初始创建
-3. `Train` 负责训练发起、Smoke、上下文挂载
-4. `Experiment` 负责 profile / routing / seed 对照
-5. `Export` 负责导出
-6. `Settings` 负责本地服务与连接状态
-7. 桌面端现在会在本地 URL 下自动恢复 `workbench-server`
-8. 桌面端现在允许显式配置本地 `repo root`，并把 bootstrap readiness 作为状态卡展示出来
-9. 打包态 app 现在会优先使用 bundle 内置 runtime，而不是依赖源码仓库路径
-10. 打包态 app 现在会优先使用 bundle 内置 `bin/node`，不再要求用户机器预装 Node 才能启动本地 service
-11. Evidence Intake 已经从摘要卡升级到 detail 读取，能直接把 sample evidence items 和 target manifest 拉进工作台
+1. `Chat` 成为默认产品入口，只保留线程交流、轻量 attach、轻量 inspect
+2. `Settings` 统一收纳 `Create / Train / Experiment / Export / Runtime`
+3. `Soul / Memory / Citations / Evidence / Training` 不再常驻，而是进入右侧抽屉式 Inspector
+4. 左侧不再保留独立 persona 大栏，而是切成 `mini rail + conversation sidebar`
+5. 桌面端现在会在本地 URL 下自动恢复 `workbench-server`
+6. 桌面端现在允许显式配置本地 `repo root`，并把 bootstrap readiness 作为状态卡展示出来
+7. 打包态 app 现在会优先使用 bundle 内置 runtime，而不是依赖源码仓库路径
+8. 打包态 app 现在会优先使用 bundle 内置 `bin/node`，不再要求用户机器预装 Node 才能启动本地 service
+9. Evidence Intake 已经从摘要卡升级到 detail 读取，能直接把 sample evidence items 和 target manifest 拉进工作台
 
 ### 2.3 工作台 guidance 层已经补齐
 
-当前这一版最重要的进展之一，是把工作台从“裸入口集合”推进成了“会指导动作的工作台”。
+当前这一版最重要的进展之一，是把工作台从“裸入口集合”推进成了“默认克制、按需展开”的工作台。
 
 目前已经存在的 guidance / workflow 提示包括：
 
@@ -71,14 +65,14 @@
 3. `Experiment Guidance`
 4. `Pipeline Status`
 5. `Suggested Next Step`
-6. `Run Status Banner`
+6. `Inspector Drawer`
 
 这层产品语义已经能回答：
 
-1. 当前在哪一阶段
-2. 下一步更适合做什么
-3. 现在是不是应该先 `Run Smoke`
-4. 现在是不是应该先 `expand corpus`
+1. 当前主任务是什么
+2. 哪些信息值得现在看
+3. 哪些复杂能力应该收进下一层
+4. 现在是不是应该先 `Run Smoke`
 5. 是不是已经 `ready for PK`
 
 ### 2.4 工作流主闭环已经打通

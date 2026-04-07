@@ -67,13 +67,19 @@
 1. `desktop/` React + Vite 前端
 2. `desktop/src-tauri/` Tauri 壳工程
 
-工作台布局采用：
+当前桌面壳层已经切到“聊天优先”的极简布局：
 
-1. 全局导航栏
-2. Persona 栏
-3. 线程栏
-4. 中间工作区
-5. 右侧信息面板
+1. `mini rail`
+2. `conversation sidebar`
+3. `chat / settings main stage`
+4. `right inspector drawer`
+
+默认原则：
+
+1. 首屏默认进入 `Chat`
+2. `Inspector` 默认关闭
+3. `Create / Train / Experiment / Export` 全部收进 `Settings`
+4. `Soul / Memory / Citations / Evidence / Training` 统一改为右侧抽屉按需展开
 
 ## 3. 当前行为边界
 
@@ -85,39 +91,34 @@
 4. 回复返回 citation / persona dimension / writeback candidate 元信息
 5. create / train / experiment / export 的结构化触发与状态轮询
 6. recent runs 列表查看与历史 report 回看
-7. 工作台状态本地恢复：active view、active tab、selected persona、selected thread
-8. 线程栏搜索与状态筛选（all / active / idle / archived）
-9. thread 卡片展示最近消息预览与线程状态
-10. 聊天主区显式展示 session summary 与 summary 新鲜度
-11. 线程基础管理：rename / delete / refresh summary
-12. workbench 表单默认值本地持久化
-13. 聊天区线程详情卡：created / updated / message_count / summary_updated
-14. Create / Train / Experiment / Export 参数面板扩展，已覆盖更多 CLI 真实参数
+7. 工作台状态本地恢复：shell view、settings section、active tab、selected persona、selected thread
+8. 线程栏支持 persona 切换、搜索、新建线程与基础线程管理
+9. 线程卡默认只展示标题、最近一句预览和更新时间，减少控制台噪音
+10. 聊天主区默认只展示标题、消息流、输入框，以及轻量 `Inspect / Attach` 入口
+11. `Session Summary` 已改成折叠式摘要条，不再用大卡片常驻占据主区
+12. `Evidence Intake` 已改成按需展开的 attach 面板，导入完成后只保留紧凑 intake badge
+13. `Create / Train / Experiment / Export / Runtime` 已统一进入 `Settings` 分组，并按 section 折叠展开
+14. Settings 表单默认值本地持久化，且仍覆盖真实 CLI 参数
 15. Settings 支持手动刷新 service 健康状态并展示本地启动命令
 16. 桌面端在使用本地 URL 时，会自动尝试恢复本地 `workbench-server`，不再强依赖手动启动
 17. Settings 支持配置本地 `Neeko repo path`，帮助客户端在非源码工作目录下定位本地 core
 18. Settings 支持展示 `bootstrap readiness`，可直接看到 repo root、Node、dist 构建和 desktop managed service 状态
 19. Tauri build 会自动准备 `desktop/runtime/neeko-runtime`，并把它打进 app bundle 资源中
 20. `neeko-runtime` 现在会同时携带内置 `bin/node`，打包 app 启动本地 service 时优先使用 bundle 自带的 Node
-21. Evidence Intake 现在支持 `detail` 读取：客户端可直接查看 target manifest 和 sample evidence items
-22. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
-23. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
+21. `Inspector Drawer` 已统一承接 `Soul / Memory / Citations / Evidence / Training`
+22. Evidence Intake 现在支持 `detail` 读取：客户端可直接查看 target manifest 和 sample evidence items
+23. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
 24. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
 25. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
 26. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
-27. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
+27. handoff 可在 Inspector 内展开查看候选明细，并复制导出为 `Markdown / JSON`
 28. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
 29. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
 30. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
 31. Train 面板支持 `Run Smoke`，可用安全默认参数做一次低成本训练链路验证
-32. Chat 区可以直接查看 Evidence Intake 的 `speaker_role / scene / stable items` 指标
-33. Chat 区可以直接查看 sample evidence items 的 `context_before / context_after / window_role / evidence_kind / cross-session stable` 结构化信息
-34. Chat / Writeback / Train / Experiment / Create 都有统一的 guidance card，显示当前阶段和建议下一步
-35. 聊天消息卡会展示 persona dimensions、citation 数量、memory 命中数量与 citation 摘要
-36. Evidence Intake 导入前支持路径/manifest 本地预检查，服务端也有硬校验
-37. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
-38. 全局 `run status banner` 可跨页面提示当前运行状态，并展开最近运行列表
-39. 聊天消息的 citation / memory 来源支持展开查看与复制 memory id
+32. Evidence 结构化明细现在主要通过 `Inspector > Evidence` 查看，而不是在聊天主区常驻展开
+33. 聊天消息卡默认只显示正文和少量 badge，细节按需展开
+34. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
 
 ### 3.2 默认写回规则
 

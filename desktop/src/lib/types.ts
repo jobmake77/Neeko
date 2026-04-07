@@ -1,5 +1,7 @@
 export type NavView = 'Chat' | 'Create' | 'Train' | 'Experiment' | 'Export' | 'Settings';
-export type InfoTab = 'Soul' | 'Memory' | 'Citations' | 'Writeback' | 'Training';
+export type ShellView = 'chat' | 'settings';
+export type SettingsSection = 'persona' | 'training' | 'experiment' | 'export' | 'runtime';
+export type InfoTab = 'Soul' | 'Memory' | 'Citations' | 'Evidence' | 'Training';
 
 export interface PersonaSummary {
   slug: string;

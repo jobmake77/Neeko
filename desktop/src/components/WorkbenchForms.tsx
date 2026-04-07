@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { NavView, PersonaSummary, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchRun } from '../lib/types';
 
-interface WorkbenchFormsProps {
+export interface WorkbenchFormsProps {
   activeView: Exclude<NavView, 'Chat'>;
   selectedPersona: PersonaSummary | null;
   currentRun: WorkbenchRun | null;
@@ -58,6 +58,7 @@ interface WorkbenchFormsProps {
     service_managed: boolean;
     message: string;
   } | null;
+  embedded?: boolean;
 }
 
 export function WorkbenchForms(props: WorkbenchFormsProps) {
@@ -84,6 +85,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     workbenchRepoRoot,
     onWorkbenchRepoRootChange,
     bootstrapStatus,
+    embedded = false,
   } = props;
   const [target, setTarget] = useState(defaultValues.createTarget);
   const [targetManifest, setTargetManifest] = useState(defaultValues.createTargetManifest);
@@ -273,14 +275,24 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           : 'Offline';
 
     return (
-      <section className="workspace panel form-panel">
-        <div className="panel-header workspace-header">
+      <section className={embedded ? 'workbench-form-embedded' : 'workspace panel form-panel'}>
+        {!embedded ? (
+          <div className="panel-header workspace-header">
           <div>
             <p className="eyebrow">Settings</p>
             <h2>Local Service</h2>
           </div>
           <span className={serviceBadgeClass}>{serviceLabel}</span>
-        </div>
+          </div>
+        ) : (
+          <div className="settings-inline-header">
+            <div>
+              <p className="eyebrow">Runtime</p>
+              <strong>Local Service</strong>
+            </div>
+            <span className={serviceBadgeClass}>{serviceLabel}</span>
+          </div>
+        )}
         <label className="field">
           <span>Workbench server URL</span>
           <input value={apiBaseUrl} onChange={(event) => onApiBaseUrlChange(event.target.value)} />
@@ -365,14 +377,24 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   };
 
   return (
-    <section className="workspace panel form-panel">
-      <div className="panel-header workspace-header">
-        <div>
-          <p className="eyebrow">Workbench</p>
-          <h2>{title}</h2>
+    <section className={embedded ? 'workbench-form-embedded' : 'workspace panel form-panel'}>
+      {!embedded ? (
+        <div className="panel-header workspace-header">
+          <div>
+            <p className="eyebrow">Workbench</p>
+            <h2>{title}</h2>
+          </div>
+          {selectedPersona ? <span className="badge">{selectedPersona.name}</span> : null}
         </div>
-        {selectedPersona ? <span className="badge">{selectedPersona.name}</span> : null}
-      </div>
+      ) : (
+        <div className="settings-inline-header">
+          <div>
+            <p className="eyebrow">Settings</p>
+            <strong>{title}</strong>
+          </div>
+          {selectedPersona ? <span className="badge">{selectedPersona.name}</span> : null}
+        </div>
+      )}
       {activeView === 'Train' && trainLaunchGuidance ? (
         <div className="settings-card workflow-card">
           <div className="list-card-top">

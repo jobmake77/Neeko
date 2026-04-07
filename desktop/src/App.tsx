@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ChatWorkspace } from './components/ChatWorkspace';
-import { InfoPanel } from './components/InfoPanel';
-import { NavigationRail } from './components/NavigationRail';
-import { PersonaColumn } from './components/PersonaColumn';
-import { ThreadColumn } from './components/ThreadColumn';
-import { WorkbenchForms } from './components/WorkbenchForms';
+import { ConversationSidebar } from './components/ConversationSidebar';
+import { InspectorDrawer } from './components/InspectorDrawer';
+import { MiniRail } from './components/MiniRail';
+import { SettingsScreen } from './components/SettingsScreen';
 import { api, getApiBaseUrl, setApiBaseUrl } from './lib/api';
 import {
   Conversation,
@@ -16,21 +15,28 @@ import {
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  SettingsSection,
+  ShellView,
   TrainingPrepArtifact,
-  WorkbenchEvidenceImportDetail,
   WorkbenchEvidenceImport,
+  WorkbenchEvidenceImportDetail,
   WorkbenchMemoryNode,
   WorkbenchMemorySourceAsset,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './lib/types';
 
-const ACTIVE_VIEW_KEY = 'neeko.workbench.activeView';
+const LEGACY_ACTIVE_VIEW_KEY = 'neeko.workbench.activeView';
+const ACTIVE_SHELL_VIEW_KEY = 'neeko.workbench.shellView';
+const ACTIVE_SETTINGS_SECTION_KEY = 'neeko.workbench.settingsSection';
 const ACTIVE_TAB_KEY = 'neeko.workbench.activeTab';
 const PERSONA_KEY = 'neeko.workbench.selectedPersona';
 const THREAD_KEY = 'neeko.workbench.selectedConversation';
 const FORM_DEFAULTS_KEY = 'neeko.workbench.formDefaults';
 const WORKBENCH_REPO_ROOT_KEY = 'neeko.workbench.repoRoot';
+
+const SETTINGS_SECTIONS: SettingsSection[] = ['persona', 'training', 'experiment', 'export', 'runtime'];
+const INSPECTOR_TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Evidence', 'Training'];
 
 type WorkbenchFormDefaults = {
   createTarget: string;
@@ -81,18 +87,10 @@ type WorkbenchBootstrapStatus = {
 function toUserMessage(error: unknown): string {
   const message = String(error instanceof Error ? error.message : error).toLowerCase();
 
-  if (message.includes('clipboard')) {
-    return 'Clipboard access is not available right now. Please try again.';
-  }
-  if (message.includes('conversation not found') || message.includes('thread not found')) {
-    return 'This thread is no longer available.';
-  }
-  if (message.includes('persona not found') || message.includes('profile not found')) {
-    return 'This persona is no longer available.';
-  }
-  if (message.includes('run not found')) {
-    return 'This run is no longer available.';
-  }
+  if (message.includes('clipboard')) return 'Clipboard access is not available right now. Please try again.';
+  if (message.includes('conversation not found') || message.includes('thread not found')) return 'This thread is no longer available.';
+  if (message.includes('persona not found') || message.includes('profile not found')) return 'This persona is no longer available.';
+  if (message.includes('run not found')) return 'This run is no longer available.';
   if (
     message.includes('candidate not found') ||
     message.includes('handoff not found') ||
@@ -101,33 +99,14 @@ function toUserMessage(error: unknown): string {
   ) {
     return 'The requested item is no longer available.';
   }
-  if (message.includes('required') || message.includes('missing')) {
-    return 'Some required information is still missing.';
-  }
-  if (message.includes('absolute local file path')) {
-    return 'Please use an absolute local file path for this import.';
-  }
-  if (message.includes('choose a file instead of a folder')) {
-    return 'Please choose a file instead of a folder for this import.';
-  }
-  if (message.includes('valid json target manifest')) {
-    return 'Please choose a valid JSON target manifest file.';
-  }
-  if (message.includes('must be different files')) {
-    return 'Source and target manifest must be different files.';
-  }
-  if (message.includes('selected files is not available')) {
-    return 'One of the selected files is not available right now.';
-  }
-  if (message.includes('qdrant') || message.includes('memory service')) {
-    return 'The local memory service is still getting ready. Please try again shortly.';
-  }
-  if (
-    message.includes('timeout') ||
-    message.includes('fetch') ||
-    message.includes('network') ||
-    message.includes('connection')
-  ) {
+  if (message.includes('required') || message.includes('missing')) return 'Some required information is still missing.';
+  if (message.includes('absolute local file path')) return 'Please use an absolute local file path for this import.';
+  if (message.includes('choose a file instead of a folder')) return 'Please choose a file instead of a folder for this import.';
+  if (message.includes('valid json target manifest')) return 'Please choose a valid JSON target manifest file.';
+  if (message.includes('must be different files')) return 'Source and target manifest must be different files.';
+  if (message.includes('selected files is not available')) return 'One of the selected files is not available right now.';
+  if (message.includes('qdrant') || message.includes('memory service')) return 'The local memory service is still getting ready. Please try again shortly.';
+  if (message.includes('timeout') || message.includes('fetch') || message.includes('network') || message.includes('connection')) {
     return 'The workbench is handling a temporary issue. Please try again shortly.';
   }
   return 'The workbench could not finish this action right now.';
@@ -195,32 +174,26 @@ export default function App() {
       };
     }
   })();
-  const [activeView, setActiveView] = useState<NavView>(
-    () => (window.localStorage.getItem(ACTIVE_VIEW_KEY) as NavView | null) ?? 'Chat'
-  );
-  const [activeTab, setActiveTab] = useState<InfoTab>(
-    () => (window.localStorage.getItem(ACTIVE_TAB_KEY) as InfoTab | null) ?? 'Soul'
-  );
+
+  const [activeShellView, setActiveShellView] = useState<ShellView>(() => deriveInitialShellView());
+  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>(() => deriveInitialSettingsSection());
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<InfoTab>(() => deriveInitialInspectorTab());
   const [apiBaseUrl, setApiBaseUrlState] = useState(getApiBaseUrl());
   const [serviceHealthy, setServiceHealthy] = useState(false);
   const [serviceConnectionState, setServiceConnectionState] = useState<ServiceConnectionState>('checking');
-  const [workbenchRepoRoot, setWorkbenchRepoRoot] = useState(
-    () => window.localStorage.getItem(WORKBENCH_REPO_ROOT_KEY) ?? ''
-  );
+  const [workbenchRepoRoot, setWorkbenchRepoRoot] = useState(() => window.localStorage.getItem(WORKBENCH_REPO_ROOT_KEY) ?? '');
   const [bootstrapStatus, setBootstrapStatus] = useState<WorkbenchBootstrapStatus | null>(null);
   const [personas, setPersonas] = useState<PersonaSummary[]>([]);
-  const [selectedPersonaSlug, setSelectedPersonaSlug] = useState<string | null>(
-    () => window.localStorage.getItem(PERSONA_KEY)
-  );
+  const [selectedPersonaSlug, setSelectedPersonaSlug] = useState<string | null>(() => window.localStorage.getItem(PERSONA_KEY));
   const [selectedPersona, setSelectedPersona] = useState<PersonaWorkbenchProfile | null>(null);
   const [threads, setThreads] = useState<Conversation[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
-    () => window.localStorage.getItem(THREAD_KEY)
-  );
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(() => window.localStorage.getItem(THREAD_KEY));
   const [bundle, setBundle] = useState<ConversationBundle | null>(null);
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
   const [promotionHandoffs, setPromotionHandoffs] = useState<PromotionHandoff[]>([]);
   const [evidenceImports, setEvidenceImports] = useState<WorkbenchEvidenceImport[]>([]);
+  const [selectedEvidenceImportId, setSelectedEvidenceImportId] = useState<string | null>(null);
   const [selectedEvidenceImportDetail, setSelectedEvidenceImportDetail] = useState<WorkbenchEvidenceImportDetail | null>(null);
   const [trainingPreps, setTrainingPreps] = useState<TrainingPrepArtifact[]>([]);
   const [selectedMemoryNode, setSelectedMemoryNode] = useState<WorkbenchMemoryNode | null>(null);
@@ -233,13 +206,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [formDefaults, setFormDefaults] = useState(initialDefaults);
-  const [runCenterOpen, setRunCenterOpen] = useState(false);
-  const [runQuery, setRunQuery] = useState('');
-  const [runStatusFilter, setRunStatusFilter] = useState<'all' | WorkbenchRun['status'] | 'recovering'>('all');
-  const [runTypeFilter, setRunTypeFilter] = useState<'all' | WorkbenchRun['type']>('all');
 
-  function reportError(error: unknown) {
-    setError(toUserMessage(error));
+  function reportError(nextError: unknown) {
+    setError(toUserMessage(nextError));
   }
 
   useEffect(() => {
@@ -261,6 +230,7 @@ export default function App() {
       setCandidates([]);
       setPromotionHandoffs([]);
       setEvidenceImports([]);
+      setSelectedEvidenceImportId(null);
       setSelectedEvidenceImportDetail(null);
       setTrainingPreps([]);
       setSelectedMemoryNode(null);
@@ -271,8 +241,12 @@ export default function App() {
   }, [selectedConversationId]);
 
   useEffect(() => {
-    window.localStorage.setItem(ACTIVE_VIEW_KEY, activeView);
-  }, [activeView]);
+    window.localStorage.setItem(ACTIVE_SHELL_VIEW_KEY, activeShellView);
+  }, [activeShellView]);
+
+  useEffect(() => {
+    window.localStorage.setItem(ACTIVE_SETTINGS_SECTION_KEY, activeSettingsSection);
+  }, [activeSettingsSection]);
 
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
@@ -293,11 +267,8 @@ export default function App() {
   }, [formDefaults]);
 
   useEffect(() => {
-    if (workbenchRepoRoot.trim()) {
-      window.localStorage.setItem(WORKBENCH_REPO_ROOT_KEY, workbenchRepoRoot.trim());
-    } else {
-      window.localStorage.removeItem(WORKBENCH_REPO_ROOT_KEY);
-    }
+    if (workbenchRepoRoot.trim()) window.localStorage.setItem(WORKBENCH_REPO_ROOT_KEY, workbenchRepoRoot.trim());
+    else window.localStorage.removeItem(WORKBENCH_REPO_ROOT_KEY);
   }, [workbenchRepoRoot]);
 
   useEffect(() => {
@@ -335,48 +306,20 @@ export default function App() {
       }
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [currentRun, activeView, selectedPersonaSlug]);
+  }, [currentRun, selectedPersonaSlug]);
 
   const selectedPersonaSummary = useMemo(
     () => personas.find((item) => item.slug === selectedPersonaSlug) ?? null,
     [personas, selectedPersonaSlug]
   );
-  const activeRunBanner = useMemo(() => deriveActiveRunBanner(currentRun), [currentRun]);
-  const filteredRuns = useMemo(() => {
-    const normalizedQuery = runQuery.trim().toLowerCase();
-    return recentRuns.filter((run) => {
-      const matchesStatus =
-        runStatusFilter === 'all'
-          ? true
-          : runStatusFilter === 'recovering'
-            ? run.recovery_state === 'recovering'
-            : run.status === runStatusFilter;
-      const matchesType = runTypeFilter === 'all' ? true : run.type === runTypeFilter;
-      const matchesQuery = !normalizedQuery
-        ? true
-        : `${run.type} ${run.summary ?? ''} ${run.persona_slug ?? ''}`.toLowerCase().includes(normalizedQuery);
-      return matchesStatus && matchesType && matchesQuery;
-    });
-  }, [recentRuns, runQuery, runStatusFilter, runTypeFilter]);
-  const runCenterSummary = useMemo(() => {
-    const running = recentRuns.filter((run) => run.status === 'running').length;
-    const recovering = recentRuns.filter((run) => run.recovery_state === 'recovering').length;
-    const paused = recentRuns.filter((run) => run.status === 'failed').length;
-    const completed = recentRuns.filter((run) => run.status === 'completed').length;
-    return { running, recovering, paused, completed };
-  }, [recentRuns]);
 
   async function initializeWorkbench() {
     await refreshBootstrapStatus(workbenchRepoRoot);
     const connected = await refreshHealth({ allowRecover: true, silent: true });
-    if (connected) {
-      await refreshPersonas();
-    }
+    if (connected) await refreshPersonas();
   }
 
-  async function refreshHealth(
-    options: { allowRecover?: boolean; silent?: boolean; baseUrl?: string } = {}
-  ): Promise<boolean> {
+  async function refreshHealth(options: { allowRecover?: boolean; silent?: boolean; baseUrl?: string } = {}): Promise<boolean> {
     const { allowRecover = true, silent = false, baseUrl } = options;
     const targetBaseUrl = baseUrl ?? apiBaseUrl;
     setServiceConnectionState('checking');
@@ -390,14 +333,10 @@ export default function App() {
       setServiceHealthy(false);
       if (allowRecover && canBootstrapLocalService(targetBaseUrl)) {
         const recovered = await attemptServiceRecovery(targetBaseUrl);
-        if (recovered) {
-          return true;
-        }
+        if (recovered) return true;
       }
       setServiceConnectionState('offline');
-      if (!silent) {
-        reportError(err);
-      }
+      if (!silent) reportError(err);
       return false;
     }
   }
@@ -406,9 +345,7 @@ export default function App() {
     try {
       const data = await api.listPersonas();
       setPersonas(data);
-      if (!selectedPersonaSlug && data[0]) {
-        setSelectedPersonaSlug(data[0].slug);
-      }
+      if (!selectedPersonaSlug && data[0]) setSelectedPersonaSlug(data[0].slug);
     } catch (err) {
       reportError(err);
     }
@@ -431,9 +368,7 @@ export default function App() {
       if (data.length > 0 && (!selectedConversationId || !data.some((item) => item.id === selectedConversationId))) {
         setSelectedConversationId(data[0].id);
       }
-      if (data.length === 0) {
-        setSelectedConversationId(null);
-      }
+      if (data.length === 0) setSelectedConversationId(null);
     } catch (err) {
       reportError(err);
     }
@@ -443,19 +378,17 @@ export default function App() {
     try {
       const nextBundle = await api.getConversation(id);
       const nextCandidates = await api.listMemoryCandidates(id);
-      const nextHandoffs = selectedPersonaSlug
-        ? await api.listPromotionHandoffs(selectedPersonaSlug, id)
-        : [];
-      const nextImports = selectedPersonaSlug
-        ? await api.listEvidenceImports(selectedPersonaSlug, id)
-        : [];
-      const nextTrainingPreps = selectedPersonaSlug
-        ? await api.listTrainingPreps(selectedPersonaSlug, id)
-        : [];
+      const nextHandoffs = selectedPersonaSlug ? await api.listPromotionHandoffs(selectedPersonaSlug, id) : [];
+      const nextImports = selectedPersonaSlug ? await api.listEvidenceImports(selectedPersonaSlug, id) : [];
+      const nextTrainingPreps = selectedPersonaSlug ? await api.listTrainingPreps(selectedPersonaSlug, id) : [];
       setBundle(nextBundle);
       setCandidates(nextCandidates);
       setPromotionHandoffs(nextHandoffs);
       setEvidenceImports(nextImports);
+      setSelectedEvidenceImportId((current) => {
+        if (current && nextImports.some((item) => item.id === current)) return current;
+        return nextImports[0]?.id ?? null;
+      });
       if (selectedEvidenceImportDetail && !nextImports.some((item) => item.id === selectedEvidenceImportDetail.import.id)) {
         setSelectedEvidenceImportDetail(null);
       }
@@ -484,7 +417,8 @@ export default function App() {
       const conversation = await api.createConversation(selectedPersonaSlug);
       await refreshThreads(selectedPersonaSlug);
       setSelectedConversationId(conversation.id);
-      setActiveView('Chat');
+      setActiveShellView('chat');
+      setError(null);
     } catch (err) {
       reportError(err);
     }
@@ -516,6 +450,7 @@ export default function App() {
       setCandidates([]);
       setPromotionHandoffs([]);
       setEvidenceImports([]);
+      setSelectedEvidenceImportId(null);
       setSelectedEvidenceImportDetail(null);
       setTrainingPreps([]);
       setSelectedMemoryNode(null);
@@ -531,19 +466,14 @@ export default function App() {
     try {
       const nextBundle = await api.refreshConversationSummary(selectedConversationId);
       const nextCandidates = await api.listMemoryCandidates(selectedConversationId);
-      const nextHandoffs = selectedPersonaSlug
-        ? await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId)
-        : [];
-      const nextImports = selectedPersonaSlug
-        ? await api.listEvidenceImports(selectedPersonaSlug, selectedConversationId)
-        : [];
-      const nextTrainingPreps = selectedPersonaSlug
-        ? await api.listTrainingPreps(selectedPersonaSlug, selectedConversationId)
-        : [];
+      const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
+      const nextImports = await api.listEvidenceImports(selectedPersonaSlug, selectedConversationId);
+      const nextTrainingPreps = await api.listTrainingPreps(selectedPersonaSlug, selectedConversationId);
       setBundle(nextBundle);
       setCandidates(nextCandidates);
       setPromotionHandoffs(nextHandoffs);
       setEvidenceImports(nextImports);
+      setSelectedEvidenceImportId((current) => current && nextImports.some((item) => item.id === current) ? current : nextImports[0]?.id ?? null);
       setTrainingPreps(nextTrainingPreps);
       setSelectedMemoryNode(null);
       setSelectedMemorySourceAssets([]);
@@ -580,12 +510,15 @@ export default function App() {
     }
   }
 
-  async function launchRun(request: Promise<WorkbenchRun>) {
+  async function launchRun(request: Promise<WorkbenchRun>, type: WorkbenchRun['type']) {
     try {
       const run = await request;
       setCurrentRun(run);
       setRunReport(null);
+      setActiveShellView('settings');
+      setActiveSettingsSection(mapRunTypeToSettingsSection(type));
       setActiveTab('Training');
+      setInspectorOpen(true);
       await refreshRuns(selectedPersonaSlug ?? undefined);
       setError(null);
     } catch (err) {
@@ -599,6 +532,7 @@ export default function App() {
       const report = await api.getRunReport(run.id).catch(() => null);
       setRunReport(report);
       setActiveTab('Training');
+      setInspectorOpen(true);
       setError(null);
     } catch (err) {
       reportError(err);
@@ -617,10 +551,7 @@ export default function App() {
     }
   }
 
-  async function handleCandidatePromotionState(
-    candidateId: string,
-    promotionState: MemoryCandidate['promotion_state']
-  ) {
+  async function handleCandidatePromotionState(candidateId: string, promotionState: MemoryCandidate['promotion_state']) {
     if (!selectedConversationId) return;
     try {
       const result = await api.setCandidatePromotionState(selectedConversationId, candidateId, promotionState);
@@ -638,12 +569,11 @@ export default function App() {
       const handoff = await api.createPromotionHandoff(selectedConversationId);
       const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
       setPromotionHandoffs(nextHandoffs);
-      setActiveTab('Writeback');
+      setActiveTab('Memory');
+      setInspectorOpen(true);
       setNotice('Promotion handoff created.');
       setError(null);
-      if (!nextHandoffs.some((item) => item.id === handoff.id)) {
-        setPromotionHandoffs((current) => [handoff, ...current]);
-      }
+      if (!nextHandoffs.some((item) => item.id === handoff.id)) setPromotionHandoffs((current) => [handoff, ...current]);
     } catch (err) {
       reportError(err);
     }
@@ -715,7 +645,8 @@ export default function App() {
       ]);
       setSelectedMemoryNode(node);
       setSelectedMemorySourceAssets(assets);
-      setActiveTab('Citations');
+      setActiveTab('Memory');
+      setInspectorOpen(true);
       setNotice('Memory detail loaded.');
       setError(null);
     } catch (err) {
@@ -745,16 +676,11 @@ export default function App() {
         targetManifestPath: payload.targetManifestPath,
         chatPlatform: payload.chatPlatform,
       });
-      if (selectedPersonaSlug) {
-        await refreshThreads(selectedPersonaSlug);
-      }
-      if (conversationId) {
-        await refreshConversation(conversationId);
-      }
+      if (selectedPersonaSlug) await refreshThreads(selectedPersonaSlug);
+      if (conversationId) await refreshConversation(conversationId);
       const detail = await api.getEvidenceImportDetail(imported.id).catch(() => null);
-      if (detail) {
-        setSelectedEvidenceImportDetail(detail);
-      }
+      setSelectedEvidenceImportId(imported.id);
+      if (detail) setSelectedEvidenceImportDetail(detail);
       setNotice(`${payload.sourceKind} evidence imported into workbench.`);
       setError(null);
     } catch (err) {
@@ -772,7 +698,8 @@ export default function App() {
       trainPrepArtifactId: '',
       trainEvidenceImportId: item.id,
     }));
-    setActiveView('Train');
+    setActiveShellView('settings');
+    setActiveSettingsSection('training');
     setActiveTab('Training');
     setNotice('Evidence intake has been attached to the train form.');
     setError(null);
@@ -781,7 +708,10 @@ export default function App() {
   async function handleInspectEvidenceImport(importId: string) {
     try {
       const detail = await api.getEvidenceImportDetail(importId);
+      setSelectedEvidenceImportId(importId);
       setSelectedEvidenceImportDetail(detail);
+      setActiveTab('Evidence');
+      setInspectorOpen(true);
       setNotice('Evidence detail loaded.');
       setError(null);
     } catch (err) {
@@ -797,7 +727,8 @@ export default function App() {
       trainPrepArtifactId: prep.id,
       trainEvidenceImportId: '',
     }));
-    setActiveView('Train');
+    setActiveShellView('settings');
+    setActiveSettingsSection('training');
     setActiveTab('Training');
     setNotice('Training prep has been attached to the train form.');
     setError(null);
@@ -834,9 +765,7 @@ export default function App() {
   }
 
   async function attemptServiceRecovery(baseUrl: string): Promise<boolean> {
-    if (!canBootstrapLocalService(baseUrl)) {
-      return false;
-    }
+    if (!canBootstrapLocalService(baseUrl)) return false;
     setServiceConnectionState('recovering');
     try {
       const result = await bootstrapWorkbenchService(getLocalWorkbenchPort(baseUrl), workbenchRepoRoot);
@@ -849,14 +778,8 @@ export default function App() {
       setServiceConnectionState('connected');
       setError(null);
       await refreshBootstrapStatus(result.runtime_root ?? workbenchRepoRoot);
-      if (result.runtime_root) {
-        setWorkbenchRepoRoot(result.runtime_root);
-      }
-      setNotice(
-        result.status === 'spawned'
-          ? 'Local workbench service recovered.'
-          : 'Local workbench service is ready.'
-      );
+      if (result.runtime_root) setWorkbenchRepoRoot(result.runtime_root);
+      setNotice(result.status === 'spawned' ? 'Local workbench service recovered.' : 'Local workbench service is ready.');
       return true;
     } catch {
       return false;
@@ -884,129 +807,45 @@ export default function App() {
     setFormDefaults((current) => ({ ...current, ...patch }));
   }
 
+  function handleOpenInspector(tab: InfoTab) {
+    setActiveTab(tab);
+    setInspectorOpen(true);
+  }
+
+  function handleSelectEvidenceImport(importId: string) {
+    setSelectedEvidenceImportId(importId);
+  }
+
   return (
-    <div className="app-shell">
-      <NavigationRail activeView={activeView} onChange={setActiveView} />
-      <PersonaColumn personas={personas} selectedSlug={selectedPersonaSlug} onSelect={setSelectedPersonaSlug} />
-      <ThreadColumn
-        threads={threads}
-        selectedId={selectedConversationId}
-        onSelect={setSelectedConversationId}
-        onCreate={handleCreateConversation}
-        onRename={handleRenameConversation}
-        onDelete={handleDeleteConversation}
-        onRefreshSummary={handleRefreshSummary}
+    <div className={inspectorOpen ? 'app-shell drawer-open' : 'app-shell'}>
+      <MiniRail
+        activeView={activeShellView}
+        personaName={selectedPersonaSummary?.name ?? null}
+        onChangeView={setActiveShellView}
+        onCreateThread={() => void handleCreateConversation()}
       />
-      <main className="workspace-container">
-        {activeRunBanner ? (
-          <button
-            type="button"
-            className={`run-status-banner ${activeRunBanner.tone}`}
-            onClick={() => setRunCenterOpen((current) => !current)}
-          >
-            <div>
-              <strong>{activeRunBanner.title}</strong>
-              <p>{activeRunBanner.summary}</p>
-            </div>
-            <div className="writeback-summary">
-              <span className={activeRunBanner.tone === 'good' ? 'badge success' : activeRunBanner.tone === 'warning' ? 'badge warning' : 'badge'}>
-                {activeRunBanner.statusLabel}
-              </span>
-              <span className="badge">{currentRun?.type ?? 'run'}</span>
-              {typeof currentRun?.attempt_count === 'number' && currentRun.attempt_count > 1 ? (
-                <span className="badge">attempt {currentRun.attempt_count}</span>
-              ) : null}
-              <span className="badge">{runCenterOpen ? 'hide runs' : 'open runs'}</span>
-            </div>
-          </button>
-        ) : null}
-        {runCenterOpen && recentRuns.length > 0 ? (
-          <section className="panel run-center-panel">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Run Center</p>
-                <h2>Recent Activity</h2>
-              </div>
-            </div>
-            <div className="run-center-toolbar">
-              <label className="field compact-field">
-                <span>Search</span>
-                <input
-                  value={runQuery}
-                  onChange={(event) => setRunQuery(event.target.value)}
-                  placeholder="Find a run"
-                />
-              </label>
-              <label className="field compact-field">
-                <span>Status</span>
-                <select
-                  value={runStatusFilter}
-                  onChange={(event) => setRunStatusFilter(event.target.value as 'all' | WorkbenchRun['status'] | 'recovering')}
-                >
-                  <option value="all">all</option>
-                  <option value="running">running</option>
-                  <option value="recovering">recovering</option>
-                  <option value="completed">completed</option>
-                  <option value="failed">paused</option>
-                </select>
-              </label>
-              <label className="field compact-field">
-                <span>Type</span>
-                <select
-                  value={runTypeFilter}
-                  onChange={(event) => setRunTypeFilter(event.target.value as 'all' | WorkbenchRun['type'])}
-                >
-                  <option value="all">all</option>
-                  <option value="create">create</option>
-                  <option value="train">train</option>
-                  <option value="experiment">experiment</option>
-                  <option value="export">export</option>
-                </select>
-              </label>
-            </div>
-            <div className="run-center-summary">
-              <span className="badge">{runCenterSummary.running} running</span>
-              <span className="badge success">{runCenterSummary.completed} completed</span>
-              <span className="badge success">{runCenterSummary.recovering} recovering</span>
-              <span className="badge warning">{runCenterSummary.paused} paused</span>
-            </div>
-            <div className="run-center-list">
-              {filteredRuns.slice(0, 12).map((run) => {
-                const banner = deriveActiveRunBanner(run);
-                return (
-                  <button
-                    key={run.id}
-                    type="button"
-                    className={run.id === currentRun?.id ? 'mini-card active-card' : 'mini-card'}
-                    onClick={() => void handleSelectRun(run)}
-                  >
-                    <div className="list-card-top">
-                      <strong>{run.type}</strong>
-                      <span className={banner?.tone === 'good' ? 'badge success' : banner?.tone === 'warning' ? 'badge warning' : 'badge'}>
-                        {banner?.statusLabel ?? run.status}
-                      </span>
-                    </div>
-                    <p>{banner?.summary ?? run.summary ?? run.status}</p>
-                    <div className="writeback-summary">
-                      <span className="badge">{new Date(run.started_at).toLocaleString()}</span>
-                      {typeof run.attempt_count === 'number' && run.attempt_count > 1 ? <span className="badge">attempt {run.attempt_count}</span> : null}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-            {filteredRuns.length === 0 ? (
-              <div className="empty-state run-center-empty">No runs match the current run center filters.</div>
-            ) : null}
-          </section>
-        ) : null}
-        {activeView === 'Chat' ? (
+      <ConversationSidebar
+        personas={personas}
+        selectedPersonaSlug={selectedPersonaSlug}
+        selectedConversationId={selectedConversationId}
+        threads={threads}
+        onSelectPersona={setSelectedPersonaSlug}
+        onSelectConversation={setSelectedConversationId}
+        onCreateConversation={() => void handleCreateConversation()}
+        onRenameConversation={() => void handleRenameConversation()}
+        onDeleteConversation={() => void handleDeleteConversation()}
+        onRefreshSummary={() => void handleRefreshSummary()}
+      />
+
+      <main className="main-stage">
+        {error ? <div className="error-banner stage-error">{error}</div> : null}
+        {activeShellView === 'chat' ? (
           <ChatWorkspace
             bundle={bundle}
             loading={chatLoading}
             personaSlug={selectedPersonaSlug}
             evidenceImports={evidenceImports}
-            selectedEvidenceImportDetail={selectedEvidenceImportDetail}
+            selectedEvidenceImportId={selectedEvidenceImportId}
             importLoading={importLoading}
             notice={notice}
             onSend={handleSendMessage}
@@ -1014,20 +853,23 @@ export default function App() {
             onCopyValue={handleCopyValue}
             onUseEvidenceImport={handleUseEvidenceImport}
             onInspectEvidenceImport={handleInspectEvidenceImport}
+            onSelectEvidenceImport={handleSelectEvidenceImport}
             onImportEvidence={handleImportEvidence}
+            onOpenInspector={handleOpenInspector}
           />
         ) : (
-          <WorkbenchForms
-            activeView={activeView as Exclude<NavView, 'Chat'>}
+          <SettingsScreen
+            activeSection={activeSettingsSection}
+            onSectionChange={setActiveSettingsSection}
             selectedPersona={selectedPersonaSummary}
             currentRun={currentRun}
             recentRuns={recentRuns}
             trainingPreps={trainingPreps}
             evidenceImports={evidenceImports}
-            onCreatePersona={(payload) => launchRun(api.createPersona(payload))}
-            onStartTraining={(payload) => launchRun(api.startTraining(payload))}
-            onStartExperiment={(payload) => launchRun(api.startExperiment(payload))}
-            onExportPersona={(payload) => launchRun(api.exportPersona(payload))}
+            onCreatePersona={(payload) => launchRun(api.createPersona(payload), 'create')}
+            onStartTraining={(payload) => launchRun(api.startTraining(payload), 'train')}
+            onStartExperiment={(payload) => launchRun(api.startExperiment(payload), 'experiment')}
+            onExportPersona={(payload) => launchRun(api.exportPersona(payload), 'export')}
             onSelectRun={handleSelectRun}
             onCopyValue={handleCopyValue}
             apiBaseUrl={apiBaseUrl}
@@ -1042,15 +884,19 @@ export default function App() {
             bootstrapStatus={bootstrapStatus}
           />
         )}
-        {error ? <div className="error-banner">{error}</div> : null}
       </main>
-      <InfoPanel
+
+      <InspectorDrawer
+        open={inspectorOpen}
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        onClose={() => setInspectorOpen(false)}
         profile={selectedPersona}
         bundle={bundle}
         candidates={candidates}
         evidenceImports={evidenceImports}
+        selectedEvidenceImportId={selectedEvidenceImportId}
+        selectedEvidenceImportDetail={selectedEvidenceImportDetail}
         selectedMemoryNode={selectedMemoryNode}
         selectedMemorySourceAssets={selectedMemorySourceAssets}
         promotionHandoffs={promotionHandoffs}
@@ -1059,6 +905,8 @@ export default function App() {
         currentRunId={currentRun?.id ?? null}
         onSelectRun={handleSelectRun}
         onInspectMemory={handleInspectMemory}
+        onInspectEvidenceImport={handleInspectEvidenceImport}
+        onSelectEvidenceImport={handleSelectEvidenceImport}
         onReviewCandidate={handleReviewCandidate}
         onSetCandidatePromotionState={handleCandidatePromotionState}
         onCreatePromotionHandoff={handleCreatePromotionHandoff}
@@ -1068,10 +916,42 @@ export default function App() {
         onExportTrainingPrep={handleExportTrainingPrep}
         onCopyValue={handleCopyValue}
         onUseTrainingPrep={handleUseTrainingPrep}
+        onUseEvidenceImport={handleUseEvidenceImport}
         runReport={runReport}
       />
     </div>
   );
+}
+
+function deriveInitialShellView(): ShellView {
+  const next = window.localStorage.getItem(ACTIVE_SHELL_VIEW_KEY) as ShellView | null;
+  if (next === 'chat' || next === 'settings') return next;
+  const legacy = window.localStorage.getItem(LEGACY_ACTIVE_VIEW_KEY) as NavView | null;
+  return legacy === 'Chat' || !legacy ? 'chat' : 'settings';
+}
+
+function deriveInitialSettingsSection(): SettingsSection {
+  const next = window.localStorage.getItem(ACTIVE_SETTINGS_SECTION_KEY) as SettingsSection | null;
+  if (next && SETTINGS_SECTIONS.includes(next)) return next;
+  const legacy = window.localStorage.getItem(LEGACY_ACTIVE_VIEW_KEY) as NavView | null;
+  if (legacy === 'Create') return 'persona';
+  if (legacy === 'Train') return 'training';
+  if (legacy === 'Experiment') return 'experiment';
+  if (legacy === 'Export') return 'export';
+  return 'runtime';
+}
+
+function deriveInitialInspectorTab(): InfoTab {
+  const next = window.localStorage.getItem(ACTIVE_TAB_KEY) as InfoTab | null;
+  if (next && INSPECTOR_TABS.includes(next)) return next;
+  return 'Soul';
+}
+
+function mapRunTypeToSettingsSection(type: WorkbenchRun['type']): SettingsSection {
+  if (type === 'create') return 'persona';
+  if (type === 'train') return 'training';
+  if (type === 'experiment') return 'experiment';
+  return 'export';
 }
 
 function canBootstrapLocalService(baseUrl: string): boolean {
@@ -1098,10 +978,7 @@ function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-async function bootstrapWorkbenchService(
-  port: number,
-  repoRoot?: string
-): Promise<BootstrapWorkbenchServiceResult> {
+async function bootstrapWorkbenchService(port: number, repoRoot?: string): Promise<BootstrapWorkbenchServiceResult> {
   return invoke<BootstrapWorkbenchServiceResult>('bootstrap_workbench_service', {
     port,
     repoRoot: repoRoot?.trim() || undefined,
@@ -1128,51 +1005,4 @@ async function waitForServiceHealth(attempts = 12, delayMs = 700): Promise<boole
 
 function sleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, delayMs));
-}
-
-function deriveActiveRunBanner(run: WorkbenchRun | null): {
-  tone: 'good' | 'warning' | 'neutral';
-  title: string;
-  statusLabel: string;
-  summary: string;
-} | null {
-  if (!run) return null;
-
-  if (run.recovery_state === 'recovering') {
-    return {
-      tone: 'good',
-      title: 'Automatic recovery in progress',
-      statusLabel: 'recovering',
-      summary: 'The system is reusing saved progress and retrying this run automatically.',
-    };
-  }
-
-  if (run.status === 'running') {
-    return {
-      tone: 'neutral',
-      title: 'Run in progress',
-      statusLabel: 'running',
-      summary: run.summary ?? 'The current workbench run is still in progress.',
-    };
-  }
-
-  if (run.status === 'failed') {
-    return {
-      tone: 'warning',
-      title: 'Run paused',
-      statusLabel: 'progress saved',
-      summary: 'This run paused before finishing, but progress was kept safe for a later retry.',
-    };
-  }
-
-  if (run.status === 'completed') {
-    return {
-      tone: 'good',
-      title: 'Latest run completed',
-      statusLabel: 'completed',
-      summary: run.summary ?? 'The latest workbench run completed successfully.',
-    };
-  }
-
-  return null;
 }

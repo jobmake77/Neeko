@@ -12,6 +12,7 @@
     "dev": "tsup --watch",
     "start": "node dist/cli/index.js",
     "workbench:server": "node dist/cli/index.js workbench-server",
+    "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",
     "desktop:dev": "npm --prefix desktop run dev",
     "desktop:build": "npm --prefix desktop run build",
     "lint": "tsc --noEmit",

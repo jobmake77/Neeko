@@ -64,12 +64,12 @@ type ServiceConnectionState = 'checking' | 'connected' | 'recovering' | 'offline
 type BootstrapWorkbenchServiceResult = {
   status: 'spawned' | 'already_running';
   port: number;
-  repo_root?: string | null;
+  runtime_root?: string | null;
 };
 
 type WorkbenchBootstrapStatus = {
   mode: 'ready' | 'preparing_core' | 'missing_node' | 'needs_repo_root';
-  resolved_repo_root?: string | null;
+  resolved_runtime_root?: string | null;
   node_available: boolean;
   dist_ready: boolean;
   service_managed: boolean;
@@ -825,9 +825,9 @@ export default function App() {
       setServiceHealthy(true);
       setServiceConnectionState('connected');
       setError(null);
-      await refreshBootstrapStatus(result.repo_root ?? workbenchRepoRoot);
-      if (result.repo_root) {
-        setWorkbenchRepoRoot(result.repo_root);
+      await refreshBootstrapStatus(result.runtime_root ?? workbenchRepoRoot);
+      if (result.runtime_root) {
+        setWorkbenchRepoRoot(result.runtime_root);
       }
       setNotice(
         result.status === 'spawned'

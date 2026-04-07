@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::Mutex,
 };
-use tauri::{Manager, RunEvent, State};
+use tauri::{AppHandle, Manager, RunEvent, State};
 
 const DEFAULT_WORKBENCH_PORT: u16 = 4310;
 
@@ -44,14 +44,14 @@ impl WorkbenchServiceState {
 struct BootstrapWorkbenchServiceResult {
     status: &'static str,
     port: u16,
-    repo_root: Option<String>,
+    runtime_root: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 struct WorkbenchBootstrapStatus {
     mode: &'static str,
-    resolved_repo_root: Option<String>,
+    resolved_runtime_root: Option<String>,
     node_available: bool,
     dist_ready: bool,
     service_managed: bool,
@@ -60,6 +60,7 @@ struct WorkbenchBootstrapStatus {
 
 #[tauri::command]
 fn bootstrap_workbench_service(
+    app: AppHandle,
     state: State<'_, WorkbenchServiceState>,
     port: Option<u16>,
     repo_root: Option<String>,
@@ -79,7 +80,7 @@ fn bootstrap_workbench_service(
                     return Ok(BootstrapWorkbenchServiceResult {
                         status: "already_running",
                         port,
-                        repo_root: None,
+                        runtime_root: None,
                     });
                 }
                 Ok(Some(_)) | Err(_) => {
@@ -89,13 +90,13 @@ fn bootstrap_workbench_service(
         }
     }
 
-    let repo_root = resolve_repo_root(repo_root)
+    let runtime_root = resolve_workbench_root(Some(&app), repo_root)
         .ok_or_else(|| String::from("The local workbench source is not available on this machine."))?;
 
     ensure_node_available()?;
-    ensure_dist_ready(&repo_root)?;
+    ensure_dist_ready(&runtime_root)?;
 
-    let cli_entry = repo_root.join("dist/cli/index.js");
+    let cli_entry = runtime_root.join("dist/cli/index.js");
     if !cli_entry.exists() {
         return Err(String::from(
             "The local workbench core is still preparing. Please try again shortly.",
@@ -107,7 +108,7 @@ fn bootstrap_workbench_service(
         .arg("workbench-server")
         .arg("--port")
         .arg(port.to_string())
-        .current_dir(&repo_root)
+        .current_dir(&runtime_root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -123,12 +124,13 @@ fn bootstrap_workbench_service(
     Ok(BootstrapWorkbenchServiceResult {
         status: "spawned",
         port,
-        repo_root: Some(repo_root.display().to_string()),
+        runtime_root: Some(runtime_root.display().to_string()),
     })
 }
 
 #[tauri::command]
 fn get_workbench_bootstrap_status(
+    app: AppHandle,
     state: State<'_, WorkbenchServiceState>,
     repo_root: Option<String>,
 ) -> WorkbenchBootstrapStatus {
@@ -141,14 +143,14 @@ fn get_workbench_bootstrap_status(
         .and_then(|slot| slot.as_ref().map(|_| true))
         .unwrap_or(false);
 
-    let resolved_repo_root = resolve_repo_root(repo_root);
+    let resolved_runtime_root = resolve_workbench_root(Some(&app), repo_root);
     let node_available = is_node_available();
-    let dist_ready = resolved_repo_root
+    let dist_ready = resolved_runtime_root
         .as_ref()
-        .map(|root| root.join("dist/cli/index.js").exists())
+        .map(|root| root.join("dist/cli/index.js").exists() && is_node_modules_ready(root))
         .unwrap_or(false);
 
-    let (mode, message) = match (&resolved_repo_root, node_available, dist_ready) {
+    let (mode, message) = match (&resolved_runtime_root, node_available, dist_ready) {
         (Some(root), true, true) => (
             "ready",
             format!(
@@ -177,7 +179,7 @@ fn get_workbench_bootstrap_status(
 
     WorkbenchBootstrapStatus {
         mode,
-        resolved_repo_root: resolved_repo_root.map(|path| path.display().to_string()),
+        resolved_runtime_root: resolved_runtime_root.map(|path| path.display().to_string()),
         node_available,
         dist_ready,
         service_managed,
@@ -185,9 +187,16 @@ fn get_workbench_bootstrap_status(
     }
 }
 
-fn resolve_repo_root(preferred_repo_root: Option<String>) -> Option<PathBuf> {
+fn resolve_workbench_root(app: Option<&AppHandle>, preferred_repo_root: Option<String>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
 
+    if let Some(app) = app {
+        if let Ok(resource_dir) = app.path().resource_dir() {
+            candidates.push(resource_dir.join("neeko-runtime"));
+            candidates.push(resource_dir.join("_up_").join("runtime").join("neeko-runtime"));
+            candidates.push(resource_dir);
+        }
+    }
     if let Some(root) = preferred_repo_root {
         if !root.trim().is_empty() {
             candidates.push(PathBuf::from(root));
@@ -208,16 +217,26 @@ fn resolve_repo_root(preferred_repo_root: Option<String>) -> Option<PathBuf> {
     if let Ok(exe_path) = env::current_exe() {
         for ancestor in exe_path.ancestors() {
             candidates.push(ancestor.to_path_buf());
+            candidates.push(ancestor.join("neeko-runtime"));
+            candidates.push(ancestor.join("_up_").join("runtime").join("neeko-runtime"));
         }
     }
 
-    candidates.into_iter().find(|candidate| is_repo_root(candidate))
+    candidates.into_iter().find(|candidate| is_workbench_root(candidate))
 }
 
-fn is_repo_root(candidate: &Path) -> bool {
-    candidate.join("package.json").exists()
-        && candidate.join("desktop/package.json").exists()
-        && (candidate.join("dist/cli/index.js").exists() || candidate.join("src/cli/index.ts").exists())
+fn is_workbench_root(candidate: &Path) -> bool {
+    let has_package = candidate.join("package.json").exists();
+    let has_cli_dist = candidate.join("dist/cli/index.js").exists();
+    let has_repo_source = candidate.join("desktop/package.json").exists();
+    let has_source_cli = candidate.join("src/cli/index.ts").exists();
+    let has_node_modules = is_node_modules_ready(candidate);
+
+    has_package && ((has_cli_dist && has_node_modules) || (has_repo_source && has_source_cli))
+}
+
+fn is_node_modules_ready(candidate: &Path) -> bool {
+    candidate.join("node_modules").exists()
 }
 
 fn ensure_node_available() -> Result<(), String> {

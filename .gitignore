@@ -9,6 +9,7 @@ web/.next/
 web/out/
 desktop/dist/
 desktop/src-tauri/target/
+desktop/runtime/
 
 # Logs
 *.log

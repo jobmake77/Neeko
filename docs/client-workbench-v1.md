@@ -97,23 +97,24 @@
 16. 桌面端在使用本地 URL 时，会自动尝试恢复本地 `workbench-server`，不再强依赖手动启动
 17. Settings 支持配置本地 `Neeko repo path`，帮助客户端在非源码工作目录下定位本地 core
 18. Settings 支持展示 `bootstrap readiness`，可直接看到 repo root、Node、dist 构建和 desktop managed service 状态
-19. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
-20. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
-21. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
-22. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
-23. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
-24. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
-25. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
-26. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
-27. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
-28. Train 面板支持 `Run Smoke`，可用安全默认参数做一次低成本训练链路验证
-29. Chat 区可以直接查看 Evidence Intake 的 `speaker_role / scene / stable items` 指标
-30. Chat / Writeback / Train / Experiment / Create 都有统一的 guidance card，显示当前阶段和建议下一步
-31. 聊天消息卡会展示 persona dimensions、citation 数量、memory 命中数量与 citation 摘要
-32. Evidence Intake 导入前支持路径/manifest 本地预检查，服务端也有硬校验
-33. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
-34. 全局 `run status banner` 可跨页面提示当前运行状态，并展开最近运行列表
-35. 聊天消息的 citation / memory 来源支持展开查看与复制 memory id
+19. Tauri build 会自动准备 `desktop/runtime/neeko-runtime`，并把它打进 app bundle 资源中
+20. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
+21. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
+22. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
+23. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
+24. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
+25. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
+26. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
+27. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
+28. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
+29. Train 面板支持 `Run Smoke`，可用安全默认参数做一次低成本训练链路验证
+30. Chat 区可以直接查看 Evidence Intake 的 `speaker_role / scene / stable items` 指标
+31. Chat / Writeback / Train / Experiment / Create 都有统一的 guidance card，显示当前阶段和建议下一步
+32. 聊天消息卡会展示 persona dimensions、citation 数量、memory 命中数量与 citation 摘要
+33. Evidence Intake 导入前支持路径/manifest 本地预检查，服务端也有硬校验
+34. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
+35. 全局 `run status banner` 可跨页面提示当前运行状态，并展开最近运行列表
+36. 聊天消息的 citation / memory 来源支持展开查看与复制 memory id
 
 ### 3.2 默认写回规则
 
@@ -127,7 +128,7 @@
 
 ### 3.3 当前限制
 
-1. 桌面端当前的本地 service 自举依赖本机 Node 环境与可访问的仓库路径；虽然已经支持显式 repo path 配置，但还不是完全脱离源码目录的独立后端打包
+1. 桌面端当前的本地 service 仍依赖本机 Node 环境；但客户端已经能优先使用 app bundle 里的 staged runtime，不再要求源码仓库路径始终存在
 2. 会话候选生成目前先用轻量启发式，不额外增加一层昂贵 LLM 审核
 3. create/train/experiment/export 仍由现有 CLI 执行，本地 server 负责结构化调度与状态持久化
 4. handoff 目前仍是本地交接层，不包含正式审核流与一键写入能力
@@ -149,6 +150,7 @@
 6. 用户侧只看到 `checking / recovering / connected / offline` 这类产品态，不暴露底层 provider 或启动细节
 7. 如果客户端不是从源码仓库目录直接打开，可以通过 `Local Neeko repo path` 显式指定本地仓库根目录
 8. `Bootstrap readiness` 会展示 repo 是否找到、Node 是否可用、`dist/cli/index.js` 是否已准备好，以及当前 service 是否由桌面端接管
+9. 打包后的 macOS app 已验证可以直接从 `Contents/Resources/_up_/runtime/neeko-runtime` 拉起本地 `workbench-server`
 
 这层的目标是：
 

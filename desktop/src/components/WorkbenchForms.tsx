@@ -51,7 +51,7 @@ interface WorkbenchFormsProps {
   onWorkbenchRepoRootChange: (value: string) => void;
   bootstrapStatus: {
     mode: 'ready' | 'preparing_core' | 'missing_node' | 'needs_repo_root';
-    resolved_repo_root?: string | null;
+    resolved_runtime_root?: string | null;
     node_available: boolean;
     dist_ready: boolean;
     service_managed: boolean;
@@ -327,8 +327,8 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
               {bootstrapStatus?.service_managed ? 'managed by desktop' : 'not managed yet'}
             </span>
           </div>
-          {bootstrapStatus?.resolved_repo_root ? (
-            <code>{bootstrapStatus.resolved_repo_root}</code>
+          {bootstrapStatus?.resolved_runtime_root ? (
+            <code>{bootstrapStatus.resolved_runtime_root}</code>
           ) : null}
         </div>
         <div className="settings-card">

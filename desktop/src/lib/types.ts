@@ -195,6 +195,53 @@ export interface WorkbenchEvidenceImport {
   updated_at: string;
 }
 
+export interface EvidenceContextMessage {
+  speaker_name: string;
+  speaker_role: 'target' | 'self' | 'other' | 'unknown';
+  content: string;
+  timestamp?: string;
+}
+
+export interface EvidenceItem {
+  id: string;
+  raw_document_id: string;
+  source_type: string;
+  modality: 'text' | 'chat' | 'transcript';
+  content: string;
+  speaker_role: 'target' | 'self' | 'other' | 'unknown';
+  speaker_name: string;
+  target_confidence: number;
+  scene: 'public' | 'work' | 'private' | 'intimate' | 'conflict' | 'casual' | 'unknown';
+  conversation_id?: string;
+  session_id?: string;
+  window_role: 'target_centered' | 'context_only' | 'standalone';
+  timestamp_start?: string;
+  timestamp_end?: string;
+  context_before: EvidenceContextMessage[];
+  context_after: EvidenceContextMessage[];
+  evidence_kind: 'statement' | 'reply' | 'explanation' | 'preference' | 'decision' | 'behavior_signal';
+  stability_hints: {
+    repeated_count: number;
+    repeated_in_sessions: number;
+    cross_session_stable: boolean;
+  };
+  metadata: Record<string, unknown>;
+}
+
+export interface TargetManifest {
+  target_name: string;
+  target_aliases: string[];
+  self_aliases: string[];
+  known_other_aliases: string[];
+  default_scene?: 'public' | 'work' | 'private';
+}
+
+export interface WorkbenchEvidenceImportDetail {
+  import: WorkbenchEvidenceImport;
+  manifest: TargetManifest | null;
+  sample_items: EvidenceItem[];
+}
+
 export interface TrainingPrepArtifact {
   id: string;
   persona_slug: string;

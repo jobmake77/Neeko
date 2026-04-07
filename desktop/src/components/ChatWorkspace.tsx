@@ -1,17 +1,19 @@
 import { FormEvent, KeyboardEvent, useMemo, useState } from 'react';
-import { ConversationBundle, WorkbenchEvidenceImport } from '../lib/types';
+import { ConversationBundle, WorkbenchEvidenceImport, WorkbenchEvidenceImportDetail } from '../lib/types';
 
 interface ChatWorkspaceProps {
   bundle: ConversationBundle | null;
   loading: boolean;
   personaSlug: string | null;
   evidenceImports: WorkbenchEvidenceImport[];
+  selectedEvidenceImportDetail: WorkbenchEvidenceImportDetail | null;
   importLoading: boolean;
   notice: string | null;
   onSend: (message: string) => Promise<void>;
   onCopyMessage: (content: string) => Promise<void>;
   onCopyValue: (value: string, label: string) => Promise<void>;
   onUseEvidenceImport: (item: WorkbenchEvidenceImport) => void;
+  onInspectEvidenceImport: (importId: string) => Promise<void>;
   onImportEvidence: (payload: {
     sourceKind: 'chat' | 'video';
     sourcePath: string;
@@ -25,12 +27,14 @@ export function ChatWorkspace({
   loading,
   personaSlug,
   evidenceImports,
+  selectedEvidenceImportDetail,
   importLoading,
   notice,
   onSend,
   onCopyMessage,
   onCopyValue,
   onUseEvidenceImport,
+  onInspectEvidenceImport,
   onImportEvidence,
 }: ChatWorkspaceProps) {
   const [message, setMessage] = useState('');
@@ -43,6 +47,12 @@ export function ChatWorkspace({
   const selectedEvidenceImport = useMemo(
     () => evidenceImports.find((item) => item.id === selectedEvidenceImportId) ?? evidenceImports[0] ?? null,
     [evidenceImports, selectedEvidenceImportId]
+  );
+  const selectedEvidenceDetail = useMemo(
+    () => selectedEvidenceImportDetail && selectedEvidenceImport && selectedEvidenceImportDetail.import.id === selectedEvidenceImport.id
+      ? selectedEvidenceImportDetail
+      : null,
+    [selectedEvidenceImport, selectedEvidenceImportDetail]
   );
   const intakeChecks = useMemo(() => {
     const errors: string[] = [];
@@ -303,6 +313,58 @@ export function ChatWorkspace({
                     Copy Evidence Path
                   </button>
                 </div>
+                {selectedEvidenceDetail?.manifest ? (
+                  <div className="evidence-metric-grid">
+                    <div className="metric-group">
+                      <strong>Target</strong>
+                      <small>{selectedEvidenceDetail.manifest.target_name}</small>
+                      {selectedEvidenceDetail.manifest.default_scene ? (
+                        <small>default scene: {selectedEvidenceDetail.manifest.default_scene}</small>
+                      ) : null}
+                    </div>
+                    <div className="metric-group">
+                      <strong>Aliases</strong>
+                      {[selectedEvidenceDetail.manifest.target_aliases, selectedEvidenceDetail.manifest.self_aliases]
+                        .flat()
+                        .slice(0, 4)
+                        .map((alias) => (
+                          <small key={alias}>{alias}</small>
+                        ))}
+                    </div>
+                  </div>
+                ) : null}
+                {selectedEvidenceDetail?.sample_items.length ? (
+                  <div className="evidence-preview-list">
+                    {selectedEvidenceDetail.sample_items.map((item) => (
+                      <article key={item.id} className="mini-card evidence-preview-card">
+                        <div className="list-card-top">
+                          <strong>{item.speaker_name}</strong>
+                          <span className="badge">{item.window_role}</span>
+                        </div>
+                        <div className="writeback-summary">
+                          <span className={item.speaker_role === 'target' ? 'badge success' : 'badge'}>
+                            {item.speaker_role}
+                          </span>
+                          <span className={item.scene === 'public' || item.scene === 'work' ? 'badge success' : item.scene === 'intimate' || item.scene === 'conflict' ? 'badge warning' : 'badge'}>
+                            {item.scene}
+                          </span>
+                          <span className="badge">{item.evidence_kind}</span>
+                          {item.stability_hints.cross_session_stable ? <span className="badge success">stable</span> : null}
+                        </div>
+                        <p>{item.content}</p>
+                        {item.context_before.length > 0 ? (
+                          <small>before: {item.context_before.map((ctx) => `${ctx.speaker_name}: ${ctx.content}`).join(' / ')}</small>
+                        ) : null}
+                        {item.context_after.length > 0 ? (
+                          <small>after: {item.context_after.map((ctx) => `${ctx.speaker_name}: ${ctx.content}`).join(' / ')}</small>
+                        ) : null}
+                        {item.timestamp_start ? (
+                          <small>{new Date(item.timestamp_start).toLocaleString()}</small>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
               </article>
             ) : null}
             {evidenceImports.slice(0, 5).map((item) => (
@@ -321,7 +383,10 @@ export function ChatWorkspace({
                   <button
                     type="button"
                     className="action-button secondary"
-                    onClick={() => setSelectedEvidenceImportId(item.id)}
+                    onClick={() => {
+                      setSelectedEvidenceImportId(item.id);
+                      void onInspectEvidenceImport(item.id);
+                    }}
                   >
                     Inspect
                   </button>

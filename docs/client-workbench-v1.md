@@ -99,23 +99,25 @@
 18. Settings 支持展示 `bootstrap readiness`，可直接看到 repo root、Node、dist 构建和 desktop managed service 状态
 19. Tauri build 会自动准备 `desktop/runtime/neeko-runtime`，并把它打进 app bundle 资源中
 20. `neeko-runtime` 现在会同时携带内置 `bin/node`，打包 app 启动本地 service 时优先使用 bundle 自带的 Node
-21. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
-22. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
-23. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
-24. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
-25. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
-26. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
-27. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
-28. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
-29. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
-30. Train 面板支持 `Run Smoke`，可用安全默认参数做一次低成本训练链路验证
-31. Chat 区可以直接查看 Evidence Intake 的 `speaker_role / scene / stable items` 指标
-32. Chat / Writeback / Train / Experiment / Create 都有统一的 guidance card，显示当前阶段和建议下一步
-33. 聊天消息卡会展示 persona dimensions、citation 数量、memory 命中数量与 citation 摘要
-34. Evidence Intake 导入前支持路径/manifest 本地预检查，服务端也有硬校验
-35. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
-36. 全局 `run status banner` 可跨页面提示当前运行状态，并展开最近运行列表
-37. 聊天消息的 citation / memory 来源支持展开查看与复制 memory id
+21. Evidence Intake 现在支持 `detail` 读取：客户端可直接查看 target manifest 和 sample evidence items
+22. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
+23. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
+24. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
+25. `promotion-ready queue` 可生成 `promotion handoff artifact`，作为后续训练/人工整理的结构化交接包
+26. handoff 支持 `drafted / queued / archived` 状态，不会直接写入正式 `Soul` 或正式长期记忆
+27. handoff 可在客户端内展开查看候选明细，并复制导出为 `Markdown / JSON`
+28. workbench 现已支持聊天日志与视频 transcript 的本地 Evidence Intake
+29. `handoff -> training prep` 已作为安全适配层接入，只产出训练输入包，不写正式资产
+30. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
+31. Train 面板支持 `Run Smoke`，可用安全默认参数做一次低成本训练链路验证
+32. Chat 区可以直接查看 Evidence Intake 的 `speaker_role / scene / stable items` 指标
+33. Chat 区可以直接查看 sample evidence items 的 `context_before / context_after / window_role / evidence_kind / cross-session stable` 结构化信息
+34. Chat / Writeback / Train / Experiment / Create 都有统一的 guidance card，显示当前阶段和建议下一步
+35. 聊天消息卡会展示 persona dimensions、citation 数量、memory 命中数量与 citation 摘要
+36. Evidence Intake 导入前支持路径/manifest 本地预检查，服务端也有硬校验
+37. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
+38. 全局 `run status banner` 可跨页面提示当前运行状态，并展开最近运行列表
+39. 聊天消息的 citation / memory 来源支持展开查看与复制 memory id
 
 ### 3.2 默认写回规则
 

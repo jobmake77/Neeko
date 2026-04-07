@@ -137,6 +137,16 @@ export async function cmdWorkbenchServer(
         writeJson(res, 200, service.listEvidenceImports(personaSlug, conversationId));
         return;
       }
+      const evidenceImportMatch = path.match(/^\/api\/evidence-imports\/([^/]+)$/);
+      if (req.method === 'GET' && evidenceImportMatch) {
+        const detail = service.getEvidenceImportDetail(decodeURIComponent(evidenceImportMatch[1]));
+        if (!detail) {
+          writeSafeError(res, 404, 'Evidence import not found');
+          return;
+        }
+        writeJson(res, 200, detail);
+        return;
+      }
       if (req.method === 'POST' && personaEvidenceImportsMatch) {
         const body = await readBody(req);
         const sourcePath = getString(body.sourcePath);

@@ -17,6 +17,7 @@ import {
   PersonaWorkbenchProfile,
   PromotionHandoff,
   TrainingPrepArtifact,
+  WorkbenchEvidenceImportDetail,
   WorkbenchEvidenceImport,
   WorkbenchMemoryNode,
   WorkbenchMemorySourceAsset,
@@ -220,6 +221,7 @@ export default function App() {
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
   const [promotionHandoffs, setPromotionHandoffs] = useState<PromotionHandoff[]>([]);
   const [evidenceImports, setEvidenceImports] = useState<WorkbenchEvidenceImport[]>([]);
+  const [selectedEvidenceImportDetail, setSelectedEvidenceImportDetail] = useState<WorkbenchEvidenceImportDetail | null>(null);
   const [trainingPreps, setTrainingPreps] = useState<TrainingPrepArtifact[]>([]);
   const [selectedMemoryNode, setSelectedMemoryNode] = useState<WorkbenchMemoryNode | null>(null);
   const [selectedMemorySourceAssets, setSelectedMemorySourceAssets] = useState<WorkbenchMemorySourceAsset[]>([]);
@@ -259,6 +261,7 @@ export default function App() {
       setCandidates([]);
       setPromotionHandoffs([]);
       setEvidenceImports([]);
+      setSelectedEvidenceImportDetail(null);
       setTrainingPreps([]);
       setSelectedMemoryNode(null);
       setSelectedMemorySourceAssets([]);
@@ -453,6 +456,9 @@ export default function App() {
       setCandidates(nextCandidates);
       setPromotionHandoffs(nextHandoffs);
       setEvidenceImports(nextImports);
+      if (selectedEvidenceImportDetail && !nextImports.some((item) => item.id === selectedEvidenceImportDetail.import.id)) {
+        setSelectedEvidenceImportDetail(null);
+      }
       setTrainingPreps(nextTrainingPreps);
       setSelectedMemoryNode(null);
       setSelectedMemorySourceAssets([]);
@@ -510,6 +516,7 @@ export default function App() {
       setCandidates([]);
       setPromotionHandoffs([]);
       setEvidenceImports([]);
+      setSelectedEvidenceImportDetail(null);
       setTrainingPreps([]);
       setSelectedMemoryNode(null);
       setSelectedMemorySourceAssets([]);
@@ -731,7 +738,7 @@ export default function App() {
         conversationId = created.id;
         setSelectedConversationId(created.id);
       }
-      await api.importEvidence(selectedPersonaSlug, {
+      const imported = await api.importEvidence(selectedPersonaSlug, {
         conversationId,
         sourceKind: payload.sourceKind,
         sourcePath: payload.sourcePath,
@@ -743,6 +750,10 @@ export default function App() {
       }
       if (conversationId) {
         await refreshConversation(conversationId);
+      }
+      const detail = await api.getEvidenceImportDetail(imported.id).catch(() => null);
+      if (detail) {
+        setSelectedEvidenceImportDetail(detail);
       }
       setNotice(`${payload.sourceKind} evidence imported into workbench.`);
       setError(null);
@@ -765,6 +776,17 @@ export default function App() {
     setActiveTab('Training');
     setNotice('Evidence intake has been attached to the train form.');
     setError(null);
+  }
+
+  async function handleInspectEvidenceImport(importId: string) {
+    try {
+      const detail = await api.getEvidenceImportDetail(importId);
+      setSelectedEvidenceImportDetail(detail);
+      setNotice('Evidence detail loaded.');
+      setError(null);
+    } catch (err) {
+      reportError(err);
+    }
   }
 
   function handleUseTrainingPrep(prep: TrainingPrepArtifact) {
@@ -984,12 +1006,14 @@ export default function App() {
             loading={chatLoading}
             personaSlug={selectedPersonaSlug}
             evidenceImports={evidenceImports}
+            selectedEvidenceImportDetail={selectedEvidenceImportDetail}
             importLoading={importLoading}
             notice={notice}
             onSend={handleSendMessage}
             onCopyMessage={handleCopyMessage}
             onCopyValue={handleCopyValue}
             onUseEvidenceImport={handleUseEvidenceImport}
+            onInspectEvidenceImport={handleInspectEvidenceImport}
             onImportEvidence={handleImportEvidence}
           />
         ) : (

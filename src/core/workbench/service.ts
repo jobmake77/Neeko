@@ -17,6 +17,7 @@ import {
   buildStandaloneEvidenceBatch,
   buildVideoTranscriptEvidenceBatch,
   convertEvidenceItemsToDocuments,
+  loadEvidenceItemsFromFile,
   loadTargetManifest,
   writeEvidenceArtifacts,
 } from '../pipeline/evidence-layer.js';
@@ -33,6 +34,7 @@ import {
   TrainingPrepArtifact,
   SessionSummary,
   WorkbenchEvidenceImport,
+  WorkbenchEvidenceImportDetail,
   WorkbenchMemorySourceAsset,
   WorkbenchRun,
   WorkbenchRunReport,
@@ -257,6 +259,23 @@ function buildTrainingPrepSummary(handoff: PromotionHandoff, docs: RawDocument[]
     `${docs.length} training documents`,
     handoff.summary,
   ].join(' · ');
+}
+
+function chooseEvidencePreviewItems(items: EvidenceItem[], limit = 6): EvidenceItem[] {
+  return [...items]
+    .sort((a, b) => scoreEvidencePreviewItem(b) - scoreEvidencePreviewItem(a))
+    .slice(0, limit);
+}
+
+function scoreEvidencePreviewItem(item: EvidenceItem): number {
+  let score = 0;
+  if (item.window_role === 'target_centered') score += 5;
+  if (item.speaker_role === 'target') score += 4;
+  if (item.stability_hints.cross_session_stable) score += 4;
+  if (item.scene === 'work' || item.scene === 'public') score += 2;
+  if (item.scene === 'intimate' || item.scene === 'conflict') score -= 3;
+  score += Math.min(3, item.stability_hints.repeated_in_sessions ?? 0);
+  return score;
 }
 
 function readPreviewFromPath(path?: string, maxChars = 900): string | undefined {
@@ -715,6 +734,23 @@ export class WorkbenchService {
 
   listEvidenceImports(personaSlug: string, conversationId?: string): WorkbenchEvidenceImport[] {
     return this.store.listEvidenceImports(personaSlug, conversationId);
+  }
+
+  getEvidenceImportDetail(importId: string): WorkbenchEvidenceImportDetail | null {
+    const entry = this.store.getEvidenceImport(importId);
+    if (!entry) return null;
+
+    const manifestPath = entry.artifacts.target_manifest_path ?? entry.target_manifest_path;
+    const manifest = manifestPath && existsSync(manifestPath)
+      ? loadTargetManifest(manifestPath)
+      : null;
+    const items = loadEvidenceItemsFromFile(entry.artifacts.evidence_index_path);
+
+    return {
+      import: entry,
+      manifest,
+      sample_items: chooseEvidencePreviewItems(items),
+    };
   }
 
   listTrainingPrepArtifacts(personaSlug: string, conversationId?: string): TrainingPrepArtifact[] {

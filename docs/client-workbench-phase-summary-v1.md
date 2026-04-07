@@ -58,6 +58,7 @@
 8. 桌面端现在允许显式配置本地 `repo root`，并把 bootstrap readiness 作为状态卡展示出来
 9. 打包态 app 现在会优先使用 bundle 内置 runtime，而不是依赖源码仓库路径
 10. 打包态 app 现在会优先使用 bundle 内置 `bin/node`，不再要求用户机器预装 Node 才能启动本地 service
+11. Evidence Intake 已经从摘要卡升级到 detail 读取，能直接把 sample evidence items 和 target manifest 拉进工作台
 
 ### 2.3 工作台 guidance 层已经补齐
 
@@ -105,6 +106,7 @@
 6. 本地 core 定位状态可解释：repo root / Node / dist readiness / desktop managed service
 7. macOS bundle 已验证能从 app 资源中的 staged runtime 启动本地 service
 8. macOS bundle 已验证能从 app 资源中的 `bin/node` 启动本地 service
+9. Evidence Intake 结果现在可在客户端内直接审查结构化 evidence sample，而不只是看 aggregate 指标
 
 这件事的意义在于：
 

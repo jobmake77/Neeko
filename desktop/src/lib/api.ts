@@ -8,6 +8,7 @@ import {
   PromotionHandoffExport,
   TrainingPrepArtifact,
   TrainingPrepExport,
+  WorkbenchEvidenceImportDetail,
   WorkbenchEvidenceImport,
   WorkbenchMemoryNode,
   WorkbenchMemorySourceAsset,
@@ -60,6 +61,8 @@ export const api = {
     request<WorkbenchEvidenceImport[]>(
       `/api/personas/${encodeURIComponent(slug)}/evidence-imports${conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''}`
     ),
+  getEvidenceImportDetail: (importId: string) =>
+    request<WorkbenchEvidenceImportDetail>(`/api/evidence-imports/${encodeURIComponent(importId)}`),
   importEvidence: (slug: string, payload: Record<string, unknown>) =>
     request<WorkbenchEvidenceImport>(`/api/personas/${encodeURIComponent(slug)}/evidence-imports`, {
       method: 'POST',

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EvidenceStatsSchema } from './evidence.js';
+import { EvidenceItemSchema, EvidenceStatsSchema, TargetManifestSchema } from './evidence.js';
 
 export const CitationItemSchema = z.object({
   id: z.string(),
@@ -112,6 +112,13 @@ export const WorkbenchEvidenceImportSchema = z.object({
   updated_at: z.string().datetime(),
 });
 export type WorkbenchEvidenceImport = z.infer<typeof WorkbenchEvidenceImportSchema>;
+
+export const WorkbenchEvidenceImportDetailSchema = z.object({
+  import: WorkbenchEvidenceImportSchema,
+  manifest: TargetManifestSchema.nullable(),
+  sample_items: z.array(EvidenceItemSchema).default([]),
+});
+export type WorkbenchEvidenceImportDetail = z.infer<typeof WorkbenchEvidenceImportDetailSchema>;
 
 export const TrainingPrepArtifactSchema = z.object({
   id: z.string().uuid(),

@@ -53,6 +53,7 @@ struct WorkbenchBootstrapStatus {
     mode: &'static str,
     resolved_runtime_root: Option<String>,
     node_available: bool,
+    node_source: &'static str,
     dist_ready: bool,
     service_managed: bool,
     message: String,
@@ -93,7 +94,8 @@ fn bootstrap_workbench_service(
     let runtime_root = resolve_workbench_root(Some(&app), repo_root)
         .ok_or_else(|| String::from("The local workbench source is not available on this machine."))?;
 
-    ensure_node_available()?;
+    let node_binary = resolve_node_binary(Some(&runtime_root))
+        .ok_or_else(|| String::from("Node.js is not available for the local workbench service."))?;
     ensure_dist_ready(&runtime_root)?;
 
     let cli_entry = runtime_root.join("dist/cli/index.js");
@@ -103,7 +105,7 @@ fn bootstrap_workbench_service(
         ));
     }
 
-    let child = Command::new("node")
+    let child = Command::new(node_binary)
         .arg(cli_entry)
         .arg("workbench-server")
         .arg("--port")
@@ -144,7 +146,17 @@ fn get_workbench_bootstrap_status(
         .unwrap_or(false);
 
     let resolved_runtime_root = resolve_workbench_root(Some(&app), repo_root);
-    let node_available = is_node_available();
+    let node_binary = resolved_runtime_root
+        .as_ref()
+        .and_then(|root| resolve_node_binary(Some(root)))
+        .or_else(|| resolve_node_binary(None));
+    let node_available = node_binary.is_some();
+    let node_source = resolved_runtime_root
+        .as_ref()
+        .and_then(|root| bundled_node_binary(root))
+        .map(|_| "bundled")
+        .or_else(|| node_binary.as_ref().map(|_| "system"))
+        .unwrap_or("missing");
     let dist_ready = resolved_runtime_root
         .as_ref()
         .map(|root| root.join("dist/cli/index.js").exists() && is_node_modules_ready(root))
@@ -154,8 +166,9 @@ fn get_workbench_bootstrap_status(
         (Some(root), true, true) => (
             "ready",
             format!(
-                "The local workbench core is ready at {}.",
-                root.display()
+                "The local workbench core is ready at {} and will use {} Node runtime.",
+                root.display(),
+                if node_source == "bundled" { "the bundled" } else { "the system" }
             ),
         ),
         (Some(root), true, false) => (
@@ -181,6 +194,7 @@ fn get_workbench_bootstrap_status(
         mode,
         resolved_runtime_root: resolved_runtime_root.map(|path| path.display().to_string()),
         node_available,
+        node_source,
         dist_ready,
         service_managed,
         message,
@@ -239,17 +253,13 @@ fn is_node_modules_ready(candidate: &Path) -> bool {
     candidate.join("node_modules").exists()
 }
 
-fn ensure_node_available() -> Result<(), String> {
-    if is_node_available() {
-        Ok(())
-    } else {
-        Err(String::from(
-            "Node.js is not available for the local workbench service.",
-        ))
+fn resolve_node_binary(runtime_root: Option<&Path>) -> Option<PathBuf> {
+    if let Some(root) = runtime_root {
+        if let Some(bundled) = bundled_node_binary(root) {
+            return Some(bundled);
+        }
     }
-}
 
-fn is_node_available() -> bool {
     let output = Command::new("node")
         .arg("--version")
         .stdin(Stdio::null())
@@ -257,7 +267,20 @@ fn is_node_available() -> bool {
         .stderr(Stdio::null())
         .status();
 
-    matches!(output, Ok(status) if status.success())
+    if matches!(output, Ok(status) if status.success()) {
+        Some(PathBuf::from("node"))
+    } else {
+        None
+    }
+}
+
+fn bundled_node_binary(runtime_root: &Path) -> Option<PathBuf> {
+    let candidate = runtime_root.join("bin").join("node");
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 fn ensure_dist_ready(repo_root: &Path) -> Result<(), String> {

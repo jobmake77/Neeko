@@ -71,6 +71,7 @@ type WorkbenchBootstrapStatus = {
   mode: 'ready' | 'preparing_core' | 'missing_node' | 'needs_repo_root';
   resolved_runtime_root?: string | null;
   node_available: boolean;
+  node_source: 'bundled' | 'system' | 'missing';
   dist_ready: boolean;
   service_managed: boolean;
   message: string;

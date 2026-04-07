@@ -57,6 +57,7 @@
 7. 桌面端现在会在本地 URL 下自动恢复 `workbench-server`
 8. 桌面端现在允许显式配置本地 `repo root`，并把 bootstrap readiness 作为状态卡展示出来
 9. 打包态 app 现在会优先使用 bundle 内置 runtime，而不是依赖源码仓库路径
+10. 打包态 app 现在会优先使用 bundle 内置 `bin/node`，不再要求用户机器预装 Node 才能启动本地 service
 
 ### 2.3 工作台 guidance 层已经补齐
 
@@ -103,6 +104,7 @@
 5. 本地 service 自动检测、自动拉起、自动重连
 6. 本地 core 定位状态可解释：repo root / Node / dist readiness / desktop managed service
 7. macOS bundle 已验证能从 app 资源中的 staged runtime 启动本地 service
+8. macOS bundle 已验证能从 app 资源中的 `bin/node` 启动本地 service
 
 这件事的意义在于：
 
@@ -221,13 +223,13 @@
 2. 线程还没有标签体系、分组体系和更强的历史管理
 3. citation / memory source 已经进入第一层下钻，但 retrieved memory 到正式来源资产的链路还不够深
 4. handoff / prep 仍然主要是单线程内部链路，还没有更强的跨线程整理体验
-5. 桌面端已经能完成本机 Rust 编译与原生启动验证，也能通过 app bundle 内置 runtime 或显式 repo path 配置完成本地 core 定位；当前剩余边界主要是 Node runtime 仍依赖本机存在
+5. 桌面端已经能完成本机 Rust 编译与原生启动验证，也能通过 app bundle 内置 runtime 和 bundled Node 完成本地 service 启动；当前剩余边界主要转向 runtime 体积、架构兼容和更新策略
 
 ## 6. 下一阶段最值得继续补什么
 
 当前这一轮补完后，下一阶段更值得继续补的是：
 
-1. 继续把桌面本地 runtime 从“依赖本机 Node”推进到更强的自包含或更清晰的安装前置
+1. 继续优化桌面 runtime 体积、架构兼容和更新策略
 2. 把聊天和视频的 Evidence Layer 能力正式接进 workbench 主工作流
 3. 继续收紧 Chat 区的消息体验、引用展示和写回候选整理体验
 

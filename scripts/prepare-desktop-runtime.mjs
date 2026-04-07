@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeRoot = join(repoRoot, 'desktop', 'runtime', 'neeko-runtime');
 const runtimeNodeModules = join(runtimeRoot, 'node_modules');
+const runtimeBinDir = join(runtimeRoot, 'bin');
 const rootPackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
 
 function ensureDir(path) {
@@ -19,9 +20,22 @@ function log(step) {
 log('resetting staged runtime');
 rmSync(runtimeRoot, { recursive: true, force: true });
 ensureDir(runtimeRoot);
+ensureDir(runtimeBinDir);
 
 log('copying CLI dist bundle');
 cpSync(join(repoRoot, 'dist'), join(runtimeRoot, 'dist'), { recursive: true });
+
+log('copying bundled Node runtime');
+const nodeBinary = execSync('command -v node', {
+  cwd: repoRoot,
+  stdio: ['ignore', 'pipe', 'ignore'],
+  encoding: 'utf8',
+}).trim();
+if (!nodeBinary) {
+  throw new Error('could not locate node binary for desktop runtime');
+}
+cpSync(nodeBinary, join(runtimeBinDir, 'node'));
+chmodSync(join(runtimeBinDir, 'node'), 0o755);
 
 log('copying installed node_modules');
 cpSync(join(repoRoot, 'node_modules'), runtimeNodeModules, {
@@ -57,6 +71,10 @@ if (!existsSync(join(runtimeRoot, 'dist', 'cli', 'index.js'))) {
 
 if (!existsSync(join(runtimeRoot, 'node_modules'))) {
   throw new Error('staged runtime is missing node_modules');
+}
+
+if (!existsSync(join(runtimeBinDir, 'node'))) {
+  throw new Error('staged runtime is missing bundled node binary');
 }
 
 log(`runtime ready at ${runtimeRoot}`);

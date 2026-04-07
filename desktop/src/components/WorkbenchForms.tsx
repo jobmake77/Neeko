@@ -53,6 +53,7 @@ interface WorkbenchFormsProps {
     mode: 'ready' | 'preparing_core' | 'missing_node' | 'needs_repo_root';
     resolved_runtime_root?: string | null;
     node_available: boolean;
+    node_source: 'bundled' | 'system' | 'missing';
     dist_ready: boolean;
     service_managed: boolean;
     message: string;
@@ -318,7 +319,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           <p>{bootstrapStatus?.message ?? 'Bootstrap status is not available yet.'}</p>
           <div className="writeback-summary">
             <span className={bootstrapStatus?.node_available ? 'badge success' : 'badge warning'}>
-              node {bootstrapStatus?.node_available ? 'ready' : 'missing'}
+              node {bootstrapStatus?.node_available ? bootstrapStatus.node_source : 'missing'}
             </span>
             <span className={bootstrapStatus?.dist_ready ? 'badge success' : 'badge warning'}>
               core {bootstrapStatus?.dist_ready ? 'built' : 'pending'}

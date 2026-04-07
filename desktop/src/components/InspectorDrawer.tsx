@@ -253,11 +253,11 @@ export function InspectorDrawer({
               {filteredCandidates.map((item) => (
                 <article key={item.id} className="mini-card">
                   <div className="list-card-top">
-                    <strong>{item.candidate_type}</strong>
+                    <strong>{t(item.candidate_type)}</strong>
                     <span className="badge">{Math.round(item.confidence * 100)}%</span>
                   </div>
                   <p>{item.content}</p>
-                  <small>{`${t(item.status)} · promo ${t(item.promotion_state)} · ${new Date(item.created_at).toLocaleString()}`}</small>
+                  <small>{`${t(item.status)} · ${t('promotion')} ${t(item.promotion_state)} · ${new Date(item.created_at).toLocaleString()}`}</small>
                   {item.source_message_ids.length > 0 ? (
                     <div className="source-link-list">
                       {deriveSourceMessages(item.source_message_ids, messageLookup).map((message) => (
@@ -373,16 +373,16 @@ export function InspectorDrawer({
                 <article key={item.id} className="mini-card">
                   <div className="list-card-top">
                     <strong>{item.id}</strong>
-                    <span className="badge">{item.confidence ? `${Math.round(item.confidence * 100)}%` : 'retrieved'}</span>
+                    <span className="badge">{item.confidence ? `${Math.round(item.confidence * 100)}%` : t('retrieved')}</span>
                   </div>
                   <p>{item.summary}</p>
-                  <small>{item.category} · {item.soul_dimension}</small>
+                  <small>{t(item.category ?? 'memory')} · {t(item.soul_dimension ?? 'general')}</small>
                   <div className="candidate-actions">
                     <button type="button" className="action-button secondary" onClick={() => void onCopyValue(item.id, 'Citation id')}>
-                      Copy Id
+                      {t('Copy Id')}
                     </button>
                     <button type="button" className="action-button secondary" onClick={() => void onInspectMemory(item.id)}>
-                      Inspect Memory
+                      {t('Inspect Memory')}
                     </button>
                   </div>
                 </article>
@@ -392,7 +392,7 @@ export function InspectorDrawer({
                   {renderMemoryNodeInspector(selectedMemoryNode, selectedMemorySourceAssets, onCopyValue, t)}
                 </article>
               ) : null}
-              {!(latestAssistant?.citation_items ?? []).length ? <div className="empty-state">No citations for the current thread yet.</div> : null}
+              {!(latestAssistant?.citation_items ?? []).length ? <div className="empty-state">{t('No citations for the current thread yet.')}</div> : null}
             </div>
           ) : null}
 
@@ -401,8 +401,8 @@ export function InspectorDrawer({
               {selectedEvidenceImport ? (
                 <article className="mini-card evidence-import-detail">
                   <div className="list-card-top">
-                    <strong>{selectedEvidenceImport.source_kind} intake</strong>
-                    <span className="badge">{selectedEvidenceImport.item_count} items</span>
+                    <strong>{`${t(selectedEvidenceImport.source_kind)} ${t('Evidence Intake')}`}</strong>
+                    <span className="badge">{selectedEvidenceImport.item_count} {t('items')}</span>
                   </div>
                   <p>{selectedEvidenceImport.summary}</p>
                   <div className="writeback-summary">
@@ -413,13 +413,13 @@ export function InspectorDrawer({
                   </div>
                   <div className="candidate-actions">
                     <button type="button" className="action-button" onClick={() => onUseEvidenceImport(selectedEvidenceImport)}>
-                      Use For Training
+                      {t('Use For Training')}
                     </button>
                     <button type="button" className="action-button secondary" onClick={() => void onCopyValue(selectedEvidenceImport.artifacts.documents_path, 'Evidence documents path')}>
-                      Copy Docs Path
+                      {t('Copy Docs Path')}
                     </button>
                     <button type="button" className="action-button secondary" onClick={() => void onCopyValue(selectedEvidenceImport.artifacts.evidence_index_path, 'Evidence index path')}>
-                      Copy Evidence Path
+                      {t('Copy Evidence Path')}
                     </button>
                   </div>
                   <code>{selectedEvidenceImport.artifacts.documents_path}</code>
@@ -427,8 +427,8 @@ export function InspectorDrawer({
                   {evidenceDetail?.manifest ? (
                     <article className="workflow-card">
                       <div className="list-card-top">
-                        <strong>Target manifest</strong>
-                        {evidenceDetail.manifest.default_scene ? <span className="badge">{evidenceDetail.manifest.default_scene}</span> : null}
+                        <strong>{t('Target manifest')}</strong>
+                        {evidenceDetail.manifest.default_scene ? <span className="badge">{t(evidenceDetail.manifest.default_scene)}</span> : null}
                       </div>
                       <p>{evidenceDetail.manifest.target_name}</p>
                       <small>{[...evidenceDetail.manifest.target_aliases, ...evidenceDetail.manifest.self_aliases].slice(0, 6).join(' · ') || t('No aliases listed.')}</small>
@@ -440,17 +440,17 @@ export function InspectorDrawer({
                         <article key={item.id} className="mini-card evidence-preview-card">
                           <div className="list-card-top">
                             <strong>{item.speaker_name}</strong>
-                            <span className="badge">{item.window_role}</span>
+                            <span className="badge">{t(item.window_role)}</span>
                           </div>
                           <div className="writeback-summary">
-                            <span className={item.speaker_role === 'target' ? 'badge success' : 'badge'}>{item.speaker_role}</span>
-                            <span className={item.scene === 'public' || item.scene === 'work' ? 'badge success' : item.scene === 'intimate' || item.scene === 'conflict' ? 'badge warning' : 'badge'}>{item.scene}</span>
+                            <span className={item.speaker_role === 'target' ? 'badge success' : 'badge'}>{t(item.speaker_role)}</span>
+                            <span className={item.scene === 'public' || item.scene === 'work' ? 'badge success' : item.scene === 'intimate' || item.scene === 'conflict' ? 'badge warning' : 'badge'}>{t(item.scene)}</span>
                             <span className="badge">{t(item.evidence_kind)}</span>
                             {item.stability_hints.cross_session_stable ? <span className="badge success">{t('stable')}</span> : null}
                           </div>
                           <p>{item.content}</p>
-                          {item.context_before.length > 0 ? <small>before: {item.context_before.map((ctx) => `${ctx.speaker_name}: ${ctx.content}`).join(' / ')}</small> : null}
-                          {item.context_after.length > 0 ? <small>after: {item.context_after.map((ctx) => `${ctx.speaker_name}: ${ctx.content}`).join(' / ')}</small> : null}
+                          {item.context_before.length > 0 ? <small>{t('before')}: {item.context_before.map((ctx) => `${ctx.speaker_name}: ${ctx.content}`).join(' / ')}</small> : null}
+                          {item.context_after.length > 0 ? <small>{t('after')}: {item.context_after.map((ctx) => `${ctx.speaker_name}: ${ctx.content}`).join(' / ')}</small> : null}
                         </article>
                       ))}
                     </div>
@@ -465,8 +465,8 @@ export function InspectorDrawer({
                   {evidenceImports.map((item) => (
                     <article key={item.id} className={selectedEvidenceImport?.id === item.id ? 'mini-card active-card' : 'mini-card'}>
                       <div className="list-card-top">
-                        <strong>{item.source_kind}</strong>
-                        <span className="badge">{item.item_count} items</span>
+                        <strong>{t(item.source_kind)}</strong>
+                        <span className="badge">{item.item_count} {t('items')}</span>
                       </div>
                       <p>{item.summary}</p>
                       <small>{new Date(item.updated_at).toLocaleString()}</small>
@@ -479,7 +479,7 @@ export function InspectorDrawer({
                             void onInspectEvidenceImport(item.id);
                           }}
                         >
-                          Inspect
+                          {t('Inspect')}
                         </button>
                       </div>
                     </article>
@@ -514,14 +514,14 @@ export function InspectorDrawer({
                     </div>
                     <p>{t(runPresentation.primaryMessage)}</p>
                     <div className="writeback-summary">
-                      {runPresentation.track ? <span className="badge">{runPresentation.track}</span> : null}
-                      {runPresentation.phase ? <span className="badge">{runPresentation.phase}</span> : null}
-                      {runPresentation.isSmoke ? <span className="badge success">smoke</span> : null}
+                      {runPresentation.track ? <span className="badge">{t(runPresentation.track)}</span> : null}
+                      {runPresentation.phase ? <span className="badge">{t(runPresentation.phase)}</span> : null}
+                      {runPresentation.isSmoke ? <span className="badge success">{t('Run Smoke')}</span> : null}
                     </div>
                   </article>
                   {runSummary ? (
                     <article className="mini-card training-summary-card">
-                      <strong>Report Snapshot</strong>
+                      <strong>{t('Report Snapshot')}</strong>
                       <div className="evidence-metric-grid single-column">
                         {runSummary.map((item) => (
                           <div key={item.label} className="metric-group">
@@ -540,7 +540,7 @@ export function InspectorDrawer({
                       {selectedRunPrep ? (
                         <div className="candidate-actions">
                           <button type="button" className="action-button secondary" onClick={() => onUseTrainingPrep(selectedRunPrep)}>
-                            Use Linked Prep
+                            {t('Use Linked Prep')}
                           </button>
                         </div>
                       ) : null}
@@ -548,7 +548,7 @@ export function InspectorDrawer({
                         <article className="workflow-card">
                           <div className="list-card-top">
                             <strong>{t('Linked Evidence Import')}</strong>
-                            <span className="badge">{selectedRunEvidenceImport.source_kind}</span>
+                            <span className="badge">{t(selectedRunEvidenceImport.source_kind)}</span>
                           </div>
                           <p>{selectedRunEvidenceImport.summary}</p>
                         </article>
@@ -564,7 +564,7 @@ export function InspectorDrawer({
                       <div className="context-entry-list">
                         {runContextEntries.map((entry) => (
                           <article key={entry.label} className="source-message-card">
-                            <strong>{entry.label}</strong>
+                            <strong>{t(entry.label)}</strong>
                             <small>{entry.value}</small>
                           </article>
                         ))}
@@ -699,7 +699,7 @@ function deriveRunPresentation(runReport: WorkbenchRunReport | null): {
   if (recoveryState === 'recovering') {
     primaryMessage = 'The system is retrying this training run automatically.';
     secondaryMessage = attempts > 1
-      ? `Saved progress is being reused. Recovery attempt ${attempts} is now in progress.`
+      ? 'Saved progress is being reused during automatic recovery.'
       : 'Saved progress will be reused when available.';
   } else if (status === 'failed') {
     primaryMessage = 'This training run is paused for now.';

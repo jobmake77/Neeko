@@ -139,7 +139,7 @@ export function ChatWorkspace({
       {bundle?.session_summary ? (
         <button type="button" className="summary-inline-toggle" onClick={() => setSummaryOpen((current) => !current)}>
           <div>
-            <strong>Session Summary</strong>
+            <strong>{t('Session Summary')}</strong>
             <small>{t(summaryFreshness?.detail ?? 'Tap to open the latest summary.')}</small>
           </div>
           <span className={summaryFreshness?.tone === 'good' ? 'badge success' : summaryFreshness?.tone === 'warning' ? 'badge warning' : 'badge'}>
@@ -175,8 +175,8 @@ export function ChatWorkspace({
               <label className="field compact-field">
                 <span>{t('Platform')}</span>
                 <select value={chatPlatform} onChange={(event) => setChatPlatform(event.target.value as 'wechat' | 'feishu')}>
-                  <option value="wechat">wechat</option>
-                  <option value="feishu">feishu</option>
+                  <option value="wechat">{t('wechat')}</option>
+                  <option value="feishu">{t('feishu')}</option>
                 </select>
               </label>
             ) : null}
@@ -256,7 +256,7 @@ export function ChatWorkspace({
                     {item.persona_dimensions.length > 0 ? (
                       <div className="writeback-summary">
                         {item.persona_dimensions.map((dimension) => (
-                          <span key={dimension} className="badge">{dimension}</span>
+                          <span key={dimension} className="badge">{t(dimension)}</span>
                         ))}
                       </div>
                     ) : null}
@@ -264,7 +264,7 @@ export function ChatWorkspace({
                       <div className="message-citation-list">
                         {item.citation_items.map((citation) => (
                           <article key={citation.id} className="message-citation-card">
-                            <strong>{citation.soul_dimension ?? citation.category ?? citation.id}</strong>
+                            <strong>{t(citation.soul_dimension ?? citation.category ?? citation.id)}</strong>
                             <small>{citation.summary}</small>
                           </article>
                         ))}

@@ -485,7 +485,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 setTarget(event.target.value);
                 onDefaultValuesChange({ createTarget: event.target.value });
               }}
-              placeholder="@karpathy or local file"
+              placeholder={t('@karpathy or local file')}
             />
           </label>
         ) : null}
@@ -514,8 +514,8 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ createChatPlatform: event.target.value });
               }}
             >
-              <option value="wechat">wechat</option>
-              <option value="feishu">feishu</option>
+              <option value="wechat">{t('wechat')}</option>
+              <option value="feishu">{t('feishu')}</option>
             </select>
           </label>
         ) : null}
@@ -544,8 +544,8 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ trainingProfile: event.target.value });
               }}
             >
-              <option value="baseline">baseline</option>
-              <option value="full">full</option>
+              <option value="baseline">{t('baseline')}</option>
+              <option value="full">{t('full')}</option>
               <option value="a1">a1</option>
               <option value="a2">a2</option>
               <option value="a3">a3</option>
@@ -564,8 +564,8 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ inputRouting: event.target.value });
               }}
             >
-              <option value="legacy">legacy</option>
-              <option value="v2">v2</option>
+              <option value="legacy">{t('legacy')}</option>
+              <option value="v2">{t('v2')}</option>
             </select>
           </label>
         ) : null}
@@ -580,9 +580,9 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ trainingSeedMode: event.target.value });
               }}
             >
-              <option value="off">off</option>
-              <option value="topics">topics</option>
-              <option value="signals">signals</option>
+              <option value="off">{t('off')}</option>
+              <option value="topics">{t('topics')}</option>
+              <option value="signals">{t('signals')}</option>
             </select>
           </label>
         ) : null}
@@ -597,10 +597,10 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ kimiStabilityMode: event.target.value });
               }}
             >
-              <option value="standard">standard</option>
-              <option value="tight_runtime">tight_runtime</option>
-              <option value="sparse_director">sparse_director</option>
-              <option value="hybrid">hybrid</option>
+              <option value="standard">{t('standard')}</option>
+              <option value="tight_runtime">{t('tight_runtime')}</option>
+              <option value="sparse_director">{t('sparse_director')}</option>
+              <option value="hybrid">{t('hybrid')}</option>
             </select>
           </label>
         ) : null}
@@ -615,8 +615,8 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ trainMode: event.target.value });
               }}
             >
-              <option value="quick">quick</option>
-              <option value="full">full</option>
+              <option value="quick">{t('quick')}</option>
+              <option value="full">{t('full')}</option>
             </select>
           </label>
         ) : null}
@@ -631,9 +631,9 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ trainTrack: event.target.value });
               }}
             >
-              <option value="full_serial">full_serial</option>
-              <option value="persona_extract">persona_extract</option>
-              <option value="work_execute">work_execute</option>
+              <option value="full_serial">{t('full_serial')}</option>
+              <option value="persona_extract">{t('persona_extract')}</option>
+              <option value="work_execute">{t('work_execute')}</option>
             </select>
           </label>
         ) : null}
@@ -661,7 +661,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 setTrainFromCheckpoint(event.target.value);
                 onDefaultValuesChange({ trainFromCheckpoint: event.target.value });
               }}
-              placeholder="latest or checkpoint id"
+              placeholder={t('latest or checkpoint id')}
             />
           </label>
         ) : null}
@@ -703,7 +703,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 setTrainPrepArtifactId(event.target.value);
                 onDefaultValuesChange({ trainPrepArtifactId: event.target.value });
               }}
-              placeholder="training prep artifact id"
+              placeholder={t('training prep artifact id')}
             />
           </label>
         ) : null}
@@ -717,7 +717,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 setTrainEvidenceImportId(event.target.value);
                 onDefaultValuesChange({ trainEvidenceImportId: event.target.value });
               }}
-              placeholder="linked evidence import id"
+              placeholder={t('linked evidence import id')}
             />
           </label>
         ) : null}
@@ -830,7 +830,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ exportFormat: event.target.value });
               }}
             >
-              <option value="openclaw">openclaw</option>
+              <option value="openclaw">{t('openclaw')}</option>
             </select>
           </label>
         ) : null}
@@ -1041,7 +1041,7 @@ function deriveWorkbenchRunPresentation(run: WorkbenchRun): {
       statusLabel: 'recovering',
       primaryMessage: 'The system is retrying this run automatically.',
       secondaryMessage: attempts > 1
-        ? `Saved progress is being reused. Recovery attempt ${attempts} is in progress.`
+        ? 'Saved progress is being reused during automatic recovery.'
         : 'Saved progress will be reused when available.',
     };
   }
@@ -1127,7 +1127,7 @@ function deriveCreateGuidance(input: {
     return {
       tone: 'neutral',
       statusLabel: 'manifest optional',
-      summary: `You can create directly from ${input.chatPlatform}, but a target manifest gives better speaker attribution when you move into chat or video evidence.`,
+      summary: 'Target manifest is optional for a public-source create flow, but it improves speaker attribution when you later move into chat or video evidence.',
       actions: [
         'Proceed if this is a simple public-source create flow.',
         'Add a target manifest now if you expect to use private chat or video evidence soon.',

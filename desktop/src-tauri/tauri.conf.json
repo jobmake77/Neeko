@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Neeko Workbench",
+  "productName": "Neeko 客户端",
   "version": "0.1.0",
   "identifier": "com.neeko.workbench",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Neeko Workbench",
+        "title": "Neeko 客户端",
         "width": 1600,
         "height": 1000,
         "minWidth": 1200,

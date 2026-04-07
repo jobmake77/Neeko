@@ -667,7 +667,7 @@ export default function App() {
     try {
       let conversationId = selectedConversationId;
       if (!conversationId) {
-        const created = await api.createConversation(selectedPersonaSlug, 'Evidence Intake');
+        const created = await api.createConversation(selectedPersonaSlug, t('Evidence Intake'));
         conversationId = created.id;
         setSelectedConversationId(created.id);
       }

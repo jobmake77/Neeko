@@ -121,6 +121,20 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       trainMode,
     })
     : null;
+  const experimentGuidance = activeView === 'Experiment'
+    ? deriveExperimentGuidance({
+      selectedPersona,
+      latestTrainingPrep,
+      latestEvidenceImport,
+      experimentProfiles,
+      rounds,
+      questionsPerRound,
+      experimentGate,
+      experimentCompareInputRouting,
+      experimentCompareTrainingSeed,
+      experimentCompareVariants,
+    })
+    : null;
 
   useEffect(() => {
     setTarget(defaultValues.createTarget);
@@ -284,6 +298,32 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           </div>
           <div className="workflow-step-list">
             {trainLaunchGuidance.actions.map((item) => (
+              <small key={item}>{item}</small>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {activeView === 'Experiment' && experimentGuidance ? (
+        <div className="settings-card workflow-card">
+          <div className="list-card-top">
+            <strong>Experiment Guidance</strong>
+            <span className={experimentGuidance.tone === 'good' ? 'badge success' : experimentGuidance.tone === 'warning' ? 'badge warning' : 'badge'}>
+              {experimentGuidance.statusLabel}
+            </span>
+          </div>
+          <p>{experimentGuidance.summary}</p>
+          <div className="workflow-stage-grid">
+            {experimentGuidance.stages.map((stage) => (
+              <div key={stage.label} className="workflow-stage-card">
+                <strong>{stage.label}</strong>
+                <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
+                  {stage.status}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="workflow-step-list">
+            {experimentGuidance.actions.map((item) => (
               <small key={item}>{item}</small>
             ))}
           </div>
@@ -988,6 +1028,130 @@ function deriveTrainLaunchGuidance(input: {
     actions: [
       'Attach a recent evidence intake or a training prep artifact first.',
       'If you want more control, review candidates and create handoff plus prep before training.',
+    ],
+    stages,
+  };
+}
+
+function deriveExperimentGuidance(input: {
+  selectedPersona: PersonaSummary | null;
+  latestTrainingPrep: TrainingPrepArtifact | null;
+  latestEvidenceImport: WorkbenchEvidenceImport | null;
+  experimentProfiles: string;
+  rounds: string;
+  questionsPerRound: string;
+  experimentGate: boolean;
+  experimentCompareInputRouting: boolean;
+  experimentCompareTrainingSeed: boolean;
+  experimentCompareVariants: string;
+}): {
+  tone: 'good' | 'warning' | 'neutral';
+  statusLabel: string;
+  summary: string;
+  actions: string[];
+  stages: Array<{ label: string; status: string; tone: 'good' | 'warning' | 'neutral' }>;
+} {
+  const rounds = Number(input.rounds || '1');
+  const questions = Number(input.questionsPerRound || '5');
+  const compareMode = input.experimentCompareVariants.trim()
+    ? 'custom variants'
+    : input.experimentCompareInputRouting && input.experimentCompareTrainingSeed
+      ? 'routing + seed'
+      : input.experimentCompareInputRouting
+        ? 'routing'
+        : input.experimentCompareTrainingSeed
+          ? 'seed'
+          : 'profile only';
+  const corpusSource = input.latestTrainingPrep
+    ? 'prep artifact'
+    : input.latestEvidenceImport
+      ? 'evidence intake'
+      : 'none';
+
+  const stages = [
+    {
+      label: 'Corpus',
+      status: corpusSource,
+      tone: corpusSource === 'none' ? 'warning' as const : 'good' as const,
+    },
+    {
+      label: 'Compare Mode',
+      status: compareMode,
+      tone: compareMode === 'profile only' ? 'neutral' as const : 'good' as const,
+    },
+    {
+      label: 'Gate',
+      status: input.experimentGate ? 'enabled' : 'review only',
+      tone: input.experimentGate ? 'good' as const : 'neutral' as const,
+    },
+    {
+      label: 'Sample Size',
+      status: `${rounds} rounds x ${questions} q`,
+      tone: rounds >= 2 && questions >= 5 ? 'good' as const : 'neutral' as const,
+    },
+  ];
+
+  if (!input.selectedPersona) {
+    return {
+      tone: 'warning',
+      statusLabel: 'select persona',
+      summary: 'Choose a persona before launching an experiment.',
+      actions: [
+        'Select the target persona first.',
+        'Then decide whether to compare profiles only or run a routing/seed PK.',
+      ],
+      stages,
+    };
+  }
+
+  if (!input.latestTrainingPrep && !input.latestEvidenceImport) {
+    return {
+      tone: 'warning',
+      statusLabel: 'attach corpus first',
+      summary: 'This persona does not have a recent prep artifact or intake context visible in the workbench yet.',
+      actions: [
+        'Import evidence or build a training prep artifact first.',
+        'Use experiment after the training context for this persona is clearer.',
+      ],
+      stages,
+    };
+  }
+
+  if (rounds <= 1 || questions < 5) {
+    return {
+      tone: 'neutral',
+      statusLabel: 'quick probe',
+      summary: 'This experiment is currently configured as a light probe. Good for a sanity check, but not ideal for final routing decisions.',
+      actions: [
+        'Use this setup for a quick validation pass.',
+        'Increase rounds or questions when you want a more trustworthy PK result.',
+      ],
+      stages,
+    };
+  }
+
+  if (compareMode === 'profile only') {
+    return {
+      tone: 'neutral',
+      statusLabel: 'profile sweep',
+      summary: 'This setup is best for checking the best training profile before comparing routing or seed variants.',
+      actions: [
+        'Run the profile sweep first if you still need a stable baseline.',
+        'After that, enable routing or seed comparison for a cleaner PK.',
+      ],
+      stages,
+    };
+  }
+
+  return {
+    tone: 'good',
+    statusLabel: input.experimentGate ? 'ready for PK' : 'review PK',
+    summary: input.experimentGate
+      ? 'This experiment is ready for a gated PK decision.'
+      : 'This experiment is ready for a comparison run. Review the output before treating it as a decision gate.',
+    actions: [
+      'Run the experiment and inspect clean mean plus excluded runs in the report.',
+      'If the result is stable, keep the winning routing or seed path and carry it forward into the next training round.',
     ],
     stages,
   };

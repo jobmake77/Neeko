@@ -52,10 +52,12 @@ export function ThreadColumn({
           >
             <div className="list-card-top">
               <strong>{thread.title}</strong>
-              <span>{thread.message_count}</span>
+              <span className={`status-chip status-${thread.status}`}>{thread.status}</span>
             </div>
             <p>{thread.last_message_preview || 'No conversation yet.'}</p>
-            <small>{new Date(thread.updated_at).toLocaleString()}</small>
+            <small>
+              {thread.message_count} messages · {new Date(thread.updated_at).toLocaleString()}
+            </small>
           </button>
         ))}
         {threads.length === 0 ? <div className="empty-state">Create the first thread for this persona.</div> : null}

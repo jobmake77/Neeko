@@ -105,6 +105,7 @@ export function ChatWorkspace({
       .sort((a, b) => b[1] - a[1])
       .slice(0, limit);
   const intakeGuidance = selectedEvidenceImport ? deriveIntakeGuidance(selectedEvidenceImport) : null;
+  const summaryFreshness = bundle ? deriveSummaryFreshness(bundle) : null;
 
   return (
     <section className="workspace panel">
@@ -113,7 +114,15 @@ export function ChatWorkspace({
           <p className="eyebrow">Chat</p>
           <h2>{bundle?.conversation.title ?? 'Select or create a thread'}</h2>
         </div>
-        {bundle?.session_summary ? <span className="badge">{bundle.session_summary.candidate_count} candidates</span> : null}
+        <div className="writeback-summary">
+          {bundle ? <span className={`status-chip status-${bundle.conversation.status}`}>{bundle.conversation.status}</span> : null}
+          {bundle?.session_summary ? <span className="badge">{bundle.session_summary.candidate_count} candidates</span> : null}
+          {summaryFreshness ? (
+            <span className={summaryFreshness.tone === 'good' ? 'badge success' : summaryFreshness.tone === 'warning' ? 'badge warning' : 'badge'}>
+              {summaryFreshness.label}
+            </span>
+          ) : null}
+        </div>
       </div>
       {notice ? <div className="notice-banner">{notice}</div> : null}
       {bundle ? (
@@ -140,6 +149,7 @@ export function ChatWorkspace({
         <div className="session-summary-card">
           <strong>Session Summary</strong>
           <p>{bundle.session_summary.summary}</p>
+          {summaryFreshness ? <small>{summaryFreshness.detail}</small> : null}
         </div>
       ) : null}
       <div className="evidence-intake-card">
@@ -346,6 +356,46 @@ export function ChatWorkspace({
       </form>
     </section>
   );
+}
+
+function deriveSummaryFreshness(bundle: ConversationBundle): {
+  tone: 'good' | 'warning' | 'neutral';
+  label: string;
+  detail: string;
+} | null {
+  if (!bundle.session_summary) {
+    return {
+      tone: 'warning',
+      label: 'summary needed',
+      detail: 'Refresh the session summary after a few more turns or after importing evidence.',
+    };
+  }
+
+  const conversationUpdated = new Date(bundle.conversation.updated_at).getTime();
+  const summaryUpdated = new Date(bundle.session_summary.updated_at).getTime();
+  const lagMinutes = Math.max(0, Math.round((conversationUpdated - summaryUpdated) / 60000));
+
+  if (lagMinutes <= 5) {
+    return {
+      tone: 'good',
+      label: 'summary fresh',
+      detail: 'The session summary is up to date with the recent thread activity.',
+    };
+  }
+
+  if (lagMinutes <= 30) {
+    return {
+      tone: 'neutral',
+      label: 'summary aging',
+      detail: 'The thread moved ahead of the last summary. Refresh it before you hand off or train from this session.',
+    };
+  }
+
+  return {
+    tone: 'warning',
+    label: 'summary stale',
+    detail: 'The thread has changed a lot since the last summary. Refresh it before using this session for downstream steps.',
+  };
 }
 
 function deriveIntakeGuidance(item: WorkbenchEvidenceImport): {

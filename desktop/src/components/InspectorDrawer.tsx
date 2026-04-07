@@ -13,6 +13,7 @@ import {
   WorkbenchRun,
   WorkbenchRunReport,
 } from '../lib/types';
+import { useI18n } from '../lib/i18n';
 
 const TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Evidence', 'Training'];
 
@@ -83,6 +84,7 @@ export function InspectorDrawer({
   onUseEvidenceImport,
   runReport,
 }: InspectorDrawerProps) {
+  const { t } = useI18n();
   const [candidateFilter, setCandidateFilter] = useState<'all' | 'pending' | 'accepted' | 'rejected' | 'ready_queue'>('all');
   const [candidateSort, setCandidateSort] = useState<'newest' | 'oldest' | 'confidence_desc' | 'confidence_asc'>('newest');
   const [selectedHandoffId, setSelectedHandoffId] = useState<string | null>(null);
@@ -136,11 +138,11 @@ export function InspectorDrawer({
       <aside className={open ? 'inspector-drawer panel open' : 'inspector-drawer panel'}>
         <div className="inspector-drawer-header">
           <div>
-            <p className="eyebrow">Inspect</p>
-            <h2>{activeTab}</h2>
+            <p className="eyebrow">{t('Inspect')}</p>
+            <h2>{t(activeTab)}</h2>
           </div>
           <button type="button" className="action-button secondary compact-action" onClick={onClose}>
-            Close
+            {t('Close')}
           </button>
         </div>
 
@@ -152,7 +154,7 @@ export function InspectorDrawer({
               className={tab === activeTab ? 'tab-button active' : 'tab-button'}
               onClick={() => onTabChange(tab)}
             >
-              {tab}
+              {t(tab)}
             </button>
           ))}
         </div>
@@ -161,19 +163,19 @@ export function InspectorDrawer({
           {activeTab === 'Soul' ? (
             <div className="inspector-section">
               <article className="mini-card">
-                <strong>Core beliefs</strong>
+                <strong>{t('Core beliefs')}</strong>
                 {(profile?.summary.core_beliefs ?? []).map((item) => <p key={item}>{item}</p>)}
-                {!(profile?.summary.core_beliefs ?? []).length ? <small>No core beliefs loaded yet.</small> : null}
+                {!(profile?.summary.core_beliefs ?? []).length ? <small>{t('No core beliefs loaded yet.')}</small> : null}
               </article>
               <article className="mini-card">
-                <strong>Expert domains</strong>
+                <strong>{t('Expert domains')}</strong>
                 {(profile?.summary.expert_domains ?? []).map((item) => <p key={item}>{item}</p>)}
-                {!(profile?.summary.expert_domains ?? []).length ? <small>No expert domains loaded yet.</small> : null}
+                {!(profile?.summary.expert_domains ?? []).length ? <small>{t('No expert domains loaded yet.')}</small> : null}
               </article>
               <article className="mini-card">
-                <strong>Language signals</strong>
+                <strong>{t('Language signals')}</strong>
                 {(profile?.summary.language_style ?? []).map((item) => <p key={item}>{item}</p>)}
-                {!(profile?.summary.language_style ?? []).length ? <small>No language signals loaded yet.</small> : null}
+                {!(profile?.summary.language_style ?? []).length ? <small>{t('No language signals loaded yet.')}</small> : null}
               </article>
             </div>
           ) : null}
@@ -182,18 +184,18 @@ export function InspectorDrawer({
             <div className="inspector-section">
               <article className="mini-card workflow-card">
                 <div className="list-card-top">
-                  <strong>Writeback Pipeline</strong>
+                  <strong>{t('Writeback Pipeline')}</strong>
                   <span className={writebackFlow.tone === 'good' ? 'badge success' : writebackFlow.tone === 'warning' ? 'badge warning' : 'badge'}>
-                    {writebackFlow.statusLabel}
+                    {t(writebackFlow.statusLabel)}
                   </span>
                 </div>
-                <p>{writebackFlow.summary}</p>
+                <p>{t(writebackFlow.summary)}</p>
                 <div className="workflow-stage-grid">
                   {writebackFlow.stages.map((stage) => (
                     <div key={stage.label} className="workflow-stage-card">
-                      <strong>{stage.label}</strong>
+                      <strong>{t(stage.label)}</strong>
                       <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
-                        {stage.status}
+                        {t(stage.status)}
                       </span>
                     </div>
                   ))}
@@ -202,17 +204,17 @@ export function InspectorDrawer({
 
               {(latestAssistant?.citation_items ?? []).length > 0 ? (
                 <article className="mini-card">
-                  <strong>Retrieved on latest turn</strong>
+                  <strong>{t('Retrieved on latest turn')}</strong>
                   {(latestAssistant?.citation_items ?? []).map((item) => (
                     <article key={item.id} className="source-message-card compact-source-card">
                       <div className="list-card-top">
-                        <strong>{item.soul_dimension ?? item.category ?? 'memory'}</strong>
-                        <span className="badge">{item.confidence ? `${Math.round(item.confidence * 100)}%` : 'retrieved'}</span>
+                        <strong>{t(item.soul_dimension ?? item.category ?? 'memory')}</strong>
+                        <span className="badge">{item.confidence ? `${Math.round(item.confidence * 100)}%` : t('retrieved')}</span>
                       </div>
                       <small>{item.summary}</small>
                       <div className="candidate-actions">
                         <button type="button" className="action-button secondary" onClick={() => void onInspectMemory(item.id)}>
-                          Inspect Memory
+                          {t('Inspect Memory')}
                         </button>
                       </div>
                     </article>
@@ -222,28 +224,28 @@ export function InspectorDrawer({
 
               {selectedMemoryNode ? (
                 <article className="mini-card memory-node-detail-card">
-                  {renderMemoryNodeInspector(selectedMemoryNode, selectedMemorySourceAssets, onCopyValue)}
+                  {renderMemoryNodeInspector(selectedMemoryNode, selectedMemorySourceAssets, onCopyValue, t)}
                 </article>
               ) : null}
 
               <div className="writeback-controls">
                 <label className="field compact-field">
-                  <span>Status</span>
+                  <span>{t('Status')}</span>
                   <select value={candidateFilter} onChange={(event) => setCandidateFilter(event.target.value as typeof candidateFilter)}>
-                    <option value="all">all</option>
-                    <option value="pending">pending</option>
-                    <option value="accepted">accepted</option>
-                    <option value="rejected">rejected</option>
-                    <option value="ready_queue">ready queue</option>
+                    <option value="all">{t('all')}</option>
+                    <option value="pending">{t('pending')}</option>
+                    <option value="accepted">{t('accepted')}</option>
+                    <option value="rejected">{t('rejected')}</option>
+                    <option value="ready_queue">{t('ready queue')}</option>
                   </select>
                 </label>
                 <label className="field compact-field">
-                  <span>Sort</span>
+                  <span>{t('Sort')}</span>
                   <select value={candidateSort} onChange={(event) => setCandidateSort(event.target.value as typeof candidateSort)}>
-                    <option value="newest">newest</option>
-                    <option value="oldest">oldest</option>
-                    <option value="confidence_desc">confidence desc</option>
-                    <option value="confidence_asc">confidence asc</option>
+                    <option value="newest">{t('newest')}</option>
+                    <option value="oldest">{t('oldest')}</option>
+                    <option value="confidence_desc">{t('confidence desc')}</option>
+                    <option value="confidence_asc">{t('confidence asc')}</option>
                   </select>
                 </label>
               </div>
@@ -255,12 +257,12 @@ export function InspectorDrawer({
                     <span className="badge">{Math.round(item.confidence * 100)}%</span>
                   </div>
                   <p>{item.content}</p>
-                  <small>{item.status} · promo {item.promotion_state} · {new Date(item.created_at).toLocaleString()}</small>
+                  <small>{`${t(item.status)} · promo ${t(item.promotion_state)} · ${new Date(item.created_at).toLocaleString()}`}</small>
                   {item.source_message_ids.length > 0 ? (
                     <div className="source-link-list">
                       {deriveSourceMessages(item.source_message_ids, messageLookup).map((message) => (
                         <article key={message.id} className="source-message-card">
-                          <strong>{message.role === 'assistant' ? 'Persona' : 'You'}</strong>
+                          <strong>{message.role === 'assistant' ? t('assistant') : t('user')}</strong>
                           <small>{trimPreview(message.content)}</small>
                         </article>
                       ))}
@@ -268,19 +270,19 @@ export function InspectorDrawer({
                   ) : null}
                   <div className="candidate-actions">
                     <button type="button" className="action-button secondary" disabled={item.status === 'accepted'} onClick={() => void onReviewCandidate(item.id, 'accepted')}>
-                      Accept
+                      {t('Accept')}
                     </button>
                     <button type="button" className="action-button secondary" disabled={item.status === 'pending'} onClick={() => void onReviewCandidate(item.id, 'pending')}>
-                      Reset
+                      {t('Reset')}
                     </button>
                     <button type="button" className="action-button danger" disabled={item.status === 'rejected'} onClick={() => void onReviewCandidate(item.id, 'rejected')}>
-                      Reject
+                      {t('Reject')}
                     </button>
                     <button type="button" className="action-button secondary" disabled={item.status !== 'accepted' || item.promotion_state === 'ready'} onClick={() => void onSetCandidatePromotionState(item.id, 'ready')}>
-                      Queue
+                      {t('Queue')}
                     </button>
                     <button type="button" className="action-button secondary" disabled={item.promotion_state === 'idle'} onClick={() => void onSetCandidatePromotionState(item.id, 'idle')}>
-                      Clear
+                      {t('Clear')}
                     </button>
                   </div>
                 </article>
@@ -288,36 +290,36 @@ export function InspectorDrawer({
 
               <div className="candidate-actions">
                 <button type="button" className="action-button" disabled={readyCount === 0} onClick={() => void onCreatePromotionHandoff()}>
-                  Create Handoff
+                  {t('Create Handoff')}
                 </button>
               </div>
 
               {selectedHandoff ? (
                 <article className="mini-card">
                   <div className="list-card-top">
-                    <strong>Selected handoff</strong>
-                    <span className={selectedHandoff.status === 'queued' ? 'badge success' : 'badge'}>{selectedHandoff.status}</span>
+                    <strong>{t('Selected handoff')}</strong>
+                    <span className={selectedHandoff.status === 'queued' ? 'badge success' : 'badge'}>{t(selectedHandoff.status)}</span>
                   </div>
                   <p>{selectedHandoff.summary}</p>
                   {selectedHandoff.session_summary ? <small>{selectedHandoff.session_summary}</small> : null}
                   <div className="candidate-actions">
                     <button type="button" className="action-button secondary" disabled={selectedHandoff.status === 'queued'} onClick={() => void onUpdatePromotionHandoff(selectedHandoff.id, 'queued')}>
-                      Queue
+                      {t('Queue')}
                     </button>
                     <button type="button" className="action-button secondary" disabled={selectedHandoff.status === 'drafted'} onClick={() => void onUpdatePromotionHandoff(selectedHandoff.id, 'drafted')}>
-                      Reopen
+                      {t('Reopen')}
                     </button>
                     <button type="button" className="action-button danger" disabled={selectedHandoff.status === 'archived'} onClick={() => void onUpdatePromotionHandoff(selectedHandoff.id, 'archived')}>
-                      Archive
+                      {t('Archive')}
                     </button>
                     <button type="button" className="action-button secondary" onClick={() => void onExportPromotionHandoff(selectedHandoff.id, 'markdown')}>
-                      Copy Markdown
+                      {t('Copy Markdown')}
                     </button>
                     <button type="button" className="action-button secondary" onClick={() => void onExportPromotionHandoff(selectedHandoff.id, 'json')}>
-                      Copy JSON
+                      {t('Copy JSON')}
                     </button>
                     <button type="button" className="action-button" onClick={() => void onCreateTrainingPrep(selectedHandoff.id)}>
-                      Create Prep
+                      {t('Create Prep')}
                     </button>
                   </div>
                 </article>
@@ -332,7 +334,7 @@ export function InspectorDrawer({
                       className={selectedHandoff?.id === handoff.id ? 'mini-card active-card' : 'mini-card'}
                       onClick={() => setSelectedHandoffId(handoff.id)}
                     >
-                      <strong>{handoff.status}</strong>
+                      <strong>{t(handoff.status)}</strong>
                       <p>{handoff.summary}</p>
                     </button>
                   ))}
@@ -342,26 +344,26 @@ export function InspectorDrawer({
               {selectedPrep ? (
                 <article className="mini-card">
                   <div className="list-card-top">
-                    <strong>Training prep</strong>
-                    <span className="badge success">{selectedPrep.status}</span>
+                    <strong>{t('Training prep')}</strong>
+                    <span className="badge success">{t(selectedPrep.status)}</span>
                   </div>
                   <p>{selectedPrep.summary}</p>
                   <code>{selectedPrep.documents_path}</code>
                   <code>{selectedPrep.evidence_index_path}</code>
                   <div className="candidate-actions">
                     <button type="button" className="action-button" onClick={() => onUseTrainingPrep(selectedPrep)}>
-                      Use For Training
+                      {t('Use For Training')}
                     </button>
                     <button type="button" className="action-button secondary" onClick={() => void onExportTrainingPrep(selectedPrep.id, 'markdown')}>
-                      Copy Markdown
+                      {t('Copy Markdown')}
                     </button>
                     <button type="button" className="action-button secondary" onClick={() => void onExportTrainingPrep(selectedPrep.id, 'json')}>
-                      Copy JSON
+                      {t('Copy JSON')}
                     </button>
                   </div>
                 </article>
               ) : null}
-              {candidates.length === 0 ? <div className="empty-state">No memory candidates yet.</div> : null}
+              {candidates.length === 0 ? <div className="empty-state">{t('No memory candidates yet.')}</div> : null}
             </div>
           ) : null}
 
@@ -387,7 +389,7 @@ export function InspectorDrawer({
               ))}
               {selectedMemoryNode ? (
                 <article className="mini-card memory-node-detail-card">
-                  {renderMemoryNodeInspector(selectedMemoryNode, selectedMemorySourceAssets, onCopyValue)}
+                  {renderMemoryNodeInspector(selectedMemoryNode, selectedMemorySourceAssets, onCopyValue, t)}
                 </article>
               ) : null}
               {!(latestAssistant?.citation_items ?? []).length ? <div className="empty-state">No citations for the current thread yet.</div> : null}
@@ -404,10 +406,10 @@ export function InspectorDrawer({
                   </div>
                   <p>{selectedEvidenceImport.summary}</p>
                   <div className="writeback-summary">
-                    <span className="badge">{selectedEvidenceImport.stats.sessions} sessions</span>
-                    <span className="badge">{selectedEvidenceImport.stats.windows} windows</span>
-                    <span className="badge success">{selectedEvidenceImport.stats.cross_session_stable_items} stable</span>
-                    <span className="badge warning">{selectedEvidenceImport.stats.blocked_scene_items} blocked</span>
+                    <span className="badge">{selectedEvidenceImport.stats.sessions} {t('sessions')}</span>
+                    <span className="badge">{selectedEvidenceImport.stats.windows} {t('windows')}</span>
+                    <span className="badge success">{selectedEvidenceImport.stats.cross_session_stable_items} {t('stable')}</span>
+                    <span className="badge warning">{selectedEvidenceImport.stats.blocked_scene_items} {t('blocked')}</span>
                   </div>
                   <div className="candidate-actions">
                     <button type="button" className="action-button" onClick={() => onUseEvidenceImport(selectedEvidenceImport)}>
@@ -429,7 +431,7 @@ export function InspectorDrawer({
                         {evidenceDetail.manifest.default_scene ? <span className="badge">{evidenceDetail.manifest.default_scene}</span> : null}
                       </div>
                       <p>{evidenceDetail.manifest.target_name}</p>
-                      <small>{[...evidenceDetail.manifest.target_aliases, ...evidenceDetail.manifest.self_aliases].slice(0, 6).join(' · ') || 'No aliases listed.'}</small>
+                      <small>{[...evidenceDetail.manifest.target_aliases, ...evidenceDetail.manifest.self_aliases].slice(0, 6).join(' · ') || t('No aliases listed.')}</small>
                     </article>
                   ) : null}
                   {evidenceDetail?.sample_items.length ? (
@@ -443,8 +445,8 @@ export function InspectorDrawer({
                           <div className="writeback-summary">
                             <span className={item.speaker_role === 'target' ? 'badge success' : 'badge'}>{item.speaker_role}</span>
                             <span className={item.scene === 'public' || item.scene === 'work' ? 'badge success' : item.scene === 'intimate' || item.scene === 'conflict' ? 'badge warning' : 'badge'}>{item.scene}</span>
-                            <span className="badge">{item.evidence_kind}</span>
-                            {item.stability_hints.cross_session_stable ? <span className="badge success">stable</span> : null}
+                            <span className="badge">{t(item.evidence_kind)}</span>
+                            {item.stability_hints.cross_session_stable ? <span className="badge success">{t('stable')}</span> : null}
                           </div>
                           <p>{item.content}</p>
                           {item.context_before.length > 0 ? <small>before: {item.context_before.map((ctx) => `${ctx.speaker_name}: ${ctx.content}`).join(' / ')}</small> : null}
@@ -455,7 +457,7 @@ export function InspectorDrawer({
                   ) : null}
                 </article>
               ) : (
-                <div className="empty-state">No evidence intake is attached to this thread yet.</div>
+                <div className="empty-state">{t('No evidence intake is attached to this thread yet.')}</div>
               )}
 
               {evidenceImports.length > 0 ? (
@@ -496,7 +498,7 @@ export function InspectorDrawer({
                   className={run.id === currentRunId ? 'mini-card active-card' : 'mini-card'}
                   onClick={() => void onSelectRun(run)}
                 >
-                  <strong>{run.type}</strong>
+                    <strong>{t(run.type)}</strong>
                   <p>{run.summary ?? run.status}</p>
                   <small>{new Date(run.started_at).toLocaleString()}</small>
                 </button>
@@ -505,12 +507,12 @@ export function InspectorDrawer({
                 <div className="training-card-stack">
                   <article className="mini-card training-overview-card">
                     <div className="list-card-top">
-                      <strong>{runReport.run.type}</strong>
+                  <strong>{t(runReport.run.type)}</strong>
                       <span className={runReport.run.status === 'completed' ? 'badge success' : runReport.run.status === 'failed' ? 'badge warning' : 'badge'}>
-                        {runPresentation.statusLabel}
+                        {t(runPresentation.statusLabel)}
                       </span>
                     </div>
-                    <p>{runPresentation.primaryMessage}</p>
+                    <p>{t(runPresentation.primaryMessage)}</p>
                     <div className="writeback-summary">
                       {runPresentation.track ? <span className="badge">{runPresentation.track}</span> : null}
                       {runPresentation.phase ? <span className="badge">{runPresentation.phase}</span> : null}
@@ -523,7 +525,7 @@ export function InspectorDrawer({
                       <div className="evidence-metric-grid single-column">
                         {runSummary.map((item) => (
                           <div key={item.label} className="metric-group">
-                            <strong>{item.label}</strong>
+                          <strong>{t(item.label)}</strong>
                             <span>{item.value}</span>
                           </div>
                         ))}
@@ -532,7 +534,7 @@ export function InspectorDrawer({
                   ) : null}
                   {prepContext ? (
                     <article className="mini-card training-prep-card">
-                      <strong>Prep Context</strong>
+                      <strong>{t('Prep Context')}</strong>
                       {typeof prepContext.prep_documents_path === 'string' ? <code>{prepContext.prep_documents_path}</code> : null}
                       {typeof prepContext.prep_evidence_path === 'string' ? <code>{prepContext.prep_evidence_path}</code> : null}
                       {selectedRunPrep ? (
@@ -545,7 +547,7 @@ export function InspectorDrawer({
                       {selectedRunEvidenceImport ? (
                         <article className="workflow-card">
                           <div className="list-card-top">
-                            <strong>Linked Evidence Import</strong>
+                            <strong>{t('Linked Evidence Import')}</strong>
                             <span className="badge">{selectedRunEvidenceImport.source_kind}</span>
                           </div>
                           <p>{selectedRunEvidenceImport.summary}</p>
@@ -554,7 +556,7 @@ export function InspectorDrawer({
                     </article>
                   ) : null}
                   <article className="mini-card training-log-card">
-                    <strong>Run Detail</strong>
+                    <strong>{t('Run Detail')}</strong>
                     {runReport.run.command.length > 0 ? <code>{runReport.run.command.join(' ')}</code> : null}
                     {runReport.run.report_path ? <code>{runReport.run.report_path}</code> : null}
                     {runReport.context_path ? <code>{runReport.context_path}</code> : null}
@@ -570,7 +572,7 @@ export function InspectorDrawer({
                     ) : null}
                   </article>
                 </div>
-              ) : <div className="empty-state">No active run selected.</div>}
+              ) : <div className="empty-state">{t('No active run selected.')}</div>}
             </div>
           ) : null}
         </div>
@@ -591,39 +593,40 @@ function deriveSourceMessages(
 function renderMemoryNodeInspector(
   node: WorkbenchMemoryNode,
   sourceAssets: WorkbenchMemorySourceAsset[],
-  onCopyValue: (value: string, label: string) => Promise<void>
+  onCopyValue: (value: string, label: string) => Promise<void>,
+  t: (value: string) => string
 ) {
   return (
     <>
       <div className="list-card-top">
-        <strong>Memory Detail</strong>
-        <span className={node.status === 'active' ? 'badge success' : 'badge warning'}>{node.status}</span>
+        <strong>{t('Memory Detail')}</strong>
+        <span className={node.status === 'active' ? 'badge success' : 'badge warning'}>{t(node.status)}</span>
       </div>
       <p>{node.summary}</p>
       <div className="writeback-summary">
-        <span className="badge">{node.category}</span>
-        <span className="badge success">{node.soul_dimension}</span>
+        <span className="badge">{t(node.category)}</span>
+        <span className="badge success">{t(node.soul_dimension)}</span>
         <span className="badge">{Math.round(node.confidence * 100)}%</span>
-        <span className="badge">{node.source_type}</span>
+        <span className="badge">{t(node.source_type)}</span>
       </div>
       <div className="candidate-actions">
         <button type="button" className="action-button secondary" onClick={() => void onCopyValue(node.id, 'Memory id')}>
-          Copy Memory Id
+          {t('Copy Memory Id')}
         </button>
         <button type="button" className="action-button secondary" onClick={() => void onCopyValue(node.source_chunk_id, 'Source chunk id')}>
-          Copy Chunk Id
+          {t('Copy Chunk Id')}
         </button>
       </div>
       <div className="context-entry-list">
         <article className="source-message-card">
-          <strong>Original Text</strong>
+          <strong>{t('Original Text')}</strong>
           <small>{node.original_text}</small>
         </article>
         {sourceAssets.map((asset, index) => (
           <article key={`${asset.kind}:${asset.id ?? asset.path ?? asset.url ?? index}`} className="source-message-card">
             <div className="list-card-top">
               <strong>{asset.title}</strong>
-              <span className="badge">{asset.kind.replace(/_/g, ' ')}</span>
+              <span className="badge">{t(asset.kind.replace(/_/g, ' '))}</span>
             </div>
             <small>{asset.summary}</small>
           </article>

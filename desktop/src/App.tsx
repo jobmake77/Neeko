@@ -6,6 +6,7 @@ import { InspectorDrawer } from './components/InspectorDrawer';
 import { MiniRail } from './components/MiniRail';
 import { SettingsScreen } from './components/SettingsScreen';
 import { api, getApiBaseUrl, setApiBaseUrl } from './lib/api';
+import { formatCopyLabel, useI18n } from './lib/i18n';
 import {
   Conversation,
   ConversationBundle,
@@ -84,35 +85,36 @@ type WorkbenchBootstrapStatus = {
   message: string;
 };
 
-function toUserMessage(error: unknown): string {
+function toUserMessage(error: unknown, t: (value: string) => string): string {
   const message = String(error instanceof Error ? error.message : error).toLowerCase();
 
-  if (message.includes('clipboard')) return 'Clipboard access is not available right now. Please try again.';
-  if (message.includes('conversation not found') || message.includes('thread not found')) return 'This thread is no longer available.';
-  if (message.includes('persona not found') || message.includes('profile not found')) return 'This persona is no longer available.';
-  if (message.includes('run not found')) return 'This run is no longer available.';
+  if (message.includes('clipboard')) return t('Clipboard access is not available right now. Please try again.');
+  if (message.includes('conversation not found') || message.includes('thread not found')) return t('This thread is no longer available.');
+  if (message.includes('persona not found') || message.includes('profile not found')) return t('This persona is no longer available.');
+  if (message.includes('run not found')) return t('This run is no longer available.');
   if (
     message.includes('candidate not found') ||
     message.includes('handoff not found') ||
     message.includes('training prep not found') ||
     message.includes('not found')
   ) {
-    return 'The requested item is no longer available.';
+    return t('The requested item is no longer available.');
   }
-  if (message.includes('required') || message.includes('missing')) return 'Some required information is still missing.';
-  if (message.includes('absolute local file path')) return 'Please use an absolute local file path for this import.';
-  if (message.includes('choose a file instead of a folder')) return 'Please choose a file instead of a folder for this import.';
-  if (message.includes('valid json target manifest')) return 'Please choose a valid JSON target manifest file.';
-  if (message.includes('must be different files')) return 'Source and target manifest must be different files.';
-  if (message.includes('selected files is not available')) return 'One of the selected files is not available right now.';
-  if (message.includes('qdrant') || message.includes('memory service')) return 'The local memory service is still getting ready. Please try again shortly.';
+  if (message.includes('required') || message.includes('missing')) return t('Some required information is still missing.');
+  if (message.includes('absolute local file path')) return t('Please use an absolute local file path for this import.');
+  if (message.includes('choose a file instead of a folder')) return t('Please choose a file instead of a folder for this import.');
+  if (message.includes('valid json target manifest')) return t('Please choose a valid JSON target manifest file.');
+  if (message.includes('must be different files')) return t('Source and target manifest must be different files.');
+  if (message.includes('selected files is not available')) return t('One of the selected files is not available right now.');
+  if (message.includes('qdrant') || message.includes('memory service')) return t('The local memory service is still getting ready. Please try again shortly.');
   if (message.includes('timeout') || message.includes('fetch') || message.includes('network') || message.includes('connection')) {
-    return 'The workbench is handling a temporary issue. Please try again shortly.';
+    return t('The workbench is handling a temporary issue. Please try again shortly.');
   }
-  return 'The workbench could not finish this action right now.';
+  return t('The workbench could not finish this action right now.');
 }
 
 export default function App() {
+  const { locale, t } = useI18n();
   const initialDefaults = (() => {
     try {
       const raw = window.localStorage.getItem(FORM_DEFAULTS_KEY);
@@ -208,7 +210,7 @@ export default function App() {
   const [formDefaults, setFormDefaults] = useState(initialDefaults);
 
   function reportError(nextError: unknown) {
-    setError(toUserMessage(nextError));
+    setError(toUserMessage(nextError, t));
   }
 
   useEffect(() => {
@@ -427,7 +429,7 @@ export default function App() {
   async function handleRenameConversation() {
     if (!selectedConversationId) return;
     const current = threads.find((item) => item.id === selectedConversationId);
-    const nextTitle = window.prompt('Rename thread', current?.title ?? '');
+    const nextTitle = window.prompt(t('Rename thread'), current?.title ?? '');
     if (!nextTitle || !nextTitle.trim()) return;
     try {
       await api.renameConversation(selectedConversationId, nextTitle.trim());
@@ -441,7 +443,7 @@ export default function App() {
 
   async function handleDeleteConversation() {
     if (!selectedConversationId || !selectedPersonaSlug) return;
-    const confirmed = window.confirm('Delete this thread and its local conversation assets?');
+    const confirmed = window.confirm(t('Delete this thread and its local conversation assets?'));
     if (!confirmed) return;
     try {
       await api.deleteConversation(selectedConversationId);
@@ -501,7 +503,7 @@ export default function App() {
       setCandidates(nextCandidates);
       await refreshThreads(selectedPersonaSlug);
       setActiveTab('Citations');
-      setNotice('Message sent.');
+      setNotice(t('Message sent.'));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -544,7 +546,7 @@ export default function App() {
     try {
       const result = await api.reviewMemoryCandidate(selectedConversationId, candidateId, status);
       setCandidates(result.candidates);
-      setNotice(`Candidate marked ${status}.`);
+      setNotice(t(`Candidate marked ${status}.`));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -556,7 +558,7 @@ export default function App() {
     try {
       const result = await api.setCandidatePromotionState(selectedConversationId, candidateId, promotionState);
       setCandidates(result.candidates);
-      setNotice(promotionState === 'ready' ? 'Candidate added to promotion-ready queue.' : 'Candidate removed from promotion-ready queue.');
+      setNotice(t(promotionState === 'ready' ? 'Candidate added to promotion-ready queue.' : 'Candidate removed from promotion-ready queue.'));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -571,7 +573,7 @@ export default function App() {
       setPromotionHandoffs(nextHandoffs);
       setActiveTab('Memory');
       setInspectorOpen(true);
-      setNotice('Promotion handoff created.');
+      setNotice(t('Promotion handoff created.'));
       setError(null);
       if (!nextHandoffs.some((item) => item.id === handoff.id)) setPromotionHandoffs((current) => [handoff, ...current]);
     } catch (err) {
@@ -585,7 +587,7 @@ export default function App() {
       await api.updatePromotionHandoff(handoffId, status);
       const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
       setPromotionHandoffs(nextHandoffs);
-      setNotice(`Handoff marked ${status}.`);
+      setNotice(`${t('Handoff')} ${t(status)}`);
       setError(null);
     } catch (err) {
       reportError(err);
@@ -609,7 +611,7 @@ export default function App() {
       await api.createTrainingPrep(handoffId);
       const nextTrainingPreps = await api.listTrainingPreps(selectedPersonaSlug, selectedConversationId);
       setTrainingPreps(nextTrainingPreps);
-      setNotice('Training prep artifact created.');
+      setNotice(t('Training prep artifact created.'));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -619,7 +621,7 @@ export default function App() {
   async function handleCopyMessage(content: string) {
     try {
       await navigator.clipboard.writeText(content);
-      setNotice('Message copied to clipboard.');
+      setNotice(t('Message copied to clipboard.'));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -629,7 +631,7 @@ export default function App() {
   async function handleCopyValue(value: string, label: string) {
     try {
       await navigator.clipboard.writeText(value);
-      setNotice(`${label} copied to clipboard.`);
+      setNotice(`${formatCopyLabel(label, locale)} ${t('copied to clipboard')}`);
       setError(null);
     } catch (err) {
       reportError(err);
@@ -647,7 +649,7 @@ export default function App() {
       setSelectedMemorySourceAssets(assets);
       setActiveTab('Memory');
       setInspectorOpen(true);
-      setNotice('Memory detail loaded.');
+      setNotice(t('Memory detail loaded.'));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -681,7 +683,7 @@ export default function App() {
       const detail = await api.getEvidenceImportDetail(imported.id).catch(() => null);
       setSelectedEvidenceImportId(imported.id);
       if (detail) setSelectedEvidenceImportDetail(detail);
-      setNotice(`${payload.sourceKind} evidence imported into workbench.`);
+      setNotice(payload.sourceKind === 'chat' ? t('聊天证据已导入工作台。') : t('视频证据已导入工作台。'));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -701,7 +703,7 @@ export default function App() {
     setActiveShellView('settings');
     setActiveSettingsSection('training');
     setActiveTab('Training');
-    setNotice('Evidence intake has been attached to the train form.');
+      setNotice(t('Evidence intake has been attached to the train form.'));
     setError(null);
   }
 
@@ -712,7 +714,7 @@ export default function App() {
       setSelectedEvidenceImportDetail(detail);
       setActiveTab('Evidence');
       setInspectorOpen(true);
-      setNotice('Evidence detail loaded.');
+      setNotice(t('Evidence detail loaded.'));
       setError(null);
     } catch (err) {
       reportError(err);
@@ -730,7 +732,7 @@ export default function App() {
     setActiveShellView('settings');
     setActiveSettingsSection('training');
     setActiveTab('Training');
-    setNotice('Training prep has been attached to the train form.');
+      setNotice(t('Training prep has been attached to the train form.'));
     setError(null);
   }
 
@@ -779,7 +781,7 @@ export default function App() {
       setError(null);
       await refreshBootstrapStatus(result.runtime_root ?? workbenchRepoRoot);
       if (result.runtime_root) setWorkbenchRepoRoot(result.runtime_root);
-      setNotice(result.status === 'spawned' ? 'Local workbench service recovered.' : 'Local workbench service is ready.');
+      setNotice(t(result.status === 'spawned' ? 'Local workbench service recovered.' : 'Local workbench service is ready.'));
       return true;
     } catch {
       return false;

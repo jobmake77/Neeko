@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Conversation, PersonaSummary } from '../lib/types';
+import { useI18n } from '../lib/i18n';
 
 interface ConversationSidebarProps {
   personas: PersonaSummary[];
@@ -26,6 +27,7 @@ export function ConversationSidebar({
   onDeleteConversation,
   onRefreshSummary,
 }: ConversationSidebarProps) {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const selectedPersona = personas.find((item) => item.slug === selectedPersonaSlug) ?? null;
   const filteredThreads = useMemo(() => {
@@ -40,23 +42,23 @@ export function ConversationSidebar({
     <aside className="conversation-sidebar panel">
       <div className="conversation-sidebar-header">
         <div>
-          <p className="eyebrow">Conversations</p>
-          <h2>{selectedPersona?.name ?? 'Choose persona'}</h2>
+          <p className="eyebrow">{t('Conversations')}</p>
+          <h2>{selectedPersona?.name ?? t('Choose persona')}</h2>
         </div>
         <button type="button" className="action-button secondary compact-action" onClick={onCreateConversation}>
-          New
+          {t('New')}
         </button>
       </div>
 
       <div className="persona-switcher-block">
         <label className="field compact-field persona-switcher-field">
-          <span>Persona</span>
+          <span>{t('Persona')}</span>
           <select
             value={selectedPersonaSlug ?? ''}
             onChange={(event) => onSelectPersona(event.target.value)}
             disabled={personas.length === 0}
           >
-            {personas.length === 0 ? <option value="">No personas</option> : null}
+            {personas.length === 0 ? <option value="">{t('None')}</option> : null}
             {personas.map((persona) => (
               <option key={persona.slug} value={persona.slug}>
                 {persona.name}
@@ -74,22 +76,22 @@ export function ConversationSidebar({
 
       <div className="conversation-sidebar-toolbar">
         <label className="field compact-field">
-          <span>Search</span>
+          <span>{t('Search')}</span>
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find a thread"
+            placeholder={t('Find a thread')}
           />
         </label>
         <div className="conversation-sidebar-actions">
           <button type="button" className="action-button secondary compact-action" onClick={onRefreshSummary} disabled={!selectedConversationId}>
-            Refresh
+            {t('Refresh')}
           </button>
           <button type="button" className="action-button secondary compact-action" onClick={onRenameConversation} disabled={!selectedConversationId}>
-            Rename
+            {t('Rename')}
           </button>
           <button type="button" className="action-button secondary compact-action" onClick={onDeleteConversation} disabled={!selectedConversationId}>
-            Delete
+            {t('Delete')}
           </button>
         </div>
       </div>
@@ -106,12 +108,12 @@ export function ConversationSidebar({
               <strong>{thread.title}</strong>
               <small>{formatThreadTime(thread.updated_at)}</small>
             </div>
-            <p>{thread.last_message_preview || 'Start the conversation.'}</p>
+            <p>{thread.last_message_preview || t('Start the conversation.')}</p>
           </button>
         ))}
-        {threads.length === 0 ? <div className="empty-state">Create the first thread for this persona.</div> : null}
+        {threads.length === 0 ? <div className="empty-state">{t('Create the first thread for this persona.')}</div> : null}
         {threads.length > 0 && filteredThreads.length === 0 ? (
-          <div className="empty-state">No threads match this search.</div>
+          <div className="empty-state">{t('No threads match this search.')}</div>
         ) : null}
       </div>
     </aside>

@@ -1,4 +1,5 @@
 import { ShellView } from '../lib/types';
+import { formatCurrentPersonaTitle, useI18n } from '../lib/i18n';
 
 interface MiniRailProps {
   activeView: ShellView;
@@ -8,6 +9,7 @@ interface MiniRailProps {
 }
 
 export function MiniRail({ activeView, personaName, onChangeView, onCreateThread }: MiniRailProps) {
+  const { locale, t } = useI18n();
   return (
     <aside className="mini-rail panel">
       <div className="mini-rail-group">
@@ -15,13 +17,13 @@ export function MiniRail({ activeView, personaName, onChangeView, onCreateThread
           type="button"
           className="mini-rail-brand"
           onClick={() => onChangeView('chat')}
-          title={personaName ? `Current persona: ${personaName}` : 'Open chat'}
+          title={formatCurrentPersonaTitle(personaName, locale)}
         >
           N
         </button>
         <div className="mini-rail-persona">
-          <span className="eyebrow">Persona</span>
-          <strong>{personaName ?? 'None'}</strong>
+          <span className="eyebrow">{t('Persona')}</span>
+          <strong>{personaName ?? t('None')}</strong>
         </div>
       </div>
 
@@ -30,7 +32,7 @@ export function MiniRail({ activeView, personaName, onChangeView, onCreateThread
           type="button"
           className={activeView === 'chat' ? 'mini-rail-button active' : 'mini-rail-button'}
           onClick={() => onChangeView('chat')}
-          title="Chat"
+          title={t('Chat')}
         >
           C
         </button>
@@ -38,7 +40,7 @@ export function MiniRail({ activeView, personaName, onChangeView, onCreateThread
           type="button"
           className="mini-rail-button"
           onClick={onCreateThread}
-          title="New thread"
+          title={t('New thread')}
         >
           +
         </button>
@@ -49,7 +51,7 @@ export function MiniRail({ activeView, personaName, onChangeView, onCreateThread
           type="button"
           className={activeView === 'settings' ? 'mini-rail-button active' : 'mini-rail-button'}
           onClick={() => onChangeView('settings')}
-          title="Settings"
+          title={t('Settings')}
         >
           S
         </button>

@@ -1,4 +1,5 @@
 import { SettingsSection } from '../lib/types';
+import { useI18n } from '../lib/i18n';
 import { WorkbenchForms, WorkbenchFormsProps } from './WorkbenchForms';
 
 interface SettingsScreenProps extends Omit<WorkbenchFormsProps, 'activeView' | 'embedded'> {
@@ -45,15 +46,32 @@ const SECTION_CONFIG: Array<{
 ];
 
 export function SettingsScreen({ activeSection, onSectionChange, ...formProps }: SettingsScreenProps) {
+  const { locale, setLocale, t } = useI18n();
   return (
     <section className="settings-screen panel">
       <div className="settings-screen-header">
         <div>
-          <p className="eyebrow">Settings</p>
-          <h2>Workbench Controls</h2>
+          <p className="eyebrow">{t('Settings')}</p>
+          <h2>{t('Workbench Controls')}</h2>
           <p className="settings-screen-copy">
-            Advanced actions stay here so the main surface can stay focused on conversation.
+            {t('Advanced actions stay here so the main surface can stay focused on conversation.')}
           </p>
+        </div>
+        <div className="language-switch">
+          <button
+            type="button"
+            className={locale === 'zh-CN' ? 'settings-pill active' : 'settings-pill'}
+            onClick={() => setLocale('zh-CN')}
+          >
+            中文
+          </button>
+          <button
+            type="button"
+            className={locale === 'en-US' ? 'settings-pill active' : 'settings-pill'}
+            onClick={() => setLocale('en-US')}
+          >
+            EN
+          </button>
         </div>
       </div>
 
@@ -65,7 +83,7 @@ export function SettingsScreen({ activeSection, onSectionChange, ...formProps }:
             className={section.id === activeSection ? 'settings-pill active' : 'settings-pill'}
             onClick={() => onSectionChange(section.id)}
           >
-            {section.title}
+            {t(section.title)}
           </button>
         ))}
       </div>
@@ -81,10 +99,10 @@ export function SettingsScreen({ activeSection, onSectionChange, ...formProps }:
                 onClick={() => onSectionChange(section.id)}
               >
                 <div>
-                  <strong>{section.title}</strong>
-                  <p>{section.summary}</p>
+                  <strong>{t(section.title)}</strong>
+                  <p>{t(section.summary)}</p>
                 </div>
-                <span className={open ? 'badge success' : 'badge'}>{open ? 'open' : 'show'}</span>
+                <span className={open ? 'badge success' : 'badge'}>{open ? t('open') : t('show')}</span>
               </button>
               {open ? (
                 <div className="settings-group-body">

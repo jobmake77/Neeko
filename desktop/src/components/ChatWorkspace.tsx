@@ -1,5 +1,6 @@
 import { FormEvent, KeyboardEvent, useMemo, useState } from 'react';
 import { ConversationBundle, InfoTab, WorkbenchEvidenceImport } from '../lib/types';
+import { useI18n } from '../lib/i18n';
 
 interface ChatWorkspaceProps {
   bundle: ConversationBundle | null;
@@ -41,6 +42,7 @@ export function ChatWorkspace({
   onImportEvidence,
   onOpenInspector,
 }: ChatWorkspaceProps) {
+  const { t } = useI18n();
   const [message, setMessage] = useState('');
   const [sourceKind, setSourceKind] = useState<'chat' | 'video'>('chat');
   const [chatPlatform, setChatPlatform] = useState<'wechat' | 'feishu'>('wechat');
@@ -115,19 +117,19 @@ export function ChatWorkspace({
     <section className="chat-screen panel">
       <div className="chat-screen-header">
         <div>
-          <p className="eyebrow">Chat</p>
-          <h2>{bundle?.conversation.title ?? 'Select or create a thread'}</h2>
+          <p className="eyebrow">{t('Chat')}</p>
+          <h2>{bundle?.conversation.title ?? t('Select or create a thread')}</h2>
           <div className="chat-screen-meta">
-            {bundle ? <span>{new Date(bundle.conversation.updated_at).toLocaleString()}</span> : <span>Conversation stays front and center here.</span>}
-            {bundle?.conversation.status ? <span>{bundle.conversation.status}</span> : null}
+            {bundle ? <span>{new Date(bundle.conversation.updated_at).toLocaleString()}</span> : <span>{t('Conversation stays front and center here.')}</span>}
+            {bundle?.conversation.status ? <span>{t(bundle.conversation.status)}</span> : null}
           </div>
         </div>
         <div className="chat-screen-actions">
           <button type="button" className="action-button secondary" onClick={() => setAttachOpen((current) => !current)}>
-            {attachOpen ? 'Close Attach' : 'Attach'}
+            {attachOpen ? t('Close Attach') : t('Attach')}
           </button>
           <button type="button" className="action-button" onClick={() => onOpenInspector('Soul')}>
-            Inspect
+            {t('Inspect')}
           </button>
         </div>
       </div>
@@ -138,10 +140,10 @@ export function ChatWorkspace({
         <button type="button" className="summary-inline-toggle" onClick={() => setSummaryOpen((current) => !current)}>
           <div>
             <strong>Session Summary</strong>
-            <small>{summaryFreshness?.detail ?? 'Tap to open the latest summary.'}</small>
+            <small>{t(summaryFreshness?.detail ?? 'Tap to open the latest summary.')}</small>
           </div>
           <span className={summaryFreshness?.tone === 'good' ? 'badge success' : summaryFreshness?.tone === 'warning' ? 'badge warning' : 'badge'}>
-            {summaryFreshness?.label ?? 'summary'}
+            {t(summaryFreshness?.label ?? 'summary')}
           </span>
         </button>
       ) : null}
@@ -156,22 +158,22 @@ export function ChatWorkspace({
         <section className="attach-panel">
           <div className="attach-panel-header">
             <div>
-              <strong>Import Evidence</strong>
-              <small>Bring chat or transcript evidence into this thread without cluttering the main surface.</small>
+              <strong>{t('Import Evidence')}</strong>
+              <small>{t('Bring chat or transcript evidence into this thread without cluttering the main surface.')}</small>
             </div>
             {personaSlug ? <span className="badge">{personaSlug}</span> : null}
           </div>
           <form className="attach-form" onSubmit={handleImportSubmit}>
             <label className="field compact-field">
-              <span>Kind</span>
+              <span>{t('Kind')}</span>
               <select value={sourceKind} onChange={(event) => setSourceKind(event.target.value as 'chat' | 'video')}>
-                <option value="chat">chat</option>
-                <option value="video">video</option>
+                <option value="chat">{t('chat')}</option>
+                <option value="video">{t('video')}</option>
               </select>
             </label>
             {sourceKind === 'chat' ? (
               <label className="field compact-field">
-                <span>Platform</span>
+                <span>{t('Platform')}</span>
                 <select value={chatPlatform} onChange={(event) => setChatPlatform(event.target.value as 'wechat' | 'feishu')}>
                   <option value="wechat">wechat</option>
                   <option value="feishu">feishu</option>
@@ -179,24 +181,24 @@ export function ChatWorkspace({
               </label>
             ) : null}
             <label className="field">
-              <span>Source Path</span>
+              <span>{t('Source Path')}</span>
               <input value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="/absolute/path/to/source" />
             </label>
             <label className="field">
-              <span>Target Manifest</span>
+              <span>{t('Target Manifest')}</span>
               <input value={targetManifestPath} onChange={(event) => setTargetManifestPath(event.target.value)} placeholder="/absolute/path/to/target-manifest.json" />
             </label>
             <div className="attach-form-actions">
               <button type="submit" className="action-button" disabled={!intakeChecks.ready || importLoading}>
-                {importLoading ? 'Importing...' : 'Import'}
+                {importLoading ? `${t('Import')}...` : t('Import')}
               </button>
             </div>
           </form>
           {intakeChecks.errors.length > 0 ? (
             <article className="mini-card compact-message-card">
-              <strong>Before importing</strong>
+              <strong>{t('Before importing')}</strong>
               {intakeChecks.errors.map((item) => (
-                <small key={item}>{item}</small>
+                <small key={item}>{t(item)}</small>
               ))}
             </article>
           ) : null}
@@ -214,17 +216,17 @@ export function ChatWorkspace({
               void onInspectEvidenceImport(selectedEvidenceImport.id);
             }}
           >
-            <strong>{selectedEvidenceImport.source_kind} intake attached</strong>
+            <strong>{selectedEvidenceImport.source_kind === 'chat' ? t('chat intake attached') : t('video intake attached')}</strong>
             <small>{selectedEvidenceImport.summary}</small>
           </button>
           <div className="writeback-summary">
-            <span className="badge">{selectedEvidenceImport.stats.windows} windows</span>
-            <span className="badge success">{selectedEvidenceImport.stats.cross_session_stable_items} stable</span>
+            <span className="badge">{selectedEvidenceImport.stats.windows} {t('windows')}</span>
+            <span className="badge success">{selectedEvidenceImport.stats.cross_session_stable_items} {t('stable')}</span>
             <button type="button" className="action-button secondary" onClick={() => onUseEvidenceImport(selectedEvidenceImport)}>
-              Use For Training
+              {t('Use For Training')}
             </button>
             <button type="button" className="action-button secondary" onClick={() => void onCopyValue(selectedEvidenceImport.artifacts.documents_path, 'Evidence documents path')}>
-              Copy Docs Path
+              {t('Copy Docs Path')}
             </button>
           </div>
         </div>
@@ -234,19 +236,19 @@ export function ChatWorkspace({
         {bundle?.messages.length ? bundle.messages.map((item) => (
           <article key={item.id} className={`message-bubble ${item.role}`}>
             <header>
-              <strong>{item.role === 'assistant' ? 'Persona' : 'You'}</strong>
+              <strong>{item.role === 'assistant' ? t('assistant') : t('user')}</strong>
               <span>{new Date(item.created_at).toLocaleTimeString()}</span>
             </header>
             <p>{item.content}</p>
             {(item.persona_dimensions.length > 0 || item.citation_items.length > 0 || item.retrieved_memory_ids.length > 0 || item.writeback_candidate_ids.length > 0) ? (
               <div className="message-signal-stack compact">
                 <div className="writeback-summary">
-                  {item.persona_dimensions.length > 0 ? <span className="badge success">{item.persona_dimensions.length} dimensions</span> : null}
-                  {item.citation_items.length > 0 ? <span className="badge">{item.citation_items.length} citations</span> : null}
-                  {item.retrieved_memory_ids.length > 0 ? <span className="badge">{item.retrieved_memory_ids.length} memories</span> : null}
-                  {item.writeback_candidate_ids.length > 0 ? <span className="badge warning">{item.writeback_candidate_ids.length} candidates</span> : null}
+                  {item.persona_dimensions.length > 0 ? <span className="badge success">{item.persona_dimensions.length} {t('dimensions')}</span> : null}
+                  {item.citation_items.length > 0 ? <span className="badge">{item.citation_items.length} {t('citations')}</span> : null}
+                  {item.retrieved_memory_ids.length > 0 ? <span className="badge">{item.retrieved_memory_ids.length} {t('memories')}</span> : null}
+                  {item.writeback_candidate_ids.length > 0 ? <span className="badge warning">{item.writeback_candidate_ids.length} {t('candidates')}</span> : null}
                   <button type="button" className="text-button" onClick={() => toggleSignalDetails(item.id)}>
-                    {expandedSignalMessageIds.includes(item.id) ? 'Hide details' : 'Show details'}
+                    {expandedSignalMessageIds.includes(item.id) ? t('Hide details') : t('Show details')}
                   </button>
                 </div>
                 {expandedSignalMessageIds.includes(item.id) ? (
@@ -274,11 +276,11 @@ export function ChatWorkspace({
             ) : null}
             <div className="message-actions compact">
               <button type="button" className="action-button secondary" onClick={() => void onCopyMessage(item.content)}>
-                Copy
+                {t('Copy')}
               </button>
             </div>
           </article>
-        )) : <div className="empty-state large">No messages yet. Start the thread.</div>}
+        )) : <div className="empty-state large">{t('No messages yet. Start the thread.')}</div>}
       </div>
 
       <form className="composer minimal" onSubmit={handleSubmit}>
@@ -286,13 +288,13 @@ export function ChatWorkspace({
           value={message}
           onChange={(event) => setMessage(event.target.value)}
           onKeyDown={(event) => void handleComposerKeyDown(event)}
-          placeholder="Send a message to the selected persona"
+          placeholder={t('Send a message to the selected persona')}
           rows={4}
         />
         <div className="composer-footer">
-          <small>Cmd/Ctrl + Enter to send</small>
+          <small>{t('Cmd/Ctrl + Enter to send')}</small>
           <button type="submit" className="primary-button" disabled={loading || !message.trim()}>
-            {loading ? 'Sending...' : 'Send'}
+            {loading ? t('Sending...') : t('Send')}
           </button>
         </div>
       </form>

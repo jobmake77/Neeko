@@ -269,6 +269,12 @@ textarea {
   padding: 22px 22px 14px;
 }
 
+.language-switch {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .persona-switcher-block,
 .conversation-sidebar-toolbar,
 .settings-section-pills,

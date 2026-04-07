@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { NavView, PersonaSummary, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchRun } from '../lib/types';
+import { useI18n } from '../lib/i18n';
 
 export interface WorkbenchFormsProps {
   activeView: Exclude<NavView, 'Chat'>;
@@ -62,6 +63,7 @@ export interface WorkbenchFormsProps {
 }
 
 export function WorkbenchForms(props: WorkbenchFormsProps) {
+  const { t } = useI18n();
   const {
     activeView,
     selectedPersona,
@@ -114,12 +116,12 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   const [exportOutputDir, setExportOutputDir] = useState(defaultValues.exportOutputDir);
 
   const title = useMemo(() => {
-    if (activeView === 'Create') return 'Create Persona';
-    if (activeView === 'Train') return 'Train Persona';
-    if (activeView === 'Experiment') return 'Run Experiment';
-    if (activeView === 'Export') return 'Export Persona';
-    return 'Settings';
-  }, [activeView]);
+    if (activeView === 'Create') return t('Create Persona');
+    if (activeView === 'Train') return t('Train Persona');
+    if (activeView === 'Experiment') return t('Run Experiment');
+    if (activeView === 'Export') return t('Export Persona');
+    return t('Settings');
+  }, [activeView, t]);
   const latestTrainingPrep = trainingPreps[0] ?? null;
   const latestEvidenceImport = evidenceImports[0] ?? null;
   const currentRunPresentation = currentRun ? deriveWorkbenchRunPresentation(currentRun) : null;
@@ -267,38 +269,38 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           ? 'badge'
           : 'badge warning';
     const serviceLabel = serviceConnectionState === 'connected'
-      ? 'Connected'
+      ? t('Connected')
       : serviceConnectionState === 'recovering'
-        ? 'Recovering'
+        ? t('Recovering')
         : serviceConnectionState === 'checking'
-          ? 'Checking'
-          : 'Offline';
+          ? t('Checking')
+          : t('Offline');
 
     return (
       <section className={embedded ? 'workbench-form-embedded' : 'workspace panel form-panel'}>
         {!embedded ? (
           <div className="panel-header workspace-header">
           <div>
-            <p className="eyebrow">Settings</p>
-            <h2>Local Service</h2>
+              <p className="eyebrow">{t('Settings')}</p>
+              <h2>{t('Local Service')}</h2>
           </div>
           <span className={serviceBadgeClass}>{serviceLabel}</span>
           </div>
         ) : (
           <div className="settings-inline-header">
             <div>
-              <p className="eyebrow">Runtime</p>
-              <strong>Local Service</strong>
+              <p className="eyebrow">{t('Runtime')}</p>
+              <strong>{t('Local Service')}</strong>
             </div>
             <span className={serviceBadgeClass}>{serviceLabel}</span>
           </div>
         )}
         <label className="field">
-          <span>Workbench server URL</span>
+          <span>{t('Workbench server URL')}</span>
           <input value={apiBaseUrl} onChange={(event) => onApiBaseUrlChange(event.target.value)} />
         </label>
         <label className="field">
-          <span>Local Neeko repo path</span>
+          <span>{t('Local Neeko repo path')}</span>
           <input
             value={workbenchRepoRoot}
             onChange={(event) => onWorkbenchRepoRootChange(event.target.value)}
@@ -307,15 +309,15 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         </label>
         <div className="settings-actions">
           <button type="button" className="action-button secondary" onClick={() => void onRefreshHealth()}>
-            Refresh Connection
+            {t('Refresh Connection')}
           </button>
         </div>
         <p className="helper-text">
-          The desktop shell talks to the structured local API. Default is `http://127.0.0.1:4310`.
+          {t('The desktop shell talks to the structured local API. Default is `http://127.0.0.1:4310`.')}
         </p>
         <div className="settings-card">
           <div className="list-card-top">
-            <strong>Bootstrap readiness</strong>
+            <strong>{t('Bootstrap readiness')}</strong>
             <span
               className={
                 bootstrapStatus?.mode === 'ready'
@@ -325,19 +327,19 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                     : 'badge warning'
               }
             >
-              {bootstrapStatus?.mode ?? 'unknown'}
+              {t(bootstrapStatus?.mode ?? 'unknown')}
             </span>
           </div>
-          <p>{bootstrapStatus?.message ?? 'Bootstrap status is not available yet.'}</p>
+          <p>{bootstrapStatus?.message ?? t('Bootstrap status is not available yet.')}</p>
           <div className="writeback-summary">
             <span className={bootstrapStatus?.node_available ? 'badge success' : 'badge warning'}>
-              node {bootstrapStatus?.node_available ? bootstrapStatus.node_source : 'missing'}
+              node {t(bootstrapStatus?.node_available ? bootstrapStatus.node_source : 'missing')}
             </span>
             <span className={bootstrapStatus?.dist_ready ? 'badge success' : 'badge warning'}>
-              core {bootstrapStatus?.dist_ready ? 'built' : 'pending'}
+              core {t(bootstrapStatus?.dist_ready ? 'built' : 'pending')}
             </span>
             <span className={bootstrapStatus?.service_managed ? 'badge success' : 'badge'}>
-              {bootstrapStatus?.service_managed ? 'managed by desktop' : 'not managed yet'}
+              {t(bootstrapStatus?.service_managed ? 'managed by desktop' : 'not managed yet')}
             </span>
           </div>
           {bootstrapStatus?.resolved_runtime_root ? (
@@ -346,23 +348,23 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         </div>
         <div className="settings-card">
           <div className="list-card-top">
-            <strong>Connection behavior</strong>
+            <strong>{t('Connection behavior')}</strong>
             <span className={serviceHealthy ? 'badge success' : 'badge warning'}>
-              {serviceHealthy ? 'ready' : 'attention'}
+              {serviceHealthy ? t('ready') : t('attention')}
             </span>
           </div>
           <p>
             {serviceConnectionState === 'connected'
-              ? 'The desktop workbench is connected to the local structured API.'
+              ? t('The desktop workbench is connected to the local structured API.')
               : serviceConnectionState === 'recovering'
-                ? 'The desktop shell is restarting the local workbench service and will reconnect automatically.'
+                ? t('The desktop shell is restarting the local workbench service and will reconnect automatically.')
                 : serviceConnectionState === 'checking'
-                  ? 'The desktop shell is checking the local workbench service.'
-                  : 'The local workbench service is unavailable right now. The desktop shell will try to recover it automatically when you use a local URL.'}
+                  ? t('The desktop shell is checking the local workbench service.')
+                  : t('The local workbench service is unavailable right now. The desktop shell will try to recover it automatically when you use a local URL.')}
           </p>
         </div>
         <div className="settings-card">
-          <strong>Manual fallback</strong>
+          <strong>{t('Manual fallback')}</strong>
           <code>npm run workbench:server</code>
           <code>npm --prefix desktop run tauri:dev</code>
         </div>
@@ -381,7 +383,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       {!embedded ? (
         <div className="panel-header workspace-header">
           <div>
-            <p className="eyebrow">Workbench</p>
+            <p className="eyebrow">{t('Workbench')}</p>
             <h2>{title}</h2>
           </div>
           {selectedPersona ? <span className="badge">{selectedPersona.name}</span> : null}
@@ -389,7 +391,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       ) : (
         <div className="settings-inline-header">
           <div>
-            <p className="eyebrow">Settings</p>
+            <p className="eyebrow">{t('Settings')}</p>
             <strong>{title}</strong>
           </div>
           {selectedPersona ? <span className="badge">{selectedPersona.name}</span> : null}
@@ -398,25 +400,25 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       {activeView === 'Train' && trainLaunchGuidance ? (
         <div className="settings-card workflow-card">
           <div className="list-card-top">
-            <strong>Train Guidance</strong>
+            <strong>{t('Train Guidance')}</strong>
             <span className={trainLaunchGuidance.tone === 'good' ? 'badge success' : trainLaunchGuidance.tone === 'warning' ? 'badge warning' : 'badge'}>
-              {trainLaunchGuidance.statusLabel}
+              {t(trainLaunchGuidance.statusLabel)}
             </span>
           </div>
-          <p>{trainLaunchGuidance.summary}</p>
+          <p>{t(trainLaunchGuidance.summary)}</p>
           <div className="workflow-stage-grid">
             {trainLaunchGuidance.stages.map((stage) => (
               <div key={stage.label} className="workflow-stage-card">
-                <strong>{stage.label}</strong>
+                <strong>{t(stage.label)}</strong>
                 <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
-                  {stage.status}
+                  {t(stage.status)}
                 </span>
               </div>
             ))}
           </div>
           <div className="workflow-step-list">
             {trainLaunchGuidance.actions.map((item) => (
-              <small key={item}>{item}</small>
+              <small key={item}>{t(item)}</small>
             ))}
           </div>
         </div>
@@ -424,25 +426,25 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       {activeView === 'Create' && createGuidance ? (
         <div className="settings-card workflow-card">
           <div className="list-card-top">
-            <strong>Create Guidance</strong>
+            <strong>{t('Create Guidance')}</strong>
             <span className={createGuidance.tone === 'good' ? 'badge success' : createGuidance.tone === 'warning' ? 'badge warning' : 'badge'}>
-              {createGuidance.statusLabel}
+              {t(createGuidance.statusLabel)}
             </span>
           </div>
-          <p>{createGuidance.summary}</p>
+          <p>{t(createGuidance.summary)}</p>
           <div className="workflow-stage-grid">
             {createGuidance.stages.map((stage) => (
               <div key={stage.label} className="workflow-stage-card">
-                <strong>{stage.label}</strong>
+                <strong>{t(stage.label)}</strong>
                 <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
-                  {stage.status}
+                  {t(stage.status)}
                 </span>
               </div>
             ))}
           </div>
           <div className="workflow-step-list">
             {createGuidance.actions.map((item) => (
-              <small key={item}>{item}</small>
+              <small key={item}>{t(item)}</small>
             ))}
           </div>
         </div>
@@ -450,25 +452,25 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       {activeView === 'Experiment' && experimentGuidance ? (
         <div className="settings-card workflow-card">
           <div className="list-card-top">
-            <strong>Experiment Guidance</strong>
+            <strong>{t('Experiment Guidance')}</strong>
             <span className={experimentGuidance.tone === 'good' ? 'badge success' : experimentGuidance.tone === 'warning' ? 'badge warning' : 'badge'}>
-              {experimentGuidance.statusLabel}
+              {t(experimentGuidance.statusLabel)}
             </span>
           </div>
-          <p>{experimentGuidance.summary}</p>
+          <p>{t(experimentGuidance.summary)}</p>
           <div className="workflow-stage-grid">
             {experimentGuidance.stages.map((stage) => (
               <div key={stage.label} className="workflow-stage-card">
-                <strong>{stage.label}</strong>
+                <strong>{t(stage.label)}</strong>
                 <span className={stage.tone === 'good' ? 'badge success' : stage.tone === 'warning' ? 'badge warning' : 'badge'}>
-                  {stage.status}
+                  {t(stage.status)}
                 </span>
               </div>
             ))}
           </div>
           <div className="workflow-step-list">
             {experimentGuidance.actions.map((item) => (
-              <small key={item}>{item}</small>
+              <small key={item}>{t(item)}</small>
             ))}
           </div>
         </div>
@@ -476,7 +478,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       <form className="form-grid" onSubmit={handleSubmit}>
         {activeView === 'Create' ? (
           <label className="field">
-            <span>Target</span>
+            <span>{t('Target')}</span>
             <input
               value={target}
               onChange={(event) => {
@@ -490,7 +492,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Create' ? (
           <label className="field">
-            <span>Target manifest</span>
+            <span>{t('Target manifest')}</span>
             <input
               value={targetManifest}
               onChange={(event) => {
@@ -504,7 +506,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Create' ? (
           <label className="field">
-            <span>Chat platform</span>
+            <span>{t('Chat platform')}</span>
             <select
               value={chatPlatform}
               onChange={(event) => {
@@ -520,7 +522,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView !== 'Export' ? (
           <label className="field">
-            <span>Rounds</span>
+            <span>{t('Rounds')}</span>
             <input
               value={rounds}
               onChange={(event) => {
@@ -534,7 +536,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView !== 'Export' ? (
           <label className="field">
-            <span>Training profile</span>
+            <span>{t('Training profile')}</span>
             <select
               value={trainingProfile}
               onChange={(event) => {
@@ -554,7 +556,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Experiment' || activeView === 'Train' || activeView === 'Create' ? (
           <label className="field">
-            <span>Input routing</span>
+            <span>{t('Input routing')}</span>
             <select
               value={inputRouting}
               onChange={(event) => {
@@ -570,7 +572,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Experiment' || activeView === 'Train' || activeView === 'Create' ? (
           <label className="field">
-            <span>Training seed mode</span>
+            <span>{t('Training seed mode')}</span>
             <select
               value={trainingSeedMode}
               onChange={(event) => {
@@ -587,7 +589,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Experiment' || activeView === 'Train' || activeView === 'Create' ? (
           <label className="field">
-            <span>Kimi stability mode</span>
+            <span>{t('Kimi stability mode')}</span>
             <select
               value={kimiStabilityMode}
               onChange={(event) => {
@@ -605,7 +607,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>Mode</span>
+            <span>{t('Mode')}</span>
             <select
               value={trainMode}
               onChange={(event) => {
@@ -621,7 +623,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>Track</span>
+            <span>{t('Track')}</span>
             <select
               value={trainTrack}
               onChange={(event) => {
@@ -638,7 +640,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>Retries</span>
+            <span>{t('Retries')}</span>
             <input
               value={trainRetries}
               onChange={(event) => {
@@ -652,7 +654,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>From checkpoint</span>
+            <span>{t('From checkpoint')}</span>
             <input
               value={trainFromCheckpoint}
               onChange={(event) => {
@@ -666,7 +668,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>Prep documents path</span>
+            <span>{t('Prep documents path')}</span>
             <input
               value={trainPrepDocumentsPath}
               onChange={(event) => {
@@ -680,7 +682,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>Prep evidence path</span>
+            <span>{t('Prep evidence path')}</span>
             <input
               value={trainPrepEvidencePath}
               onChange={(event) => {
@@ -694,7 +696,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>Prep artifact id</span>
+            <span>{t('Prep artifact id')}</span>
             <input
               value={trainPrepArtifactId}
               onChange={(event) => {
@@ -708,7 +710,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Train' ? (
           <label className="field">
-            <span>Evidence import id</span>
+            <span>{t('Evidence import id')}</span>
             <input
               value={trainEvidenceImportId}
               onChange={(event) => {
@@ -722,7 +724,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Experiment' ? (
           <label className="field">
-            <span>Profiles</span>
+            <span>{t('Profiles')}</span>
             <input
               value={experimentProfiles}
               onChange={(event) => {
@@ -736,7 +738,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Experiment' ? (
           <label className="field">
-            <span>Questions / round</span>
+            <span>{t('Questions / round')}</span>
             <input
               value={questionsPerRound}
               onChange={(event) => {
@@ -750,7 +752,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Experiment' ? (
           <label className="field">
-            <span>Compare variants</span>
+            <span>{t('Compare variants')}</span>
             <input
               value={experimentCompareVariants}
               onChange={(event) => {
@@ -764,7 +766,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Experiment' ? (
           <label className="field">
-            <span>Output dir</span>
+            <span>{t('Output dir')}</span>
             <input
               value={experimentOutputDir}
               onChange={(event) => {
@@ -786,7 +788,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ experimentGate: event.target.checked });
               }}
             />
-            <span>Enable gate</span>
+            <span>{t('Enable gate')}</span>
           </label>
         ) : null}
 
@@ -800,7 +802,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ experimentCompareInputRouting: event.target.checked });
               }}
             />
-            <span>Compare input routing</span>
+            <span>{t('Compare input routing')}</span>
           </label>
         ) : null}
 
@@ -814,13 +816,13 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 onDefaultValuesChange({ experimentCompareTrainingSeed: event.target.checked });
               }}
             />
-            <span>Compare training seed</span>
+            <span>{t('Compare training seed')}</span>
           </label>
         ) : null}
 
         {activeView === 'Export' ? (
           <label className="field">
-            <span>Format</span>
+            <span>{t('Format')}</span>
             <select
               value={exportFormat}
               onChange={(event) => {
@@ -835,7 +837,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
 
         {activeView === 'Export' ? (
           <label className="field">
-            <span>Output dir</span>
+            <span>{t('Output dir')}</span>
             <input
               value={exportOutputDir}
               onChange={(event) => {
@@ -848,27 +850,27 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
         ) : null}
 
         <button type="submit" className="primary-button" disabled={activeView !== 'Create' && !selectedPersona}>
-          Launch {activeView}
+          {`${t('Launch')} ${t(activeView)}`}
         </button>
         {activeView === 'Train' ? (
           <button type="button" className="action-button secondary" disabled={!selectedPersona} onClick={() => void handleLaunchSmoke()}>
-            Run Smoke
+            {t('Run Smoke')}
           </button>
         ) : null}
       </form>
       {activeView === 'Train' && (activeTrainingPrep || activeEvidenceImport || trainPrepDocumentsPath || trainPrepEvidencePath) ? (
         <div className="settings-card">
-          <strong>Attached Training Context</strong>
+          <strong>{t('Attached Training Context')}</strong>
           <p>
             {activeTrainingPrep
-              ? 'This run will start from the selected training prep artifact.'
+              ? t('This run will start from the selected training prep artifact.')
               : activeEvidenceImport
-                ? 'This run will start from the selected evidence intake context.'
-                : 'This run includes manually attached training context paths.'}
+                ? t('This run will start from the selected evidence intake context.')
+                : t('This run includes manually attached training context paths.')}
           </p>
           <div className="writeback-summary">
-            {activeTrainingPrep ? <span className="badge success">prep attached</span> : null}
-            {activeEvidenceImport ? <span className="badge success">intake attached</span> : null}
+            {activeTrainingPrep ? <span className="badge success">{t('prep attached')}</span> : null}
+            {activeEvidenceImport ? <span className="badge success">{t('intake attached')}</span> : null}
             {trainPrepArtifactId ? <span className="badge">{trainPrepArtifactId}</span> : null}
             {trainEvidenceImportId ? <span className="badge">{trainEvidenceImportId}</span> : null}
           </div>
@@ -878,19 +880,19 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       ) : null}
       {currentRun ? (
         <div className="run-card">
-          <strong>{currentRun.type}</strong>
-          <p>{currentRunPresentation?.primaryMessage ?? currentRun.summary ?? currentRun.status}</p>
+          <strong>{t(currentRun.type)}</strong>
+          <p>{t(currentRunPresentation?.primaryMessage ?? currentRun.summary ?? currentRun.status)}</p>
           <small>
-            {(currentRunPresentation?.statusLabel ?? currentRun.status)} · {new Date(currentRun.started_at).toLocaleString()}
+            {t(currentRunPresentation?.statusLabel ?? currentRun.status)} · {new Date(currentRun.started_at).toLocaleString()}
           </small>
-          {currentRunPresentation?.secondaryMessage ? <small>{currentRunPresentation.secondaryMessage}</small> : null}
+          {currentRunPresentation?.secondaryMessage ? <small>{t(currentRunPresentation.secondaryMessage)}</small> : null}
         </div>
       ) : null}
       {recentRuns.length > 0 ? (
         <div className="run-history">
           <div className="run-history-header">
-            <strong>Recent runs</strong>
-            <small>{selectedPersona ? selectedPersona.slug : 'global'}</small>
+            <strong>{t('Recent runs')}</strong>
+            <small>{selectedPersona ? selectedPersona.slug : t('global')}</small>
           </div>
           {recentRuns.slice(0, 6).map((run) => (
             <button
@@ -899,8 +901,8 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
               className={run.id === currentRun?.id ? 'run-history-item active' : 'run-history-item'}
               onClick={() => void onSelectRun(run)}
             >
-              <span>{run.type}</span>
-              <span>{deriveWorkbenchRunPresentation(run).statusLabel}</span>
+              <span>{t(run.type)}</span>
+              <span>{t(deriveWorkbenchRunPresentation(run).statusLabel)}</span>
             </button>
           ))}
         </div>
@@ -908,12 +910,12 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
       {activeView === 'Train' && (latestTrainingPrep || latestEvidenceImport) ? (
         <div className="run-history">
           <div className="run-history-header">
-            <strong>Preparation Assets</strong>
-            <small>{selectedPersona ? selectedPersona.slug : 'persona required'}</small>
+            <strong>{t('Preparation Assets')}</strong>
+            <small>{selectedPersona ? selectedPersona.slug : t('persona required')}</small>
           </div>
           {latestTrainingPrep ? (
             <article className="settings-card">
-              <strong>Latest Training Prep</strong>
+              <strong>{t('Latest Training Prep')}</strong>
               <p>{latestTrainingPrep.summary}</p>
               <small>{new Date(latestTrainingPrep.updated_at).toLocaleString()}</small>
               <code>{latestTrainingPrep.documents_path}</code>
@@ -935,28 +937,28 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                     });
                   }}
                 >
-                  Use Latest Prep
+                  {t('Use Latest Prep')}
                 </button>
                 <button
                   type="button"
                   className="action-button secondary"
                   onClick={() => void onCopyValue(latestTrainingPrep.documents_path, 'Training prep documents path')}
                 >
-                  Copy Docs Path
+                  {t('Copy Docs Path')}
                 </button>
                 <button
                   type="button"
                   className="action-button secondary"
                   onClick={() => void onCopyValue(latestTrainingPrep.evidence_index_path, 'Training prep evidence path')}
                 >
-                  Copy Evidence Path
+                  {t('Copy Evidence Path')}
                 </button>
               </div>
             </article>
           ) : null}
           {latestEvidenceImport ? (
             <article className="settings-card">
-              <strong>Latest Evidence Intake</strong>
+              <strong>{t('Latest Evidence Intake')}</strong>
               <p>{latestEvidenceImport.summary}</p>
               <small>{new Date(latestEvidenceImport.updated_at).toLocaleString()}</small>
               <code>{latestEvidenceImport.artifacts.documents_path}</code>
@@ -978,21 +980,21 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                     });
                   }}
                 >
-                  Use Latest Import
+                  {t('Use Latest Import')}
                 </button>
                 <button
                   type="button"
                   className="action-button secondary"
                   onClick={() => void onCopyValue(latestEvidenceImport.artifacts.documents_path, 'Evidence import documents path')}
                 >
-                  Copy Docs Path
+                  {t('Copy Docs Path')}
                 </button>
                 <button
                   type="button"
                   className="action-button secondary"
                   onClick={() => void onCopyValue(latestEvidenceImport.artifacts.evidence_index_path, 'Evidence import evidence path')}
                 >
-                  Copy Evidence Path
+                  {t('Copy Evidence Path')}
                 </button>
               </div>
             </article>
@@ -1014,11 +1016,11 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
                 });
               }}
             >
-              Clear Prep Context
+              {t('Clear Prep Context')}
             </button>
           </div>
           <div className="helper-text">
-            Train launch only carries these prep/import fields as contextual metadata for traceability. It does not bypass the existing training core or write back into formal `Soul`.
+            {t('Train launch only carries these prep/import fields as contextual metadata for traceability. It does not bypass the existing training core or write back into formal `Soul`.')}
           </div>
         </div>
       ) : null}

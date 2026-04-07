@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import { Conversation } from '../lib/types';
 
 interface ThreadColumnProps {
@@ -20,6 +21,18 @@ export function ThreadColumn({
   onRefreshSummary,
 }: ThreadColumnProps) {
   const hasSelection = Boolean(selectedId);
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | Conversation['status']>('all');
+  const filteredThreads = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return threads.filter((thread) => {
+      const matchesStatus = statusFilter === 'all' ? true : thread.status === statusFilter;
+      const matchesQuery = !normalizedQuery
+        ? true
+        : `${thread.title} ${thread.last_message_preview ?? ''}`.toLowerCase().includes(normalizedQuery);
+      return matchesStatus && matchesQuery;
+    });
+  }, [threads, query, statusFilter]);
   return (
     <section className="panel column thread-column">
       <div className="panel-header">
@@ -42,8 +55,30 @@ export function ThreadColumn({
           </button>
         </div>
       </div>
+      <div className="thread-toolbar">
+        <label className="field compact-field">
+          <span>Search</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Find a thread"
+          />
+        </label>
+        <label className="field compact-field">
+          <span>Status</span>
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value as 'all' | Conversation['status'])}
+          >
+            <option value="all">all</option>
+            <option value="active">active</option>
+            <option value="idle">idle</option>
+            <option value="archived">archived</option>
+          </select>
+        </label>
+      </div>
       <div className="thread-list">
-        {threads.map((thread) => (
+        {filteredThreads.map((thread) => (
           <button
             key={thread.id}
             type="button"
@@ -61,6 +96,9 @@ export function ThreadColumn({
           </button>
         ))}
         {threads.length === 0 ? <div className="empty-state">Create the first thread for this persona.</div> : null}
+        {threads.length > 0 && filteredThreads.length === 0 ? (
+          <div className="empty-state">No threads match the current search or status filter.</div>
+        ) : null}
       </div>
     </section>
   );

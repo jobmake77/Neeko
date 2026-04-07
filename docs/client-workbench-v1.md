@@ -1,6 +1,6 @@
 # 客户端工作台 V1
 
-更新时间：2026-04-06
+更新时间：2026-04-07
 
 ## 1. 目标
 
@@ -15,6 +15,7 @@
 3. 会话写回候选
 4. 训练 / 实验 / 导出入口
 5. 本地状态与运行结果查看
+6. 聊天 / 证据 / 训练 / 实验的一致性工作流指导
 
 ## 2. 当前落地结构
 
@@ -79,9 +80,9 @@
 5. create / train / experiment / export 的结构化触发与状态轮询
 6. recent runs 列表查看与历史 report 回看
 7. 工作台状态本地恢复：active view、active tab、selected persona、selected thread
-8. thread 卡片最近消息预览
-9. 聊天主区显式展示 session summary
-10. run report 附带 log tail，可在客户端内直接查看最近运行输出
+8. 线程栏搜索与状态筛选（all / active / idle / archived）
+9. thread 卡片展示最近消息预览与线程状态
+10. 聊天主区显式展示 session summary 与 summary 新鲜度
 11. 线程基础管理：rename / delete / refresh summary
 12. workbench 表单默认值本地持久化
 13. 聊天区线程详情卡：created / updated / message_count / summary_updated
@@ -98,6 +99,10 @@
 24. Train 面板现在可以把 `training prep / evidence intake` 作为启动上下文带入训练，并写入 `training-context.json` 供后续追踪
 25. Train 面板支持 `Run Smoke`，可用安全默认参数做一次低成本训练链路验证
 26. Chat 区可以直接查看 Evidence Intake 的 `speaker_role / scene / stable items` 指标
+27. Chat / Writeback / Train / Experiment / Create 都有统一的 guidance card，显示当前阶段和建议下一步
+28. 聊天消息卡会展示 persona dimensions、citation 数量、memory 命中数量与 citation 摘要
+29. Evidence Intake 导入前支持路径/manifest 本地预检查，服务端也有硬校验
+30. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
 
 ### 3.2 默认写回规则
 
@@ -116,6 +121,8 @@
 3. create/train/experiment/export 仍由现有 CLI 执行，本地 server 负责结构化调度与状态持久化
 4. handoff 目前仍是本地交接层，不包含正式审核流与一键写入能力
 5. 视频原始媒体文件仍依赖转写能力；但 transcript-first 文件已经可以直接接入 workbench
+6. 线程状态目前仍是轻量本地状态，不包含多人协作、标签体系或服务端同步
+7. guidance card 是启发式产品层，不替代正式实验结果与训练报告判断
 
 ## 5. 当前工作台新增交接层
 
@@ -216,8 +223,29 @@
 7. Train launch 支持清空 prep context，避免不同资产之间误串
 8. 右侧 `Training` 面板会同时显示 `training-report` 与 `training-context`，可直接审计 `prep_context`
 9. Train 面板支持 `Run Smoke`，默认走 `quick + 1 round + persona_extract`
+10. 聊天头部会显示 thread status、candidate 数量与 summary 新鲜度
+11. 消息卡会显示 persona dimensions / citation / memory 命中摘要
+12. 线程栏支持 search + status filter，适合 thread 数量增多后的日常使用
+13. `Use For Training` 已打通 `evidence intake -> train` 与 `training prep -> train`
 
-## 6.4 Smoke 与 Provider 治理
+### 6.4 工作台 Guidance 层
+
+当前客户端已经补出一层统一的产品引导，不再只是给裸参数和裸按钮：
+
+1. `Create Guidance`
+2. `Train Guidance`
+3. `Experiment Guidance`
+4. `Pipeline Status`
+5. `Suggested Next Step`
+
+这层的职责是：
+
+1. 告诉用户当前所处阶段
+2. 告诉用户下一步更适合做什么
+3. 把 “attach context / run smoke / expand corpus / create handoff / build prep / ready for PK” 这类动作前置
+4. 让 workbench 在日常使用上更接近真正的工作台，而不是若干独立入口的拼接
+
+## 6.5 Smoke 与 Provider 治理
 
 为了让 workbench 能更稳定地做“先验证链路，再决定是否正式训练”，当前新增了两层保护：
 
@@ -247,7 +275,7 @@
 6. `capability_mismatch`
 7. 第二次 structured probe 会自动切到更轻量的 schema，减少结构化输出误杀
 
-## 6.5 用户可见结果与内部恢复
+## 6.6 用户可见结果与内部恢复
 
 工作台对用户的默认策略是：
 
@@ -258,6 +286,7 @@
 5. `recovering`
 6. `completed`
 7. `paused, progress saved`
+8. API report 不再向客户端主界面暴露 `log tail`
 
 也就是说：
 

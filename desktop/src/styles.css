@@ -122,6 +122,13 @@ button {
   justify-content: flex-end;
 }
 
+.thread-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
 .persona-column,
 .thread-column,
 .info-panel {
@@ -708,6 +715,10 @@ pre {
 
   .thread-meta-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .thread-toolbar {
+    grid-template-columns: 1fr;
   }
 
   .evidence-intake-form,

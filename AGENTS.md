@@ -18,6 +18,7 @@
 6. 当前客户端写回链路新增 `promotion-ready -> handoff artifact` 中间层，但仍不允许直接写正式 `Soul` 或正式长期记忆。
 7. 当前工作台允许把 `handoff` 转成 `training prep artifact`，但它仍然只是安全适配层，不等于正式训练写回。
 8. 当前工作台允许把 `training prep / evidence import` 作为 train launch 的 `prep context` 附加到运行上下文里，但它只用于追踪与审计，不改变训练核心逻辑。
+9. 当前客户端工作台 V1 已进入阶段性收口，后续优先在现有工作台上补 `run center`、`source drill-down` 和线程管理，而不是重做产品壳层。
 
 ## 交流层纪律
 

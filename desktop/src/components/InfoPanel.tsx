@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchMemoryNode, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
+import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchMemoryNode, WorkbenchMemorySourceAsset, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
 import { ConversationBundle } from '../lib/types';
 
 const TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Writeback', 'Training'];
@@ -12,6 +12,7 @@ interface InfoPanelProps {
   candidates: MemoryCandidate[];
   evidenceImports: WorkbenchEvidenceImport[];
   selectedMemoryNode: WorkbenchMemoryNode | null;
+  selectedMemorySourceAssets: WorkbenchMemorySourceAsset[];
   promotionHandoffs: PromotionHandoff[];
   trainingPreps: TrainingPrepArtifact[];
   recentRuns: WorkbenchRun[];
@@ -38,6 +39,7 @@ export function InfoPanel({
   candidates,
   evidenceImports,
   selectedMemoryNode,
+  selectedMemorySourceAssets,
   promotionHandoffs,
   trainingPreps,
   recentRuns,
@@ -174,7 +176,7 @@ export function InfoPanel({
           ))}
           {selectedMemoryNode ? (
             <article className="mini-card memory-node-detail-card">
-              {renderMemoryNodeInspector(selectedMemoryNode, onCopyValue)}
+              {renderMemoryNodeInspector(selectedMemoryNode, selectedMemorySourceAssets, onCopyValue)}
             </article>
           ) : null}
           {!latestAssistant?.citation_items.length ? <div className="empty-state">No retrieved memory on the latest turn.</div> : null}
@@ -212,7 +214,7 @@ export function InfoPanel({
           ))}
           {selectedMemoryNode ? (
             <article className="mini-card memory-node-detail-card">
-              {renderMemoryNodeInspector(selectedMemoryNode, onCopyValue)}
+              {renderMemoryNodeInspector(selectedMemoryNode, selectedMemorySourceAssets, onCopyValue)}
             </article>
           ) : null}
           {!latestAssistant?.citation_items.length ? <div className="empty-state">No citations for the current thread yet.</div> : null}
@@ -747,6 +749,7 @@ function deriveSourceMessages(
 
 function renderMemoryNodeInspector(
   node: WorkbenchMemoryNode,
+  sourceAssets: WorkbenchMemorySourceAsset[],
   onCopyValue: (value: string, label: string) => Promise<void>
 ) {
   return (
@@ -830,6 +833,66 @@ function renderMemoryNodeInspector(
           ))}
         </div>
       ) : null}
+      <div className="context-entry-list">
+        <strong>Source Assets</strong>
+        {sourceAssets.map((asset, index) => (
+          <article key={`${asset.kind}:${asset.id ?? asset.path ?? asset.url ?? index}`} className="source-message-card">
+            <div className="list-card-top">
+              <strong>{asset.title}</strong>
+              <span className="badge">{asset.kind.replace(/_/g, ' ')}</span>
+            </div>
+            <small>{asset.summary}</small>
+            {asset.badges && asset.badges.length > 0 ? (
+              <div className="writeback-summary">
+                {asset.badges.map((badge) => (
+                  <span key={badge} className="badge">
+                    {badge}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {asset.metadata ? (
+              <div className="context-entry-list compact-context-list">
+                {Object.entries(asset.metadata).map(([key, value]) => (
+                  <article key={key} className="source-message-card compact-source-card">
+                    <strong>{key.replace(/_/g, ' ')}</strong>
+                    <small>{value}</small>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+            <div className="candidate-actions">
+              {asset.id ? (
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(asset.id ?? '', `${asset.title} id`)}
+                >
+                  Copy Id
+                </button>
+              ) : null}
+              {asset.path ? (
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(asset.path ?? '', `${asset.title} path`)}
+                >
+                  Copy Path
+                </button>
+              ) : null}
+              {asset.url ? (
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(asset.url ?? '', `${asset.title} url`)}
+                >
+                  Copy Url
+                </button>
+              ) : null}
+            </div>
+          </article>
+        ))}
+      </div>
       <small>Created {new Date(node.created_at).toLocaleString()} · Updated {new Date(node.updated_at).toLocaleString()}</small>
     </>
   );

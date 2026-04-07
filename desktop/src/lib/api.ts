@@ -10,6 +10,7 @@ import {
   TrainingPrepExport,
   WorkbenchEvidenceImport,
   WorkbenchMemoryNode,
+  WorkbenchMemorySourceAsset,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './types';
@@ -46,6 +47,8 @@ export const api = {
   getPersona: (slug: string) => request<PersonaWorkbenchProfile>(`/api/personas/${encodeURIComponent(slug)}`),
   getMemoryNode: (slug: string, nodeId: string) =>
     request<WorkbenchMemoryNode>(`/api/personas/${encodeURIComponent(slug)}/memory-nodes/${encodeURIComponent(nodeId)}`),
+  getMemoryNodeSourceAssets: (slug: string, nodeId: string) =>
+    request<WorkbenchMemorySourceAsset[]>(`/api/personas/${encodeURIComponent(slug)}/memory-nodes/${encodeURIComponent(nodeId)}/source-assets`),
   listConversations: (slug: string) => request<Conversation[]>(`/api/personas/${encodeURIComponent(slug)}/conversations`),
   createConversation: (slug: string, title?: string) =>
     request<Conversation>(`/api/personas/${encodeURIComponent(slug)}/conversations`, {

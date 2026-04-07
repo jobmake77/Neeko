@@ -202,6 +202,10 @@ button {
   margin-top: 10px;
 }
 
+.compact-context-list {
+  margin-top: 0;
+}
+
 .source-message-card {
   display: flex;
   flex-direction: column;
@@ -210,6 +214,11 @@ button {
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(31, 36, 48, 0.08);
+}
+
+.compact-source-card {
+  padding: 8px 10px;
+  background: rgba(247, 244, 237, 0.92);
 }
 
 .handoff-item-card {

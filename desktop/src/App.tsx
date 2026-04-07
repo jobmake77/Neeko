@@ -18,6 +18,7 @@ import {
   TrainingPrepArtifact,
   WorkbenchEvidenceImport,
   WorkbenchMemoryNode,
+  WorkbenchMemorySourceAsset,
   WorkbenchRun,
   WorkbenchRunReport,
 } from './lib/types';
@@ -196,6 +197,7 @@ export default function App() {
   const [evidenceImports, setEvidenceImports] = useState<WorkbenchEvidenceImport[]>([]);
   const [trainingPreps, setTrainingPreps] = useState<TrainingPrepArtifact[]>([]);
   const [selectedMemoryNode, setSelectedMemoryNode] = useState<WorkbenchMemoryNode | null>(null);
+  const [selectedMemorySourceAssets, setSelectedMemorySourceAssets] = useState<WorkbenchMemorySourceAsset[]>([]);
   const [recentRuns, setRecentRuns] = useState<WorkbenchRun[]>([]);
   const [currentRun, setCurrentRun] = useState<WorkbenchRun | null>(null);
   const [runReport, setRunReport] = useState<WorkbenchRunReport | null>(null);
@@ -221,6 +223,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedPersonaSlug) return;
     setSelectedMemoryNode(null);
+    setSelectedMemorySourceAssets([]);
     void refreshPersona(selectedPersonaSlug);
     void refreshThreads(selectedPersonaSlug);
     void refreshRuns(selectedPersonaSlug);
@@ -234,6 +237,7 @@ export default function App() {
       setEvidenceImports([]);
       setTrainingPreps([]);
       setSelectedMemoryNode(null);
+      setSelectedMemorySourceAssets([]);
       return;
     }
     void refreshConversation(selectedConversationId);
@@ -386,6 +390,7 @@ export default function App() {
       setEvidenceImports(nextImports);
       setTrainingPreps(nextTrainingPreps);
       setSelectedMemoryNode(null);
+      setSelectedMemorySourceAssets([]);
       setError(null);
     } catch (err) {
       reportError(err);
@@ -442,6 +447,7 @@ export default function App() {
       setEvidenceImports([]);
       setTrainingPreps([]);
       setSelectedMemoryNode(null);
+      setSelectedMemorySourceAssets([]);
       setError(null);
     } catch (err) {
       reportError(err);
@@ -468,6 +474,7 @@ export default function App() {
       setEvidenceImports(nextImports);
       setTrainingPreps(nextTrainingPreps);
       setSelectedMemoryNode(null);
+      setSelectedMemorySourceAssets([]);
       await refreshThreads(selectedPersonaSlug);
       setError(null);
     } catch (err) {
@@ -630,8 +637,12 @@ export default function App() {
   async function handleInspectMemory(memoryId: string) {
     if (!selectedPersonaSlug) return;
     try {
-      const node = await api.getMemoryNode(selectedPersonaSlug, memoryId);
+      const [node, assets] = await Promise.all([
+        api.getMemoryNode(selectedPersonaSlug, memoryId),
+        api.getMemoryNodeSourceAssets(selectedPersonaSlug, memoryId),
+      ]);
       setSelectedMemoryNode(node);
+      setSelectedMemorySourceAssets(assets);
       setActiveTab('Citations');
       setNotice('Memory detail loaded.');
       setError(null);
@@ -888,6 +899,7 @@ export default function App() {
         candidates={candidates}
         evidenceImports={evidenceImports}
         selectedMemoryNode={selectedMemoryNode}
+        selectedMemorySourceAssets={selectedMemorySourceAssets}
         promotionHandoffs={promotionHandoffs}
         trainingPreps={trainingPreps}
         recentRuns={recentRuns}

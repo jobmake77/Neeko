@@ -131,7 +131,7 @@
 5. 视频原始媒体文件仍依赖转写能力；但 transcript-first 文件已经可以直接接入 workbench
 6. 线程状态目前仍是轻量本地状态，不包含多人协作、标签体系或服务端同步
 7. run center 目前已经支持基础搜索、状态筛选、类型筛选和状态汇总，并且训练面板能看到第一层 run detail drill-down；但还没有完整的长期历史与深层详情页
-8. source drill-down 已经支持 candidate / handoff / run prep 的第一层来源回看，并且 citation 可展开到 memory node detail；但 citation 到更底层 source asset 的跳转仍然偏浅
+8. source drill-down 已经支持 candidate / handoff / run prep 的第一层来源回看，并且 citation 可展开到 memory node detail 与统一 source assets；但 citation 到更底层 chunk / raw evidence 的逐条定位仍然偏浅
 9. guidance card 是启发式产品层，不替代正式实验结果与训练报告判断
 
 ## 5. 当前工作台新增交接层

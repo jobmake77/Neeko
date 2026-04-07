@@ -10,6 +10,18 @@ export const CitationItemSchema = z.object({
 });
 export type CitationItem = z.infer<typeof CitationItemSchema>;
 
+export const WorkbenchMemorySourceAssetSchema = z.object({
+  kind: z.enum(['web_url', 'local_file', 'evidence_import', 'training_prep', 'promotion_handoff', 'synthetic']),
+  title: z.string(),
+  summary: z.string(),
+  id: z.string().optional(),
+  path: z.string().optional(),
+  url: z.string().optional(),
+  badges: z.array(z.string()).default([]),
+  metadata: z.record(z.string(), z.string()).optional(),
+});
+export type WorkbenchMemorySourceAsset = z.infer<typeof WorkbenchMemorySourceAssetSchema>;
+
 export const ConversationSchema = z.object({
   id: z.string().uuid(),
   persona_slug: z.string(),

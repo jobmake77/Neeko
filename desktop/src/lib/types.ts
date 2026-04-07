@@ -66,6 +66,17 @@ export interface WorkbenchMemoryNode {
   updated_at: string;
 }
 
+export interface WorkbenchMemorySourceAsset {
+  kind: 'web_url' | 'local_file' | 'evidence_import' | 'training_prep' | 'promotion_handoff' | 'synthetic';
+  title: string;
+  summary: string;
+  id?: string;
+  path?: string;
+  url?: string;
+  badges?: string[];
+  metadata?: Record<string, string>;
+}
+
 export interface Conversation {
   id: string;
   persona_slug: string;

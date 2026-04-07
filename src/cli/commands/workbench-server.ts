@@ -107,6 +107,16 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const personaMemorySourceAssetsMatch = path.match(/^\/api\/personas\/([^/]+)\/memory-nodes\/([^/]+)\/source-assets$/);
+      if (req.method === 'GET' && personaMemorySourceAssetsMatch) {
+        const assets = await service.getMemoryNodeSourceAssets(
+          decodeURIComponent(personaMemorySourceAssetsMatch[1]),
+          decodeURIComponent(personaMemorySourceAssetsMatch[2])
+        );
+        writeJson(res, 200, assets);
+        return;
+      }
+
       const personaConversationsMatch = path.match(/^\/api\/personas\/([^/]+)\/conversations$/);
       if (req.method === 'GET' && personaConversationsMatch) {
         writeJson(res, 200, service.listConversations(decodeURIComponent(personaConversationsMatch[1])));

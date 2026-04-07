@@ -33,6 +33,7 @@ import {
   TrainingPrepArtifact,
   SessionSummary,
   WorkbenchEvidenceImport,
+  WorkbenchMemorySourceAsset,
   WorkbenchRun,
   WorkbenchRunReport,
 } from '../models/workbench.js';
@@ -427,6 +428,131 @@ export class WorkbenchService {
       return null;
     }
     return store.getById(persona.memory_collection, nodeId);
+  }
+
+  async getMemoryNodeSourceAssets(personaSlug: string, nodeId: string): Promise<WorkbenchMemorySourceAsset[]> {
+    const node = await this.getMemoryNode(personaSlug, nodeId);
+    if (!node) return [];
+
+    const assets: WorkbenchMemorySourceAsset[] = [];
+    const seen = new Set<string>();
+    const add = (asset: WorkbenchMemorySourceAsset) => {
+      const key = JSON.stringify([asset.kind, asset.id ?? '', asset.path ?? '', asset.url ?? '', asset.title]);
+      if (seen.has(key)) return;
+      seen.add(key);
+      assets.push(asset);
+    };
+
+    const sourceUrl = node.source_url?.trim();
+    const evidenceImports = this.store.listEvidenceImports(personaSlug);
+    const trainingPreps = this.store.listTrainingPrepArtifacts(personaSlug);
+    const handoffs = this.store.listPromotionHandoffs(personaSlug);
+
+    if (sourceUrl) {
+      if (/^https?:\/\//i.test(sourceUrl)) {
+        add({
+          kind: 'web_url',
+          title: 'Source URL',
+          summary: sourceUrl,
+          url: sourceUrl,
+          badges: [node.source_type],
+        });
+      } else if (isAbsolute(sourceUrl)) {
+        add({
+          kind: 'local_file',
+          title: 'Local Source File',
+          summary: sourceUrl,
+          path: sourceUrl,
+          badges: [node.source_type, existsSync(sourceUrl) ? 'available' : 'missing'],
+        });
+      } else if (sourceUrl.startsWith('workbench:handoff:')) {
+        const handoffId = sourceUrl.slice('workbench:handoff:'.length);
+        const handoff = handoffs.find((item) => item.id === handoffId);
+        if (handoff) {
+          add({
+            kind: 'promotion_handoff',
+            title: 'Promotion Handoff',
+            summary: handoff.summary,
+            id: handoff.id,
+            badges: [handoff.status, `${handoff.items.length} items`],
+            metadata: {
+              conversation_id: handoff.conversation_id,
+              updated_at: handoff.updated_at,
+            },
+          });
+          trainingPreps
+            .filter((item) => item.handoff_id === handoff.id)
+            .forEach((prep) => {
+              add({
+                kind: 'training_prep',
+                title: 'Training Prep',
+                summary: prep.summary,
+                id: prep.id,
+                path: prep.documents_path,
+                badges: [prep.status, `${prep.item_count} docs`],
+                metadata: {
+                  evidence_index_path: prep.evidence_index_path,
+                  updated_at: prep.updated_at,
+                },
+              });
+            });
+        }
+      }
+    }
+
+    evidenceImports
+      .filter((item) =>
+        item.source_path === sourceUrl ||
+        item.artifacts.documents_path === sourceUrl ||
+        item.artifacts.evidence_index_path === sourceUrl
+      )
+      .forEach((item) => {
+        add({
+          kind: 'evidence_import',
+          title: 'Evidence Import',
+          summary: item.summary,
+          id: item.id,
+          path: item.artifacts.documents_path,
+          badges: [item.source_kind, `${item.stats.windows} windows`, `${item.stats.cross_session_stable_items} stable`],
+          metadata: {
+            evidence_index_path: item.artifacts.evidence_index_path,
+            source_path: item.source_path,
+            updated_at: item.updated_at,
+          },
+        });
+      });
+
+    trainingPreps
+      .filter((item) => item.documents_path === sourceUrl || item.evidence_index_path === sourceUrl)
+      .forEach((item) => {
+        add({
+          kind: 'training_prep',
+          title: 'Training Prep',
+          summary: item.summary,
+          id: item.id,
+          path: item.documents_path,
+          badges: [item.status, `${item.item_count} docs`],
+          metadata: {
+            evidence_index_path: item.evidence_index_path,
+            updated_at: item.updated_at,
+          },
+        });
+      });
+
+    if (assets.length === 0) {
+      add({
+        kind: 'synthetic',
+        title: 'No linked source asset yet',
+        summary:
+          node.source_type === 'custom'
+            ? 'This memory was synthesized during training or workbench adaptation, so it may not map to a single source asset.'
+            : 'This memory node currently exposes source metadata, but not a deeper linked asset yet.',
+        badges: [node.source_type],
+        metadata: sourceUrl ? { source_url: sourceUrl } : undefined,
+      });
+    }
+
+    return assets;
   }
 
   listRuns(personaSlug?: string): WorkbenchRun[] {

@@ -46,6 +46,7 @@ interface WorkbenchFormsProps {
   };
   onDefaultValuesChange: (patch: Partial<WorkbenchFormsProps['defaultValues']>) => void;
   serviceHealthy: boolean;
+  serviceConnectionState: 'checking' | 'connected' | 'recovering' | 'offline';
 }
 
 export function WorkbenchForms(props: WorkbenchFormsProps) {
@@ -68,6 +69,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
     defaultValues,
     onDefaultValuesChange,
     serviceHealthy,
+    serviceConnectionState,
   } = props;
   const [target, setTarget] = useState(defaultValues.createTarget);
   const [targetManifest, setTargetManifest] = useState(defaultValues.createTargetManifest);
@@ -241,6 +243,21 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
   };
 
   if (activeView === 'Settings') {
+    const serviceBadgeClass = serviceConnectionState === 'connected'
+      ? 'badge success'
+      : serviceConnectionState === 'recovering'
+        ? 'badge'
+        : serviceConnectionState === 'checking'
+          ? 'badge'
+          : 'badge warning';
+    const serviceLabel = serviceConnectionState === 'connected'
+      ? 'Connected'
+      : serviceConnectionState === 'recovering'
+        ? 'Recovering'
+        : serviceConnectionState === 'checking'
+          ? 'Checking'
+          : 'Offline';
+
     return (
       <section className="workspace panel form-panel">
         <div className="panel-header workspace-header">
@@ -248,9 +265,7 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
             <p className="eyebrow">Settings</p>
             <h2>Local Service</h2>
           </div>
-          <span className={serviceHealthy ? 'badge success' : 'badge warning'}>
-            {serviceHealthy ? 'Connected' : 'Offline'}
-          </span>
+          <span className={serviceBadgeClass}>{serviceLabel}</span>
         </div>
         <label className="field">
           <span>Workbench server URL</span>
@@ -265,9 +280,26 @@ export function WorkbenchForms(props: WorkbenchFormsProps) {
           The desktop shell talks to the structured local API. Default is `http://127.0.0.1:4310`.
         </p>
         <div className="settings-card">
-          <strong>Recommended local flow</strong>
+          <div className="list-card-top">
+            <strong>Connection behavior</strong>
+            <span className={serviceHealthy ? 'badge success' : 'badge warning'}>
+              {serviceHealthy ? 'ready' : 'attention'}
+            </span>
+          </div>
+          <p>
+            {serviceConnectionState === 'connected'
+              ? 'The desktop workbench is connected to the local structured API.'
+              : serviceConnectionState === 'recovering'
+                ? 'The desktop shell is restarting the local workbench service and will reconnect automatically.'
+                : serviceConnectionState === 'checking'
+                  ? 'The desktop shell is checking the local workbench service.'
+                  : 'The local workbench service is unavailable right now. The desktop shell will try to recover it automatically when you use a local URL.'}
+          </p>
+        </div>
+        <div className="settings-card">
+          <strong>Manual fallback</strong>
           <code>npm run workbench:server</code>
-          <code>npm --prefix desktop run dev</code>
+          <code>npm --prefix desktop run tauri:dev</code>
         </div>
       </section>
     );

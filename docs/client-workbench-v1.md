@@ -94,6 +94,7 @@
 13. 聊天区线程详情卡：created / updated / message_count / summary_updated
 14. Create / Train / Experiment / Export 参数面板扩展，已覆盖更多 CLI 真实参数
 15. Settings 支持手动刷新 service 健康状态并展示本地启动命令
+16. 桌面端在使用本地 URL 时，会自动尝试恢复本地 `workbench-server`，不再强依赖手动启动
 16. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
 17. Writeback panel 支持 candidate 状态筛选与排序（时间 / 置信度）
 18. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
@@ -124,7 +125,7 @@
 
 ### 3.3 当前限制
 
-1. Tauri 壳已建好，但当前环境没有 `cargo`，所以还没法在本机完成 Rust 打包验证
+1. 桌面端当前的本地 service 自举依赖本机 Node 环境与源码仓库路径；已能覆盖本地开发和源码运行，但还不是完全脱离源码目录的独立后端打包
 2. 会话候选生成目前先用轻量启发式，不额外增加一层昂贵 LLM 审核
 3. create/train/experiment/export 仍由现有 CLI 执行，本地 server 负责结构化调度与状态持久化
 4. handoff 目前仍是本地交接层，不包含正式审核流与一键写入能力
@@ -133,6 +134,23 @@
 7. run center 目前已经支持基础搜索、状态筛选、类型筛选和状态汇总，并且训练面板能看到第一层 run detail drill-down；但还没有完整的长期历史与深层详情页
 8. source drill-down 已经支持 candidate / handoff / run prep 的第一层来源回看，并且 citation 可展开到 memory node detail、统一 source assets 和 asset preview；但 citation 到更底层 chunk / raw evidence 的逐条定位仍然偏浅
 9. guidance card 是启发式产品层，不替代正式实验结果与训练报告判断
+
+## 4. 本地连接恢复
+
+桌面端当前的本地连接策略是：
+
+1. 当 `Workbench server URL` 指向 `http://127.0.0.1:*` 或 `http://localhost:*` 时，客户端优先按“本地模式”处理
+2. 首屏和手动刷新都会先做健康检查
+3. 如果健康检查失败，Tauri 壳会尝试自动拉起 `node dist/cli/index.js workbench-server --port <port>`
+4. 如果本地 `dist/` 还没准备好，桌面端会先尝试补一次 `npm run build`
+5. 服务恢复后，客户端自动重连并继续读取 persona / thread / run 数据
+6. 用户侧只看到 `checking / recovering / connected / offline` 这类产品态，不暴露底层 provider 或启动细节
+
+这层的目标是：
+
+1. 让桌面工作台真正拥有本地 service 生命周期
+2. 减少“先开 server 再开客户端”的手工步骤
+3. 继续把底层错误吸收到系统内部，而不是推给用户处理
 
 ## 5. 当前工作台新增交接层
 

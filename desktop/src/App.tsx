@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { ChatWorkspace } from './components/ChatWorkspace';
 import { InfoPanel } from './components/InfoPanel';
 import { NavigationRail } from './components/NavigationRail';
@@ -55,6 +56,14 @@ type WorkbenchFormDefaults = {
   experimentCompareTrainingSeed: boolean;
   exportFormat: string;
   exportOutputDir: string;
+};
+
+type ServiceConnectionState = 'checking' | 'connected' | 'recovering' | 'offline';
+
+type BootstrapWorkbenchServiceResult = {
+  status: 'spawned' | 'already_running';
+  port: number;
+  repo_root?: string | null;
 };
 
 function toUserMessage(error: unknown): string {
@@ -182,6 +191,7 @@ export default function App() {
   );
   const [apiBaseUrl, setApiBaseUrlState] = useState(getApiBaseUrl());
   const [serviceHealthy, setServiceHealthy] = useState(false);
+  const [serviceConnectionState, setServiceConnectionState] = useState<ServiceConnectionState>('checking');
   const [personas, setPersonas] = useState<PersonaSummary[]>([]);
   const [selectedPersonaSlug, setSelectedPersonaSlug] = useState<string | null>(
     () => window.localStorage.getItem(PERSONA_KEY)
@@ -216,8 +226,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    void refreshHealth();
-    void refreshPersonas();
+    void initializeWorkbench();
   }, []);
 
   useEffect(() => {
@@ -323,14 +332,38 @@ export default function App() {
     return { running, recovering, paused, completed };
   }, [recentRuns]);
 
-  async function refreshHealth() {
+  async function initializeWorkbench() {
+    const connected = await refreshHealth({ allowRecover: true, silent: true });
+    if (connected) {
+      await refreshPersonas();
+    }
+  }
+
+  async function refreshHealth(
+    options: { allowRecover?: boolean; silent?: boolean; baseUrl?: string } = {}
+  ): Promise<boolean> {
+    const { allowRecover = true, silent = false, baseUrl } = options;
+    const targetBaseUrl = baseUrl ?? apiBaseUrl;
+    setServiceConnectionState('checking');
     try {
       await api.health();
       setServiceHealthy(true);
+      setServiceConnectionState('connected');
       setError(null);
+      return true;
     } catch (err) {
       setServiceHealthy(false);
-      reportError(err);
+      if (allowRecover && canBootstrapLocalService(targetBaseUrl)) {
+        const recovered = await attemptServiceRecovery(targetBaseUrl);
+        if (recovered) {
+          return true;
+        }
+      }
+      setServiceConnectionState('offline');
+      if (!silent) {
+        reportError(err);
+      }
+      return false;
     }
   }
 
@@ -730,7 +763,44 @@ export default function App() {
   function handleApiBaseUrlChange(value: string) {
     setApiBaseUrlState(value);
     setApiBaseUrl(value);
-    void refreshHealth();
+    void refreshHealth({ allowRecover: true, silent: false, baseUrl: value });
+  }
+
+  async function handleRefreshConnection() {
+    const connected = await refreshHealth({ allowRecover: true, silent: false });
+    if (connected) {
+      await refreshPersonas();
+      if (selectedPersonaSlug) {
+        await refreshPersona(selectedPersonaSlug);
+        await refreshThreads(selectedPersonaSlug);
+        await refreshRuns(selectedPersonaSlug);
+      }
+    }
+  }
+
+  async function attemptServiceRecovery(baseUrl: string): Promise<boolean> {
+    if (!canBootstrapLocalService(baseUrl)) {
+      return false;
+    }
+    setServiceConnectionState('recovering');
+    try {
+      const result = await bootstrapWorkbenchService(getLocalWorkbenchPort(baseUrl));
+      const recovered = await waitForServiceHealth();
+      if (!recovered) {
+        return false;
+      }
+      setServiceHealthy(true);
+      setServiceConnectionState('connected');
+      setError(null);
+      setNotice(
+        result.status === 'spawned'
+          ? 'Local workbench service recovered.'
+          : 'Local workbench service is ready.'
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function handleFormDefaultsChange(patch: Partial<WorkbenchFormDefaults>) {
@@ -883,10 +953,11 @@ export default function App() {
             onCopyValue={handleCopyValue}
             apiBaseUrl={apiBaseUrl}
             onApiBaseUrlChange={handleApiBaseUrlChange}
-            onRefreshHealth={refreshHealth}
+            onRefreshHealth={handleRefreshConnection}
             defaultValues={formDefaults}
             onDefaultValuesChange={handleFormDefaultsChange}
             serviceHealthy={serviceHealthy}
+            serviceConnectionState={serviceConnectionState}
           />
         )}
         {error ? <div className="error-banner">{error}</div> : null}
@@ -919,6 +990,50 @@ export default function App() {
       />
     </div>
   );
+}
+
+function canBootstrapLocalService(baseUrl: string): boolean {
+  if (!isTauriRuntime()) return false;
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== 'http:') return false;
+    return ['127.0.0.1', 'localhost'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function getLocalWorkbenchPort(baseUrl: string): number {
+  try {
+    const parsed = new URL(baseUrl);
+    return parsed.port ? Number(parsed.port) : 4310;
+  } catch {
+    return 4310;
+  }
+}
+
+function isTauriRuntime(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+async function bootstrapWorkbenchService(port: number): Promise<BootstrapWorkbenchServiceResult> {
+  return invoke<BootstrapWorkbenchServiceResult>('bootstrap_workbench_service', { port });
+}
+
+async function waitForServiceHealth(attempts = 12, delayMs = 700): Promise<boolean> {
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      await api.health();
+      return true;
+    } catch {
+      await sleep(delayMs);
+    }
+  }
+  return false;
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
 }
 
 function deriveActiveRunBanner(run: WorkbenchRun | null): {

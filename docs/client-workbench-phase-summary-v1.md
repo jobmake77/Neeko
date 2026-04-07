@@ -54,6 +54,7 @@
 4. `Experiment` 负责 profile / routing / seed 对照
 5. `Export` 负责导出
 6. `Settings` 负责本地服务与连接状态
+7. 桌面端现在会在本地 URL 下自动恢复 `workbench-server`
 
 ### 2.3 工作台 guidance 层已经补齐
 
@@ -97,6 +98,7 @@
 2. 轻量 `run center`
 3. `running / recovering / completed / paused, progress saved` 的产品态表达
 4. 自动恢复后的 attempt 展示
+5. 本地 service 自动检测、自动拉起、自动重连
 
 这件事的意义在于：
 
@@ -215,9 +217,15 @@
 2. 线程还没有标签体系、分组体系和更强的历史管理
 3. citation / memory source 已经进入第一层下钻，但 retrieved memory 到正式来源资产的链路还不够深
 4. handoff / prep 仍然主要是单线程内部链路，还没有更强的跨线程整理体验
-5. 还没有针对桌面端做完整的 Rust 打包验证，因为当前环境没有 `cargo`
+5. 桌面端已经能完成本机 Rust 编译与原生启动验证，但“完全脱离源码仓库的独立本地 service 打包”还没有收口
 
 ## 6. 下一阶段最值得继续补什么
+
+当前这一轮补完后，下一阶段更值得继续补的是：
+
+1. 把本地 service 自举从“源码仓库可运行”继续推进到“打包后也能稳定定位 core/runtime”
+2. 把聊天和视频的 Evidence Layer 能力正式接进 workbench 主工作流
+3. 继续收紧 Chat 区的消息体验、引用展示和写回候选整理体验
 
 当前最自然的下一阶段，不是重做架构，而是在现有 V1 上补两个方向：
 

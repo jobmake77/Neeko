@@ -866,6 +866,7 @@ export default function App() {
         profile={selectedPersona}
         bundle={bundle}
         candidates={candidates}
+        evidenceImports={evidenceImports}
         promotionHandoffs={promotionHandoffs}
         trainingPreps={trainingPreps}
         recentRuns={recentRuns}

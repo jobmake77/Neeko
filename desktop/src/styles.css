@@ -194,6 +194,24 @@ button {
   margin-top: 12px;
 }
 
+.source-link-list,
+.context-entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.source-message-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(31, 36, 48, 0.08);
+}
+
 .handoff-item-card {
   padding: 12px;
   background: rgba(248, 245, 239, 0.92);
@@ -243,6 +261,12 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .badge,
@@ -796,6 +820,10 @@ pre {
   }
 
   .run-center-list {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-grid {
     grid-template-columns: 1fr;
   }
 

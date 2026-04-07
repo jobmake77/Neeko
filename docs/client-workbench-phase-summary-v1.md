@@ -213,7 +213,7 @@
 
 1. run center 已经升级到 V2 的第一步，支持最近 run 的搜索、状态筛选、类型筛选和汇总 badge，但详情 drill-down 仍然偏轻量
 2. 线程还没有标签体系、分组体系和更强的历史管理
-3. citation / memory source 目前只到摘要和 id，还没有更深的 source drill-down
+3. citation / memory source 已经进入第一层下钻，但 retrieved memory 到正式来源资产的链路还不够深
 4. handoff / prep 仍然主要是单线程内部链路，还没有更强的跨线程整理体验
 5. 还没有针对桌面端做完整的 Rust 打包验证，因为当前环境没有 `cargo`
 
@@ -237,6 +237,13 @@
 3. 更长时间范围的 run 历史浏览
 
 ### 6.2 Source Drill-down
+
+当前已经完成：
+
+1. writeback candidate 可以回看到 source message 片段
+2. handoff item 可以回看到 source message 片段
+3. training run 可以看到关联的 prep / evidence import / context path / report path
+4. chat message 可以看到 writeback candidate id
 
 建议继续补：
 

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, TrainingPrepArtifact, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
+import { InfoTab, MemoryCandidate, PersonaWorkbenchProfile, PromotionHandoff, TrainingPrepArtifact, WorkbenchEvidenceImport, WorkbenchRun, WorkbenchRunReport } from '../lib/types';
 import { ConversationBundle } from '../lib/types';
 
 const TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Writeback', 'Training'];
@@ -10,6 +10,7 @@ interface InfoPanelProps {
   profile: PersonaWorkbenchProfile | null;
   bundle: ConversationBundle | null;
   candidates: MemoryCandidate[];
+  evidenceImports: WorkbenchEvidenceImport[];
   promotionHandoffs: PromotionHandoff[];
   trainingPreps: TrainingPrepArtifact[];
   recentRuns: WorkbenchRun[];
@@ -33,6 +34,7 @@ export function InfoPanel({
   profile,
   bundle,
   candidates,
+  evidenceImports,
   promotionHandoffs,
   trainingPreps,
   recentRuns,
@@ -60,6 +62,10 @@ export function InfoPanel({
   const readyCount = candidates.filter((item) => item.promotion_state === 'ready').length;
   const selectedHandoff = promotionHandoffs.find((item) => item.id === selectedHandoffId) ?? promotionHandoffs[0] ?? null;
   const selectedPrep = trainingPreps.find((item) => item.id === selectedPrepId) ?? trainingPreps[0] ?? null;
+  const messageLookup = useMemo(
+    () => new Map((bundle?.messages ?? []).map((item) => [item.id, item])),
+    [bundle?.messages]
+  );
   const runContext = (runReport?.context && typeof runReport.context === 'object') ? runReport.context as Record<string, unknown> : null;
   const prepContext =
     runContext && typeof runContext.prep_context === 'object' && runContext.prep_context
@@ -67,6 +73,15 @@ export function InfoPanel({
       : null;
   const runPresentation = deriveRunPresentation(runReport);
   const runSummary = deriveRunSummary(runReport?.report);
+  const runContextEntries = deriveInspectableEntries(runContext, ['prep_context']);
+  const selectedRunPrep =
+    typeof prepContext?.prep_artifact_id === 'string'
+      ? trainingPreps.find((item) => item.id === prepContext.prep_artifact_id) ?? null
+      : null;
+  const selectedRunEvidenceImport =
+    typeof prepContext?.evidence_import_id === 'string'
+      ? evidenceImports.find((item) => item.id === prepContext.evidence_import_id) ?? null
+      : null;
   const writebackFlow = deriveWritebackFlow({
     pendingCount,
     acceptedCount,
@@ -129,8 +144,21 @@ export function InfoPanel({
         <div className="inspector-section">
           {(latestAssistant?.citation_items ?? []).map((item) => (
             <article key={item.id} className="mini-card">
-              <strong>{item.soul_dimension ?? item.category ?? 'memory'}</strong>
+              <div className="list-card-top">
+                <strong>{item.soul_dimension ?? item.category ?? 'memory'}</strong>
+                <span className="badge">{item.confidence ? `${Math.round(item.confidence * 100)}%` : 'retrieved'}</span>
+              </div>
               <p>{item.summary}</p>
+              <div className="writeback-summary">
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(item.id, 'Memory id')}
+                >
+                  Copy Memory Id
+                </button>
+                {item.category ? <span className="badge">{item.category}</span> : null}
+              </div>
             </article>
           ))}
           {!latestAssistant?.citation_items.length ? <div className="empty-state">No retrieved memory on the latest turn.</div> : null}
@@ -141,9 +169,22 @@ export function InfoPanel({
         <div className="inspector-section">
           {(latestAssistant?.citation_items ?? []).map((item) => (
             <article key={item.id} className="mini-card">
-              <strong>{item.id}</strong>
+              <div className="list-card-top">
+                <strong>{item.id}</strong>
+                <span className="badge">{item.confidence ? `${Math.round(item.confidence * 100)}%` : 'retrieved'}</span>
+              </div>
               <p>{item.summary}</p>
               <small>{item.category} · {item.soul_dimension}</small>
+              <div className="writeback-summary">
+                <button
+                  type="button"
+                  className="action-button secondary"
+                  onClick={() => void onCopyValue(item.id, 'Citation id')}
+                >
+                  Copy Citation Id
+                </button>
+                {item.soul_dimension ? <span className="badge success">{item.soul_dimension}</span> : null}
+              </div>
             </article>
           ))}
           {!latestAssistant?.citation_items.length ? <div className="empty-state">No citations for the current thread yet.</div> : null}
@@ -200,8 +241,8 @@ export function InfoPanel({
                 {selectedHandoff.status} · {new Date(selectedHandoff.updated_at).toLocaleString()}
               </small>
               {selectedHandoff.session_summary ? <p>{selectedHandoff.session_summary}</p> : null}
-              <div className="handoff-meta-grid">
-                <span className="badge">{selectedHandoff.items.length} items</span>
+                <div className="handoff-meta-grid">
+                  <span className="badge">{selectedHandoff.items.length} items</span>
                 <span className="badge">{selectedHandoff.candidate_ids.length} ids</span>
                 <span className="badge">{selectedHandoff.persona_slug}</span>
               </div>
@@ -265,20 +306,30 @@ export function InfoPanel({
                   Create Training Prep
                 </button>
               </div>
-              <div className="handoff-item-list">
-                {selectedHandoff.items.map((item) => (
-                  <article key={item.candidate_id} className="mini-card handoff-item-card">
+                <div className="handoff-item-list">
+                  {selectedHandoff.items.map((item) => (
+                    <article key={item.candidate_id} className="mini-card handoff-item-card">
                     <div className="list-card-top">
                       <strong>{item.candidate_type}</strong>
                       <span className="badge">{Math.round(item.confidence * 100)}%</span>
                     </div>
                     <p>{item.content}</p>
-                    <small>{item.candidate_id}</small>
-                    {item.source_message_ids.length > 0 ? (
-                      <small>sources: {item.source_message_ids.join(', ')}</small>
-                    ) : null}
-                  </article>
-                ))}
+                      <small>{item.candidate_id}</small>
+                      {item.source_message_ids.length > 0 ? (
+                        <>
+                          <small>sources: {item.source_message_ids.join(', ')}</small>
+                          <div className="source-link-list">
+                            {deriveSourceMessages(item.source_message_ids, messageLookup).map((message) => (
+                              <article key={message.id} className="source-message-card">
+                                <strong>{message.role === 'assistant' ? 'Persona' : 'You'}</strong>
+                                <small>{trimPreview(message.content)}</small>
+                              </article>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+                    </article>
+                  ))}
               </div>
             </article>
           ) : (
@@ -312,6 +363,16 @@ export function InfoPanel({
               <small>
                 {Math.round(item.confidence * 100)}% · {item.status} · promo {item.promotion_state} · {new Date(item.created_at).toLocaleString()}
               </small>
+              {item.source_message_ids.length > 0 ? (
+                <div className="source-link-list">
+                  {deriveSourceMessages(item.source_message_ids, messageLookup).map((message) => (
+                    <article key={message.id} className="source-message-card">
+                      <strong>{message.role === 'assistant' ? 'Persona' : 'You'}</strong>
+                      <small>{trimPreview(message.content)}</small>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
               <div className="candidate-actions">
                 <button
                   type="button"
@@ -528,6 +589,115 @@ export function InfoPanel({
                       <span className="badge">{prepContext.evidence_import_id}</span>
                     ) : null}
                   </div>
+                  {selectedRunPrep ? (
+                    <article className="workflow-card">
+                      <div className="list-card-top">
+                        <strong>Linked Training Prep</strong>
+                        <span className="badge success">{selectedRunPrep.status}</span>
+                      </div>
+                      <p>{selectedRunPrep.summary}</p>
+                      <div className="writeback-summary">
+                        <span className="badge">{selectedRunPrep.item_count} items</span>
+                        <button
+                          type="button"
+                          className="action-button secondary"
+                          onClick={() => onUseTrainingPrep(selectedRunPrep)}
+                        >
+                          Use This Prep
+                        </button>
+                      </div>
+                    </article>
+                  ) : null}
+                  {selectedRunEvidenceImport ? (
+                    <article className="workflow-card">
+                      <div className="list-card-top">
+                        <strong>Linked Evidence Import</strong>
+                        <span className="badge">{selectedRunEvidenceImport.source_kind}</span>
+                      </div>
+                      <p>{selectedRunEvidenceImport.summary}</p>
+                      <div className="writeback-summary">
+                        <span className="badge">{selectedRunEvidenceImport.stats.sessions} sessions</span>
+                        <span className="badge">{selectedRunEvidenceImport.stats.windows} windows</span>
+                        <span className="badge success">{selectedRunEvidenceImport.stats.cross_session_stable_items} stable</span>
+                      </div>
+                      <code>{selectedRunEvidenceImport.artifacts.documents_path}</code>
+                      <code>{selectedRunEvidenceImport.artifacts.evidence_index_path}</code>
+                    </article>
+                  ) : null}
+                </article>
+              ) : null}
+
+              {runReport ? (
+                <article className="mini-card training-log-card">
+                  <strong>Run Detail</strong>
+                  <div className="detail-grid">
+                    <div className="metric-group">
+                      <strong>Persona</strong>
+                      <span>{runReport.run.persona_slug ?? 'not set'}</span>
+                    </div>
+                    <div className="metric-group">
+                      <strong>Command Steps</strong>
+                      <span>{runReport.run.command.length}</span>
+                    </div>
+                  </div>
+                  {runReport.run.command.length > 0 ? (
+                    <div className="context-entry-list">
+                      <strong>Command</strong>
+                      <code>{runReport.run.command.join(' ')}</code>
+                    </div>
+                  ) : null}
+                  <div className="context-entry-list">
+                    {runReport.run.report_path ? (
+                      <article className="source-message-card">
+                        <strong>Report Path</strong>
+                        <small>{runReport.run.report_path}</small>
+                        <button
+                          type="button"
+                          className="action-button secondary"
+                          onClick={() => void onCopyValue(runReport.run.report_path ?? '', 'Run report path')}
+                        >
+                          Copy Path
+                        </button>
+                      </article>
+                    ) : null}
+                    {runReport.context_path ? (
+                      <article className="source-message-card">
+                        <strong>Context Path</strong>
+                        <small>{runReport.context_path}</small>
+                        <button
+                          type="button"
+                          className="action-button secondary"
+                          onClick={() => void onCopyValue(runReport.context_path ?? '', 'Run context path')}
+                        >
+                          Copy Path
+                        </button>
+                      </article>
+                    ) : null}
+                    {typeof runReport.run.log_path === 'string' ? (
+                      <article className="source-message-card">
+                        <strong>Log Path</strong>
+                        <small>{runReport.run.log_path}</small>
+                        <button
+                          type="button"
+                          className="action-button secondary"
+                          onClick={() => void onCopyValue(runReport.run.log_path ?? '', 'Run log path')}
+                        >
+                          Copy Path
+                        </button>
+                      </article>
+                    ) : null}
+                  </div>
+                  {runContextEntries.length > 0 ? (
+                    <div className="context-entry-list">
+                      <strong>Context Signals</strong>
+                      {runContextEntries.map((entry) => (
+                        <article key={entry.label} className="source-message-card">
+                          <strong>{entry.label}</strong>
+                          <small>{entry.value}</small>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
               ) : null}
             </div>
@@ -536,6 +706,46 @@ export function InfoPanel({
       ) : null}
     </aside>
   );
+}
+
+function deriveSourceMessages(
+  sourceMessageIds: string[],
+  messageLookup: Map<string, ConversationBundle['messages'][number]>
+): ConversationBundle['messages'] {
+  return sourceMessageIds
+    .map((id) => messageLookup.get(id))
+    .filter((item): item is ConversationBundle['messages'][number] => Boolean(item));
+}
+
+function trimPreview(value: string, limit = 180): string {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit).trimEnd()}...`;
+}
+
+function deriveInspectableEntries(
+  input: Record<string, unknown> | null,
+  excludedKeys: string[] = []
+): Array<{ label: string; value: string }> {
+  if (!input) return [];
+  return Object.entries(input)
+    .filter(([key]) => !excludedKeys.includes(key))
+    .map(([key, value]) => ({
+      label: key.replace(/_/g, ' '),
+      value: formatInspectableValue(value),
+    }))
+    .filter((entry) => entry.value.length > 0);
+}
+
+function formatInspectableValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map((item) => formatInspectableValue(item)).filter(Boolean).join(', ');
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function deriveRunPresentation(runReport: WorkbenchRunReport | null): {

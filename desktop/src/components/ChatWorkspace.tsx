@@ -339,12 +339,13 @@ export function ChatWorkspace({
               <span>{new Date(item.created_at).toLocaleTimeString()}</span>
             </header>
             <p>{item.content}</p>
-            {(item.persona_dimensions.length > 0 || item.citation_items.length > 0 || item.retrieved_memory_ids.length > 0) ? (
+            {(item.persona_dimensions.length > 0 || item.citation_items.length > 0 || item.retrieved_memory_ids.length > 0 || item.writeback_candidate_ids.length > 0) ? (
               <div className="message-signal-stack">
                 <div className="writeback-summary">
                   {item.persona_dimensions.length > 0 ? <span className="badge success">{item.persona_dimensions.length} dimensions</span> : null}
                   {item.citation_items.length > 0 ? <span className="badge">{item.citation_items.length} citations</span> : null}
                   {item.retrieved_memory_ids.length > 0 ? <span className="badge">{item.retrieved_memory_ids.length} memories</span> : null}
+                  {item.writeback_candidate_ids.length > 0 ? <span className="badge warning">{item.writeback_candidate_ids.length} candidates</span> : null}
                   <button
                     type="button"
                     className="action-button secondary signal-toggle-button"
@@ -384,6 +385,23 @@ export function ChatWorkspace({
                               onClick={() => void onCopyValue(memoryId, 'Memory id')}
                             >
                               {memoryId}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {item.writeback_candidate_ids.length > 0 ? (
+                      <div className="message-memory-list">
+                        <strong>Writeback Candidates</strong>
+                        <div className="writeback-summary">
+                          {item.writeback_candidate_ids.map((candidateId) => (
+                            <button
+                              key={candidateId}
+                              type="button"
+                              className="badge memory-chip-button"
+                              onClick={() => void onCopyValue(candidateId, 'Writeback candidate id')}
+                            >
+                              {candidateId}
                             </button>
                           ))}
                         </div>

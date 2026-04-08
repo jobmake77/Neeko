@@ -186,7 +186,7 @@ export function PersonaLibraryScreen({
         </section>
 
         <section className="detail-card wide">
-          <h3>{isZh ? '编辑来源信息' : 'Edit Source'}</h3>
+          <h3>{isZh ? '来源设置' : 'Source Settings'}</h3>
           <div className="form-card embedded">
             <label className="field-block">
               <span>{isZh ? '名称' : 'Name'}</span>

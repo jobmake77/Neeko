@@ -12,7 +12,7 @@ export function MiniRail({ activeView, onChangeView }: MiniRailProps) {
 
   const items: Array<{ key: ShellView; label: string; short: string }> = [
     { key: 'chat', label: isZh ? '聊天' : 'Chat', short: '聊' },
-    { key: 'personas', label: isZh ? '人格库' : 'Personas', short: '库' },
+    { key: 'personas', label: isZh ? '人格库' : 'Library', short: '库' },
     { key: 'settings', label: isZh ? '设置' : 'Settings', short: '设' },
   ];
 
@@ -31,7 +31,6 @@ export function MiniRail({ activeView, onChangeView }: MiniRailProps) {
             title={item.label}
           >
             <span className="rail-button-short">{item.short}</span>
-            <span className="rail-button-label">{item.label}</span>
           </button>
         ))}
       </nav>

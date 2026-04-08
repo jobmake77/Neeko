@@ -38,11 +38,12 @@ export function ThreadSidebar({
     <aside className="sidebar-panel">
       <div className="sidebar-header">
         <div>
-          <p className="sidebar-eyebrow">{isZh ? '当前人格' : 'Current Persona'}</p>
+          <p className="sidebar-eyebrow">{isZh ? '聊天' : 'Chat'}</p>
           <select
             className="sidebar-select"
             value={selectedPersonaSlug ?? ''}
             onChange={(event) => onSelectPersona(event.target.value)}
+            aria-label={isZh ? '选择人格' : 'Select persona'}
           >
             {personas.length === 0 ? <option value="">{isZh ? '暂无人格' : 'No personas'}</option> : null}
             {personas.map((persona) => (
@@ -57,12 +58,15 @@ export function ThreadSidebar({
         </button>
       </div>
 
-      <label className="search-field">
-        <span>{isZh ? '搜索线程' : 'Search threads'}</span>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isZh ? '按标题或内容查找' : 'Find by title or preview'} />
-      </label>
+      <input
+        className="sidebar-search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder={isZh ? '搜索线程' : 'Search threads'}
+        aria-label={isZh ? '搜索线程' : 'Search threads'}
+      />
 
-      <div className="sidebar-actions">
+      <div className="sidebar-actions quiet">
         <button type="button" className="text-action" onClick={onRenameConversation} disabled={!selectedConversationId}>
           {isZh ? '重命名' : 'Rename'}
         </button>

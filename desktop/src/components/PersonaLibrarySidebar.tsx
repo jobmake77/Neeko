@@ -32,10 +32,13 @@ export function PersonaLibrarySidebar({ personas, selectedPersonaSlug, onSelectP
         </button>
       </div>
 
-      <label className="search-field">
-        <span>{isZh ? '搜索人格' : 'Search personas'}</span>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isZh ? '按名称或标识查找' : 'Find by name or slug'} />
-      </label>
+      <input
+        className="sidebar-search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder={isZh ? '搜索人格' : 'Search personas'}
+        aria-label={isZh ? '搜索人格' : 'Search personas'}
+      />
 
       <div className="list-stack">
         {filtered.map((persona) => (

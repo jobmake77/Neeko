@@ -35,14 +35,14 @@ export function ChatWorkspace({ persona, bundle, loading, onSend, onCopyMessage 
 
   return (
     <section className="screen chat-screen">
-      <header className="screen-header">
-        <div>
+      <header className="chat-header">
+        <div className="chat-header-meta">
           <p className="screen-eyebrow">{persona ? persona.name : isZh ? '未选择人格' : 'No persona selected'}</p>
           <h1>{bundle?.conversation.title ?? (isZh ? '开始一段新对话' : 'Start a new conversation')}</h1>
-          <p className="screen-subtitle">
-            {bundle ? new Date(bundle.conversation.updated_at).toLocaleString() : (isZh ? '选择左侧线程，或直接新建开始聊天。' : 'Select a thread on the left or create a new one to begin.')}
-          </p>
         </div>
+        <p className="screen-subtitle chat-subtitle">
+          {bundle ? new Date(bundle.conversation.updated_at).toLocaleString() : (isZh ? '选择左侧线程，或直接新建开始聊天。' : 'Select a thread on the left or create a new one to begin.')}
+        </p>
       </header>
       <div className="message-list">
         {bundle?.messages.length ? bundle.messages.map((item) => (

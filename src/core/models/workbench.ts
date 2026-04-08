@@ -169,6 +169,38 @@ export const WorkbenchRunReportSchema = z.object({
 });
 export type WorkbenchRunReport = z.infer<typeof WorkbenchRunReportSchema>;
 
+export const PersonaConfigSchema = z.object({
+  persona_slug: z.string(),
+  name: z.string(),
+  source_type: z.enum(['social', 'chat_file', 'video_file']),
+  source_target: z.string().optional(),
+  source_path: z.string().optional(),
+  target_manifest_path: z.string().optional(),
+  platform: z.string().optional(),
+  updated_at: z.string().datetime(),
+});
+export type PersonaConfig = z.infer<typeof PersonaConfigSchema>;
+
+export const PersonaDetailSchema = z.object({
+  persona: z.object({
+    slug: z.string(),
+    name: z.string(),
+    status: z.string(),
+    doc_count: z.number().int().min(0),
+    memory_node_count: z.number().int().min(0),
+    training_rounds: z.number().int().min(0),
+    updated_at: z.string().datetime(),
+  }),
+  config: PersonaConfigSchema,
+});
+export type PersonaDetail = z.infer<typeof PersonaDetailSchema>;
+
+export const PersonaMutationResultSchema = z.object({
+  persona: PersonaDetailSchema.shape.persona,
+  run: WorkbenchRunSchema.nullable(),
+});
+export type PersonaMutationResult = z.infer<typeof PersonaMutationResultSchema>;
+
 export interface PersonaSummary {
   slug: string;
   name: string;

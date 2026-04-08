@@ -41,12 +41,13 @@ export function createPersona(
   name: string,
   mode: 'single' | 'fusion',
   sourceTargets: string[],
-  dirExists: (slug: string) => boolean = () => false
+  dirExists: (slug: string) => boolean = () => false,
+  fixedSlug?: string
 ): Persona {
-  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const base = fixedSlug?.trim() || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   let slug = base;
   let counter = 1;
-  while (dirExists(slug)) {
+  while (!fixedSlug && dirExists(slug)) {
     slug = `${base}-${counter++}`;
   }
   const now = new Date().toISOString();

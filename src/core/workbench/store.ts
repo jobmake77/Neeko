@@ -11,6 +11,8 @@ import {
   MemoryCandidateSchema,
   PromotionHandoff,
   PromotionHandoffSchema,
+  PersonaConfig,
+  PersonaConfigSchema,
   SessionSummary,
   SessionSummarySchema,
   TrainingPrepArtifact,
@@ -72,6 +74,14 @@ export class WorkbenchStore {
     return join(this.baseDir, 'training-preps');
   }
 
+  getPersonaDir(slug: string): string {
+    return settings.getPersonaDir(slug);
+  }
+
+  getPersonaConfigPath(slug: string): string {
+    return join(this.getPersonaDir(slug), 'persona-config.json');
+  }
+
   private getConversationDir(id: string): string {
     return join(this.getConversationsDir(), id);
   }
@@ -104,8 +114,16 @@ export class WorkbenchStore {
     return join(this.getEvidenceImportsDir(), `${id}.json`);
   }
 
+  private getEvidenceImportDir(id: string): string {
+    return join(this.getEvidenceImportsDir(), id);
+  }
+
   private getTrainingPrepPath(id: string): string {
     return join(this.getTrainingPrepDir(), `${id}.json`);
+  }
+
+  private getTrainingPrepDirPath(id: string): string {
+    return join(this.getTrainingPrepDir(), id);
   }
 
   listRuns(personaSlug?: string): WorkbenchRun[] {
@@ -276,6 +294,13 @@ export class WorkbenchStore {
     return this.savePromotionHandoff({ ...current, ...patch });
   }
 
+  deletePromotionHandoff(id: string): boolean {
+    const path = this.getHandoffPath(id);
+    if (!existsSync(path)) return false;
+    rmSync(path, { force: true });
+    return true;
+  }
+
   saveEvidenceImport(entry: WorkbenchEvidenceImport): WorkbenchEvidenceImport {
     const parsed = WorkbenchEvidenceImportSchema.parse(entry);
     writeJsonFile(this.getEvidenceImportPath(parsed.id), parsed);
@@ -305,6 +330,15 @@ export class WorkbenchStore {
     return parsed;
   }
 
+  deleteEvidenceImport(id: string): boolean {
+    const filePath = this.getEvidenceImportPath(id);
+    const dirPath = this.getEvidenceImportDir(id);
+    const exists = existsSync(filePath) || existsSync(dirPath);
+    if (existsSync(filePath)) rmSync(filePath, { force: true });
+    if (existsSync(dirPath)) rmSync(dirPath, { recursive: true, force: true });
+    return exists;
+  }
+
   getTrainingPrepArtifact(id: string): TrainingPrepArtifact | null {
     const raw = readJsonFile<TrainingPrepArtifact | null>(this.getTrainingPrepPath(id), null);
     if (!raw) return null;
@@ -320,5 +354,67 @@ export class WorkbenchStore {
       .filter((item) => !personaSlug || item.persona_slug === personaSlug)
       .filter((item) => !conversationId || item.conversation_id === conversationId)
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  deleteTrainingPrepArtifact(id: string): boolean {
+    const filePath = this.getTrainingPrepPath(id);
+    const dirPath = this.getTrainingPrepDirPath(id);
+    const exists = existsSync(filePath) || existsSync(dirPath);
+    if (existsSync(filePath)) rmSync(filePath, { force: true });
+    if (existsSync(dirPath)) rmSync(dirPath, { recursive: true, force: true });
+    return exists;
+  }
+
+  savePersonaConfig(config: PersonaConfig): PersonaConfig {
+    const parsed = PersonaConfigSchema.parse(config);
+    writeJsonFile(this.getPersonaConfigPath(parsed.persona_slug), parsed);
+    return parsed;
+  }
+
+  getPersonaConfig(slug: string): PersonaConfig | null {
+    const raw = readJsonFile<PersonaConfig | null>(this.getPersonaConfigPath(slug), null);
+    if (!raw) return null;
+    return PersonaConfigSchema.parse(raw);
+  }
+
+  deletePersonaConfig(slug: string): boolean {
+    const path = this.getPersonaConfigPath(slug);
+    if (!existsSync(path)) return false;
+    rmSync(path, { force: true });
+    return true;
+  }
+
+  deleteRunsByPersona(personaSlug: string): number {
+    const runs = this.listRuns(personaSlug);
+    for (const run of runs) {
+      const runPath = this.getRunPath(run.id);
+      if (existsSync(runPath)) rmSync(runPath, { force: true });
+      if (run.log_path && existsSync(run.log_path)) rmSync(run.log_path, { force: true });
+    }
+    return runs.length;
+  }
+
+  deleteConversationsByPersona(personaSlug: string): number {
+    const conversations = this.listConversations(personaSlug);
+    conversations.forEach((conversation) => this.deleteConversation(conversation.id));
+    return conversations.length;
+  }
+
+  deletePromotionHandoffsByPersona(personaSlug: string): number {
+    const handoffs = this.listPromotionHandoffs(personaSlug);
+    handoffs.forEach((handoff) => this.deletePromotionHandoff(handoff.id));
+    return handoffs.length;
+  }
+
+  deleteEvidenceImportsByPersona(personaSlug: string): number {
+    const imports = this.listEvidenceImports(personaSlug);
+    imports.forEach((item) => this.deleteEvidenceImport(item.id));
+    return imports.length;
+  }
+
+  deleteTrainingPrepsByPersona(personaSlug: string): number {
+    const artifacts = this.listTrainingPrepArtifacts(personaSlug);
+    artifacts.forEach((item) => this.deleteTrainingPrepArtifact(item.id));
+    return artifacts.length;
   }
 }

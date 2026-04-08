@@ -87,9 +87,43 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const personaDetailMatch = path.match(/^\/api\/personas\/([^/]+)\/detail$/);
+      if (req.method === 'GET' && personaDetailMatch) {
+        writeJson(res, 200, service.getPersonaDetail(decodeURIComponent(personaDetailMatch[1])));
+        return;
+      }
+
+      const personaConfigMatch = path.match(/^\/api\/personas\/([^/]+)\/config$/);
+      if (req.method === 'GET' && personaConfigMatch) {
+        writeJson(res, 200, service.getPersonaConfig(decodeURIComponent(personaConfigMatch[1])));
+        return;
+      }
+
       const personaMatch = path.match(/^\/api\/personas\/([^/]+)$/);
       if (req.method === 'GET' && personaMatch) {
         writeJson(res, 200, service.getPersona(decodeURIComponent(personaMatch[1])));
+        return;
+      }
+      if (req.method === 'PATCH' && personaMatch) {
+        const slug = decodeURIComponent(personaMatch[1]);
+        const body = await readBody(req);
+        writeJson(res, 200, await service.updatePersona(slug, {
+          name: getString(body.name) ?? '',
+          source_type: (getString(body.source_type) as 'social' | 'chat_file' | 'video_file' | undefined) ?? 'social',
+          source_target: getString(body.source_target),
+          source_path: getString(body.source_path),
+          target_manifest_path: getString(body.target_manifest_path),
+          platform: getString(body.platform),
+        }));
+        return;
+      }
+      if (req.method === 'DELETE' && personaMatch) {
+        const deleted = await service.deletePersona(decodeURIComponent(personaMatch[1]));
+        if (!deleted) {
+          writeSafeError(res, 404, 'Persona not found');
+          return;
+        }
+        writeJson(res, 200, { ok: true });
         return;
       }
 
@@ -182,6 +216,19 @@ export async function cmdWorkbenchServer(
 
       if (req.method === 'POST' && path === '/api/personas') {
         const body = await readBody(req);
+        const sourceType = getString(body.source_type);
+        if (sourceType) {
+          writeJson(res, 200, service.createPersonaFromConfig({
+            persona_slug: getString(body.persona_slug),
+            name: getString(body.name) ?? '',
+            source_type: sourceType as 'social' | 'chat_file' | 'video_file',
+            source_target: getString(body.source_target),
+            source_path: getString(body.source_path),
+            target_manifest_path: getString(body.target_manifest_path),
+            platform: getString(body.platform),
+          }));
+          return;
+        }
         const run = service.createPersona({
           target: getString(body.target),
           skill: getString(body.skill),
@@ -192,6 +239,7 @@ export async function cmdWorkbenchServer(
           inputRouting: getString(body.inputRouting),
           trainingSeedMode: getString(body.trainingSeedMode),
           kimiStabilityMode: getString(body.kimiStabilityMode),
+          slug: getString(body.slug),
         });
         writeJson(res, 200, run);
         return;

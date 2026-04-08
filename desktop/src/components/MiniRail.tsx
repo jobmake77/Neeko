@@ -1,61 +1,40 @@
 import { ShellView } from '../lib/types';
-import { formatCurrentPersonaTitle, useI18n } from '../lib/i18n';
+import { useI18n } from '../lib/i18n';
 
 interface MiniRailProps {
   activeView: ShellView;
-  personaName: string | null;
   onChangeView: (view: ShellView) => void;
-  onCreateThread: () => void;
 }
 
-export function MiniRail({ activeView, personaName, onChangeView, onCreateThread }: MiniRailProps) {
-  const { locale, t } = useI18n();
+export function MiniRail({ activeView, onChangeView }: MiniRailProps) {
+  const { locale } = useI18n();
+  const isZh = locale === 'zh-CN';
+
+  const items: Array<{ key: ShellView; label: string; short: string }> = [
+    { key: 'chat', label: isZh ? '聊天' : 'Chat', short: '聊' },
+    { key: 'personas', label: isZh ? '人格库' : 'Personas', short: '库' },
+    { key: 'settings', label: isZh ? '设置' : 'Settings', short: '设' },
+  ];
+
   return (
-    <aside className="mini-rail panel">
-      <div className="mini-rail-group">
-        <button
-          type="button"
-          className="mini-rail-brand"
-          onClick={() => onChangeView('chat')}
-          title={formatCurrentPersonaTitle(personaName, locale)}
-        >
-          N
-        </button>
-        <div className="mini-rail-persona">
-          <span className="eyebrow">{t('Persona')}</span>
-          <strong>{personaName ?? t('None')}</strong>
-        </div>
-      </div>
-
-      <nav className="mini-rail-nav">
-        <button
-          type="button"
-          className={activeView === 'chat' ? 'mini-rail-button active' : 'mini-rail-button'}
-          onClick={() => onChangeView('chat')}
-          title={t('Chat')}
-        >
-          C
-        </button>
-        <button
-          type="button"
-          className="mini-rail-button"
-          onClick={onCreateThread}
-          title={t('New thread')}
-        >
-          +
-        </button>
+    <aside className="mini-rail">
+      <button type="button" className="brand-mark" onClick={() => onChangeView('chat')} aria-label="Neeko">
+        N
+      </button>
+      <nav className="rail-nav">
+        {items.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            className={activeView === item.key ? 'rail-button active' : 'rail-button'}
+            onClick={() => onChangeView(item.key)}
+            title={item.label}
+          >
+            <span className="rail-button-short">{item.short}</span>
+            <span className="rail-button-label">{item.label}</span>
+          </button>
+        ))}
       </nav>
-
-      <div className="mini-rail-footer">
-        <button
-          type="button"
-          className={activeView === 'settings' ? 'mini-rail-button active' : 'mini-rail-button'}
-          onClick={() => onChangeView('settings')}
-          title={t('Settings')}
-        >
-          S
-        </button>
-      </div>
     </aside>
   );
 }

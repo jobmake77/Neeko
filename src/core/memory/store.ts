@@ -70,6 +70,13 @@ export class MemoryStore {
     }
   }
 
+  async deleteCollection(collectionName: string): Promise<void> {
+    const collections = await this.qdrant.getCollections();
+    const exists = collections.collections.some((c) => c.name === collectionName);
+    if (!exists) return;
+    await this.qdrant.deleteCollection(collectionName);
+  }
+
   async upsert(collection: string, node: MemoryNode): Promise<void> {
     const text = `${node.summary}\n\n${node.original_text.slice(0, 1000)}`;
     const embedding = await this.embed(text);

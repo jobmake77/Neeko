@@ -1,73 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ChatWorkspace } from './components/ChatWorkspace';
-import { ConversationSidebar } from './components/ConversationSidebar';
-import { InspectorDrawer } from './components/InspectorDrawer';
 import { MiniRail } from './components/MiniRail';
+import { PersonaLibraryScreen, type CreatePayload } from './components/PersonaLibraryScreen';
+import { PersonaLibrarySidebar } from './components/PersonaLibrarySidebar';
 import { SettingsScreen } from './components/SettingsScreen';
+import { ThreadSidebar } from './components/ThreadSidebar';
 import { api, getApiBaseUrl, setApiBaseUrl } from './lib/api';
-import { formatCopyLabel, useI18n } from './lib/i18n';
-import {
-  Conversation,
-  ConversationBundle,
-  InfoTab,
-  MemoryCandidate,
-  NavView,
-  PersonaSummary,
-  PersonaWorkbenchProfile,
-  PromotionHandoff,
-  SettingsSection,
-  ShellView,
-  TrainingPrepArtifact,
-  WorkbenchEvidenceImport,
-  WorkbenchEvidenceImportDetail,
-  WorkbenchMemoryNode,
-  WorkbenchMemorySourceAsset,
-  WorkbenchRun,
-  WorkbenchRunReport,
-} from './lib/types';
+import { useI18n } from './lib/i18n';
+import { Conversation, ConversationBundle, PersonaDetail, PersonaSummary, ShellView, WorkbenchRun } from './lib/types';
 
-const LEGACY_ACTIVE_VIEW_KEY = 'neeko.workbench.activeView';
-const ACTIVE_SHELL_VIEW_KEY = 'neeko.workbench.shellView';
-const ACTIVE_SETTINGS_SECTION_KEY = 'neeko.workbench.settingsSection';
-const ACTIVE_TAB_KEY = 'neeko.workbench.activeTab';
-const PERSONA_KEY = 'neeko.workbench.selectedPersona';
-const THREAD_KEY = 'neeko.workbench.selectedConversation';
-const FORM_DEFAULTS_KEY = 'neeko.workbench.formDefaults';
-const WORKBENCH_REPO_ROOT_KEY = 'neeko.workbench.repoRoot';
-
-const SETTINGS_SECTIONS: SettingsSection[] = ['persona', 'training', 'experiment', 'export', 'runtime'];
-const INSPECTOR_TABS: InfoTab[] = ['Soul', 'Memory', 'Citations', 'Evidence', 'Training'];
-
-type WorkbenchFormDefaults = {
-  createTarget: string;
-  createTargetManifest: string;
-  createChatPlatform: string;
-  rounds: string;
-  trainingProfile: string;
-  inputRouting: string;
-  trainingSeedMode: string;
-  kimiStabilityMode: string;
-  trainMode: string;
-  trainTrack: string;
-  trainRetries: string;
-  trainFromCheckpoint: string;
-  trainPrepDocumentsPath: string;
-  trainPrepEvidencePath: string;
-  trainPrepArtifactId: string;
-  trainEvidenceImportId: string;
-  experimentProfiles: string;
-  questionsPerRound: string;
-  experimentCompareVariants: string;
-  experimentOutputDir: string;
-  experimentGate: boolean;
-  experimentCompareInputRouting: boolean;
-  experimentCompareTrainingSeed: boolean;
-  exportFormat: string;
-  exportOutputDir: string;
-};
-
-type ServiceConnectionState = 'checking' | 'connected' | 'recovering' | 'offline';
+const ACTIVE_VIEW_KEY = 'neeko.desktop.activeView';
+const PERSONA_KEY = 'neeko.desktop.selectedPersona';
+const THREAD_KEY = 'neeko.desktop.selectedThread';
+const REPO_ROOT_KEY = 'neeko.desktop.repoRoot';
+const DATA_DIR_KEY = 'neeko.desktop.dataDir';
 
 type BootstrapWorkbenchServiceResult = {
   status: 'spawned' | 'already_running';
@@ -75,184 +22,41 @@ type BootstrapWorkbenchServiceResult = {
   runtime_root?: string | null;
 };
 
-type WorkbenchBootstrapStatus = {
-  mode: 'ready' | 'preparing_core' | 'missing_node' | 'needs_repo_root';
-  resolved_runtime_root?: string | null;
-  node_available: boolean;
-  node_source: 'bundled' | 'system' | 'missing';
-  dist_ready: boolean;
-  service_managed: boolean;
-  message: string;
-};
-
-function toUserMessage(error: unknown, t: (value: string) => string): string {
-  const message = String(error instanceof Error ? error.message : error).toLowerCase();
-
-  if (message.includes('clipboard')) return t('Clipboard access is not available right now. Please try again.');
-  if (message.includes('conversation not found') || message.includes('thread not found')) return t('This thread is no longer available.');
-  if (message.includes('persona not found') || message.includes('profile not found')) return t('This persona is no longer available.');
-  if (message.includes('run not found')) return t('This run is no longer available.');
-  if (
-    message.includes('candidate not found') ||
-    message.includes('handoff not found') ||
-    message.includes('training prep not found') ||
-    message.includes('not found')
-  ) {
-    return t('The requested item is no longer available.');
-  }
-  if (message.includes('required') || message.includes('missing')) return t('Some required information is still missing.');
-  if (message.includes('absolute local file path')) return t('Please use an absolute local file path for this import.');
-  if (message.includes('choose a file instead of a folder')) return t('Please choose a file instead of a folder for this import.');
-  if (message.includes('valid json target manifest')) return t('Please choose a valid JSON target manifest file.');
-  if (message.includes('must be different files')) return t('Source and target manifest must be different files.');
-  if (message.includes('selected files is not available')) return t('One of the selected files is not available right now.');
-  if (message.includes('qdrant') || message.includes('memory service')) return t('The local memory service is still getting ready. Please try again shortly.');
-  if (message.includes('timeout') || message.includes('fetch') || message.includes('network') || message.includes('connection')) {
-    return t('The workbench is handling a temporary issue. Please try again shortly.');
-  }
-  return t('The workbench could not finish this action right now.');
-}
-
 export default function App() {
-  const { locale, t } = useI18n();
-  const initialDefaults = (() => {
-    try {
-      const raw = window.localStorage.getItem(FORM_DEFAULTS_KEY);
-      const parsed = raw ? JSON.parse(raw) as Partial<WorkbenchFormDefaults> : {};
-      return {
-        createTarget: parsed.createTarget ?? '',
-        createTargetManifest: parsed.createTargetManifest ?? '',
-        createChatPlatform: parsed.createChatPlatform ?? 'wechat',
-        rounds: parsed.rounds ?? '1',
-        trainingProfile: parsed.trainingProfile ?? 'full',
-        inputRouting: parsed.inputRouting ?? 'legacy',
-        trainingSeedMode: parsed.trainingSeedMode ?? 'off',
-        kimiStabilityMode: parsed.kimiStabilityMode ?? 'standard',
-        trainMode: parsed.trainMode ?? 'quick',
-        trainTrack: parsed.trainTrack ?? 'full_serial',
-        trainRetries: parsed.trainRetries ?? '2',
-        trainFromCheckpoint: parsed.trainFromCheckpoint ?? '',
-        trainPrepDocumentsPath: parsed.trainPrepDocumentsPath ?? '',
-        trainPrepEvidencePath: parsed.trainPrepEvidencePath ?? '',
-        trainPrepArtifactId: parsed.trainPrepArtifactId ?? '',
-        trainEvidenceImportId: parsed.trainEvidenceImportId ?? '',
-        experimentProfiles: parsed.experimentProfiles ?? '',
-        questionsPerRound: parsed.questionsPerRound ?? '5',
-        experimentCompareVariants: parsed.experimentCompareVariants ?? '',
-        experimentOutputDir: parsed.experimentOutputDir ?? '',
-        experimentGate: parsed.experimentGate ?? false,
-        experimentCompareInputRouting: parsed.experimentCompareInputRouting ?? true,
-        experimentCompareTrainingSeed: parsed.experimentCompareTrainingSeed ?? false,
-        exportFormat: parsed.exportFormat ?? 'openclaw',
-        exportOutputDir: parsed.exportOutputDir ?? '',
-      };
-    } catch {
-      return {
-        createTarget: '',
-        createTargetManifest: '',
-        createChatPlatform: 'wechat',
-        rounds: '1',
-        trainingProfile: 'full',
-        inputRouting: 'legacy',
-        trainingSeedMode: 'off',
-        kimiStabilityMode: 'standard',
-        trainMode: 'quick',
-        trainTrack: 'full_serial',
-        trainRetries: '2',
-        trainFromCheckpoint: '',
-        trainPrepDocumentsPath: '',
-        trainPrepEvidencePath: '',
-        trainPrepArtifactId: '',
-        trainEvidenceImportId: '',
-        experimentProfiles: '',
-        questionsPerRound: '5',
-        experimentCompareVariants: '',
-        experimentOutputDir: '',
-        experimentGate: false,
-        experimentCompareInputRouting: true,
-        experimentCompareTrainingSeed: false,
-        exportFormat: 'openclaw',
-        exportOutputDir: '',
-      };
-    }
-  })();
-
-  const [activeShellView, setActiveShellView] = useState<ShellView>(() => deriveInitialShellView());
-  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>(() => deriveInitialSettingsSection());
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<InfoTab>(() => deriveInitialInspectorTab());
+  const { locale } = useI18n();
+  const isZh = locale === 'zh-CN';
+  const [activeView, setActiveView] = useState<ShellView>(() => {
+    const stored = window.localStorage.getItem(ACTIVE_VIEW_KEY) as ShellView | null;
+    return stored === 'personas' || stored === 'settings' ? stored : 'chat';
+  });
   const [apiBaseUrl, setApiBaseUrlState] = useState(getApiBaseUrl());
+  const [repoRoot, setRepoRoot] = useState(window.localStorage.getItem(REPO_ROOT_KEY) ?? '');
+  const [dataDir, setDataDir] = useState(window.localStorage.getItem(DATA_DIR_KEY) ?? '');
   const [serviceHealthy, setServiceHealthy] = useState(false);
-  const [serviceConnectionState, setServiceConnectionState] = useState<ServiceConnectionState>('checking');
-  const [workbenchRepoRoot, setWorkbenchRepoRoot] = useState(() => window.localStorage.getItem(WORKBENCH_REPO_ROOT_KEY) ?? '');
-  const [bootstrapStatus, setBootstrapStatus] = useState<WorkbenchBootstrapStatus | null>(null);
   const [personas, setPersonas] = useState<PersonaSummary[]>([]);
   const [selectedPersonaSlug, setSelectedPersonaSlug] = useState<string | null>(() => window.localStorage.getItem(PERSONA_KEY));
-  const [selectedPersona, setSelectedPersona] = useState<PersonaWorkbenchProfile | null>(null);
+  const [selectedPersonaDetail, setSelectedPersonaDetail] = useState<PersonaDetail | null>(null);
+  const [personaScreenMode, setPersonaScreenMode] = useState<'view' | 'create'>('view');
   const [threads, setThreads] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(() => window.localStorage.getItem(THREAD_KEY));
   const [bundle, setBundle] = useState<ConversationBundle | null>(null);
-  const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
-  const [promotionHandoffs, setPromotionHandoffs] = useState<PromotionHandoff[]>([]);
-  const [evidenceImports, setEvidenceImports] = useState<WorkbenchEvidenceImport[]>([]);
-  const [selectedEvidenceImportId, setSelectedEvidenceImportId] = useState<string | null>(null);
-  const [selectedEvidenceImportDetail, setSelectedEvidenceImportDetail] = useState<WorkbenchEvidenceImportDetail | null>(null);
-  const [trainingPreps, setTrainingPreps] = useState<TrainingPrepArtifact[]>([]);
-  const [selectedMemoryNode, setSelectedMemoryNode] = useState<WorkbenchMemoryNode | null>(null);
-  const [selectedMemorySourceAssets, setSelectedMemorySourceAssets] = useState<WorkbenchMemorySourceAsset[]>([]);
-  const [recentRuns, setRecentRuns] = useState<WorkbenchRun[]>([]);
-  const [currentRun, setCurrentRun] = useState<WorkbenchRun | null>(null);
-  const [runReport, setRunReport] = useState<WorkbenchRunReport | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
-  const [importLoading, setImportLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [formDefaults, setFormDefaults] = useState(initialDefaults);
+  const [error, setError] = useState<string | null>(null);
+  const [currentRun, setCurrentRun] = useState<WorkbenchRun | null>(null);
 
-  function reportError(nextError: unknown) {
-    setError(toUserMessage(nextError, t));
-  }
+  const selectedPersonaSummary = useMemo(
+    () => personas.find((item) => item.slug === selectedPersonaSlug) ?? null,
+    [personas, selectedPersonaSlug]
+  );
 
   useEffect(() => {
-    void initializeWorkbench();
+    void initialize();
   }, []);
 
   useEffect(() => {
-    if (!selectedPersonaSlug) return;
-    setSelectedMemoryNode(null);
-    setSelectedMemorySourceAssets([]);
-    void refreshPersona(selectedPersonaSlug);
-    void refreshThreads(selectedPersonaSlug);
-    void refreshRuns(selectedPersonaSlug);
-  }, [selectedPersonaSlug]);
-
-  useEffect(() => {
-    if (!selectedConversationId) {
-      setBundle(null);
-      setCandidates([]);
-      setPromotionHandoffs([]);
-      setEvidenceImports([]);
-      setSelectedEvidenceImportId(null);
-      setSelectedEvidenceImportDetail(null);
-      setTrainingPreps([]);
-      setSelectedMemoryNode(null);
-      setSelectedMemorySourceAssets([]);
-      return;
-    }
-    void refreshConversation(selectedConversationId);
-  }, [selectedConversationId]);
-
-  useEffect(() => {
-    window.localStorage.setItem(ACTIVE_SHELL_VIEW_KEY, activeShellView);
-  }, [activeShellView]);
-
-  useEffect(() => {
-    window.localStorage.setItem(ACTIVE_SETTINGS_SECTION_KEY, activeSettingsSection);
-  }, [activeSettingsSection]);
-
-  useEffect(() => {
-    window.localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
-  }, [activeTab]);
+    window.localStorage.setItem(ACTIVE_VIEW_KEY, activeView);
+  }, [activeView]);
 
   useEffect(() => {
     if (selectedPersonaSlug) window.localStorage.setItem(PERSONA_KEY, selectedPersonaSlug);
@@ -265,25 +69,38 @@ export default function App() {
   }, [selectedConversationId]);
 
   useEffect(() => {
-    window.localStorage.setItem(FORM_DEFAULTS_KEY, JSON.stringify(formDefaults));
-  }, [formDefaults]);
+    if (repoRoot.trim()) window.localStorage.setItem(REPO_ROOT_KEY, repoRoot.trim());
+    else window.localStorage.removeItem(REPO_ROOT_KEY);
+  }, [repoRoot]);
 
   useEffect(() => {
-    if (workbenchRepoRoot.trim()) window.localStorage.setItem(WORKBENCH_REPO_ROOT_KEY, workbenchRepoRoot.trim());
-    else window.localStorage.removeItem(WORKBENCH_REPO_ROOT_KEY);
-  }, [workbenchRepoRoot]);
+    if (dataDir.trim()) window.localStorage.setItem(DATA_DIR_KEY, dataDir.trim());
+    else window.localStorage.removeItem(DATA_DIR_KEY);
+  }, [dataDir]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-    const timer = window.setTimeout(() => {
-      void refreshBootstrapStatus(workbenchRepoRoot);
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [workbenchRepoRoot]);
+    if (!selectedPersonaSlug) {
+      setSelectedPersonaDetail(null);
+      setThreads([]);
+      setSelectedConversationId(null);
+      setBundle(null);
+      return;
+    }
+    void refreshPersonaDetail(selectedPersonaSlug);
+    void refreshThreads(selectedPersonaSlug);
+  }, [selectedPersonaSlug]);
+
+  useEffect(() => {
+    if (!selectedConversationId) {
+      setBundle(null);
+      return;
+    }
+    void refreshConversation(selectedConversationId);
+  }, [selectedConversationId]);
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 3200);
+    const timer = window.setTimeout(() => setNotice(null), 2800);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
@@ -291,198 +108,146 @@ export default function App() {
     if (!currentRun || currentRun.status !== 'running') return;
     const timer = window.setInterval(async () => {
       try {
-        const report = await api.getRunReport(currentRun.id).catch(() => null);
-        if (report) {
-          setCurrentRun(report.run);
-          setRunReport(report);
-        } else {
-          const run = await api.getRun(currentRun.id);
-          setCurrentRun(run);
-        }
-        if ((report?.run.status ?? currentRun.status) !== 'running') {
+        const nextRun = await api.getRun(currentRun.id);
+        setCurrentRun(nextRun);
+        if (nextRun.status !== 'running') {
           await refreshPersonas();
-          await refreshRuns(selectedPersonaSlug ?? undefined);
+          if (selectedPersonaSlug) {
+            await refreshPersonaDetail(selectedPersonaSlug);
+            await refreshThreads(selectedPersonaSlug);
+          }
+          if (nextRun.status === 'completed') {
+            setNotice(isZh ? '后台处理已完成。' : 'Background update completed.');
+          } else if (nextRun.status === 'failed') {
+            setNotice(isZh ? '后台处理暂时中断，请稍后重试。' : 'Background update paused. Please try again later.');
+          }
         }
-      } catch (err) {
-        reportError(err);
+      } catch {
+        // Keep polling quiet for user-facing UI.
       }
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [currentRun, selectedPersonaSlug]);
+  }, [currentRun, selectedPersonaSlug, isZh]);
 
-  const selectedPersonaSummary = useMemo(
-    () => personas.find((item) => item.slug === selectedPersonaSlug) ?? null,
-    [personas, selectedPersonaSlug]
-  );
-
-  async function initializeWorkbench() {
-    await refreshBootstrapStatus(workbenchRepoRoot);
+  async function initialize() {
     const connected = await refreshHealth({ allowRecover: true, silent: true });
-    if (connected) await refreshPersonas();
+    if (!connected) return;
+    await refreshPersonas();
   }
 
   async function refreshHealth(options: { allowRecover?: boolean; silent?: boolean; baseUrl?: string } = {}): Promise<boolean> {
     const { allowRecover = true, silent = false, baseUrl } = options;
     const targetBaseUrl = baseUrl ?? apiBaseUrl;
-    setServiceConnectionState('checking');
     try {
       await api.health();
       setServiceHealthy(true);
-      setServiceConnectionState('connected');
       setError(null);
       return true;
-    } catch (err) {
+    } catch (nextError) {
       setServiceHealthy(false);
       if (allowRecover && canBootstrapLocalService(targetBaseUrl)) {
         const recovered = await attemptServiceRecovery(targetBaseUrl);
         if (recovered) return true;
       }
-      setServiceConnectionState('offline');
-      if (!silent) reportError(err);
+      if (!silent) setError(toUserMessage(nextError, isZh));
       return false;
     }
   }
 
   async function refreshPersonas() {
     try {
-      const data = await api.listPersonas();
-      setPersonas(data);
-      if (!selectedPersonaSlug && data[0]) setSelectedPersonaSlug(data[0].slug);
-    } catch (err) {
-      reportError(err);
+      const nextPersonas = await api.listPersonas();
+      setPersonas(nextPersonas);
+      if (!selectedPersonaSlug && nextPersonas[0]) {
+        setSelectedPersonaSlug(nextPersonas[0].slug);
+      } else if (selectedPersonaSlug && !nextPersonas.some((item) => item.slug === selectedPersonaSlug)) {
+        setSelectedPersonaSlug(nextPersonas[0]?.slug ?? null);
+      }
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
-  async function refreshPersona(slug: string) {
+  async function refreshPersonaDetail(slug: string) {
     try {
-      const profile = await api.getPersona(slug);
-      setSelectedPersona(profile);
+      const detail = await api.getPersonaDetail(slug);
+      setSelectedPersonaDetail(detail);
       setError(null);
-    } catch (err) {
-      reportError(err);
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
   async function refreshThreads(slug: string) {
     try {
-      const data = await api.listConversations(slug);
-      setThreads(data);
-      if (data.length > 0 && (!selectedConversationId || !data.some((item) => item.id === selectedConversationId))) {
-        setSelectedConversationId(data[0].id);
+      const nextThreads = await api.listConversations(slug);
+      setThreads(nextThreads);
+      if (nextThreads.length === 0) {
+        setSelectedConversationId(null);
+        return;
       }
-      if (data.length === 0) setSelectedConversationId(null);
-    } catch (err) {
-      reportError(err);
+      if (!selectedConversationId || !nextThreads.some((item) => item.id === selectedConversationId)) {
+        setSelectedConversationId(nextThreads[0].id);
+      }
+      setError(null);
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
-  async function refreshConversation(id: string) {
+  async function refreshConversation(conversationId: string) {
     try {
-      const nextBundle = await api.getConversation(id);
-      const nextCandidates = await api.listMemoryCandidates(id);
-      const nextHandoffs = selectedPersonaSlug ? await api.listPromotionHandoffs(selectedPersonaSlug, id) : [];
-      const nextImports = selectedPersonaSlug ? await api.listEvidenceImports(selectedPersonaSlug, id) : [];
-      const nextTrainingPreps = selectedPersonaSlug ? await api.listTrainingPreps(selectedPersonaSlug, id) : [];
+      const nextBundle = await api.getConversation(conversationId);
       setBundle(nextBundle);
-      setCandidates(nextCandidates);
-      setPromotionHandoffs(nextHandoffs);
-      setEvidenceImports(nextImports);
-      setSelectedEvidenceImportId((current) => {
-        if (current && nextImports.some((item) => item.id === current)) return current;
-        return nextImports[0]?.id ?? null;
-      });
-      if (selectedEvidenceImportDetail && !nextImports.some((item) => item.id === selectedEvidenceImportDetail.import.id)) {
-        setSelectedEvidenceImportDetail(null);
-      }
-      setTrainingPreps(nextTrainingPreps);
-      setSelectedMemoryNode(null);
-      setSelectedMemorySourceAssets([]);
       setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function refreshRuns(personaSlug?: string) {
-    try {
-      const runs = await api.listRuns(personaSlug);
-      setRecentRuns(runs);
-      setError(null);
-    } catch (err) {
-      reportError(err);
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
   async function handleCreateConversation() {
-    if (!selectedPersonaSlug) return;
+    if (!selectedPersonaSlug) {
+      setActiveView('personas');
+      setNotice(isZh ? '请先创建或选择一个人格。' : 'Select or create a persona first.');
+      return;
+    }
     try {
       const conversation = await api.createConversation(selectedPersonaSlug);
       await refreshThreads(selectedPersonaSlug);
       setSelectedConversationId(conversation.id);
-      setActiveShellView('chat');
+      setActiveView('chat');
       setError(null);
-    } catch (err) {
-      reportError(err);
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
   async function handleRenameConversation() {
     if (!selectedConversationId) return;
     const current = threads.find((item) => item.id === selectedConversationId);
-    const nextTitle = window.prompt(t('Rename thread'), current?.title ?? '');
-    if (!nextTitle || !nextTitle.trim()) return;
+    const nextTitle = window.prompt(isZh ? '请输入新的线程名称' : 'Enter a new thread title', current?.title ?? '');
+    if (!nextTitle?.trim()) return;
     try {
       await api.renameConversation(selectedConversationId, nextTitle.trim());
       if (selectedPersonaSlug) await refreshThreads(selectedPersonaSlug);
       await refreshConversation(selectedConversationId);
-      setError(null);
-    } catch (err) {
-      reportError(err);
+      setNotice(isZh ? '线程已重命名。' : 'Thread renamed.');
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
   async function handleDeleteConversation() {
     if (!selectedConversationId || !selectedPersonaSlug) return;
-    const confirmed = window.confirm(t('Delete this thread and its local conversation assets?'));
+    const confirmed = window.confirm(isZh ? '确认删除这个线程吗？' : 'Delete this thread?');
     if (!confirmed) return;
     try {
       await api.deleteConversation(selectedConversationId);
       await refreshThreads(selectedPersonaSlug);
       setBundle(null);
-      setCandidates([]);
-      setPromotionHandoffs([]);
-      setEvidenceImports([]);
-      setSelectedEvidenceImportId(null);
-      setSelectedEvidenceImportDetail(null);
-      setTrainingPreps([]);
-      setSelectedMemoryNode(null);
-      setSelectedMemorySourceAssets([]);
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleRefreshSummary() {
-    if (!selectedConversationId || !selectedPersonaSlug) return;
-    try {
-      const nextBundle = await api.refreshConversationSummary(selectedConversationId);
-      const nextCandidates = await api.listMemoryCandidates(selectedConversationId);
-      const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
-      const nextImports = await api.listEvidenceImports(selectedPersonaSlug, selectedConversationId);
-      const nextTrainingPreps = await api.listTrainingPreps(selectedPersonaSlug, selectedConversationId);
-      setBundle(nextBundle);
-      setCandidates(nextCandidates);
-      setPromotionHandoffs(nextHandoffs);
-      setEvidenceImports(nextImports);
-      setSelectedEvidenceImportId((current) => current && nextImports.some((item) => item.id === current) ? current : nextImports[0]?.id ?? null);
-      setTrainingPreps(nextTrainingPreps);
-      setSelectedMemoryNode(null);
-      setSelectedMemorySourceAssets([]);
-      await refreshThreads(selectedPersonaSlug);
-      setError(null);
-    } catch (err) {
-      reportError(err);
+      setNotice(isZh ? '线程已删除。' : 'Thread deleted.');
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
@@ -492,468 +257,214 @@ export default function App() {
     try {
       let conversationId = selectedConversationId;
       if (!conversationId) {
-        const created = await api.createConversation(selectedPersonaSlug);
-        conversationId = created.id;
-        setSelectedConversationId(created.id);
-        await refreshThreads(selectedPersonaSlug);
+        const conversation = await api.createConversation(selectedPersonaSlug);
+        conversationId = conversation.id;
+        setSelectedConversationId(conversation.id);
       }
       const nextBundle = await api.sendMessage(conversationId, message);
-      const nextCandidates = await api.listMemoryCandidates(conversationId);
       setBundle(nextBundle);
-      setCandidates(nextCandidates);
       await refreshThreads(selectedPersonaSlug);
-      setActiveTab('Citations');
-      setNotice(t('Message sent.'));
-      setError(null);
-    } catch (err) {
-      reportError(err);
+      setNotice(isZh ? '消息已发送。' : 'Message sent.');
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     } finally {
       setChatLoading(false);
-    }
-  }
-
-  async function launchRun(request: Promise<WorkbenchRun>, type: WorkbenchRun['type']) {
-    try {
-      const run = await request;
-      setCurrentRun(run);
-      setRunReport(null);
-      setActiveShellView('settings');
-      setActiveSettingsSection(mapRunTypeToSettingsSection(type));
-      setActiveTab('Training');
-      setInspectorOpen(true);
-      await refreshRuns(selectedPersonaSlug ?? undefined);
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleSelectRun(run: WorkbenchRun) {
-    try {
-      setCurrentRun(run);
-      const report = await api.getRunReport(run.id).catch(() => null);
-      setRunReport(report);
-      setActiveTab('Training');
-      setInspectorOpen(true);
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleReviewCandidate(candidateId: string, status: MemoryCandidate['status']) {
-    if (!selectedConversationId) return;
-    try {
-      const result = await api.reviewMemoryCandidate(selectedConversationId, candidateId, status);
-      setCandidates(result.candidates);
-      setNotice(t(`Candidate marked ${status}.`));
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleCandidatePromotionState(candidateId: string, promotionState: MemoryCandidate['promotion_state']) {
-    if (!selectedConversationId) return;
-    try {
-      const result = await api.setCandidatePromotionState(selectedConversationId, candidateId, promotionState);
-      setCandidates(result.candidates);
-      setNotice(t(promotionState === 'ready' ? 'Candidate added to promotion-ready queue.' : 'Candidate removed from promotion-ready queue.'));
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleCreatePromotionHandoff() {
-    if (!selectedConversationId || !selectedPersonaSlug) return;
-    try {
-      const handoff = await api.createPromotionHandoff(selectedConversationId);
-      const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
-      setPromotionHandoffs(nextHandoffs);
-      setActiveTab('Memory');
-      setInspectorOpen(true);
-      setNotice(t('Promotion handoff created.'));
-      setError(null);
-      if (!nextHandoffs.some((item) => item.id === handoff.id)) setPromotionHandoffs((current) => [handoff, ...current]);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleUpdatePromotionHandoff(handoffId: string, status: PromotionHandoff['status']) {
-    if (!selectedConversationId || !selectedPersonaSlug) return;
-    try {
-      await api.updatePromotionHandoff(handoffId, status);
-      const nextHandoffs = await api.listPromotionHandoffs(selectedPersonaSlug, selectedConversationId);
-      setPromotionHandoffs(nextHandoffs);
-      setNotice(`${t('Handoff')} ${t(status)}`);
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleExportPromotionHandoff(handoffId: string, format: 'markdown' | 'json') {
-    try {
-      const exported = await api.exportPromotionHandoff(handoffId, format);
-      await navigator.clipboard.writeText(exported.content);
-      setNotice(`${exported.filename} copied to clipboard.`);
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  async function handleCreateTrainingPrep(handoffId: string) {
-    if (!selectedPersonaSlug || !selectedConversationId) return;
-    try {
-      await api.createTrainingPrep(handoffId);
-      const nextTrainingPreps = await api.listTrainingPreps(selectedPersonaSlug, selectedConversationId);
-      setTrainingPreps(nextTrainingPreps);
-      setNotice(t('Training prep artifact created.'));
-      setError(null);
-    } catch (err) {
-      reportError(err);
     }
   }
 
   async function handleCopyMessage(content: string) {
     try {
       await navigator.clipboard.writeText(content);
-      setNotice(t('Message copied to clipboard.'));
-      setError(null);
-    } catch (err) {
-      reportError(err);
+      setNotice(isZh ? '已复制到剪贴板。' : 'Copied to clipboard.');
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
-  async function handleCopyValue(value: string, label: string) {
+  async function handleCreatePersona(payload: CreatePayload) {
     try {
-      await navigator.clipboard.writeText(value);
-      setNotice(`${formatCopyLabel(label, locale)} ${t('copied to clipboard')}`);
-      setError(null);
-    } catch (err) {
-      reportError(err);
+      const result = await api.createPersona(payload as unknown as Record<string, unknown>);
+      setCurrentRun(result.run);
+      setSelectedPersonaSlug(result.persona.slug);
+      setPersonaScreenMode('view');
+      setActiveView('personas');
+      await refreshPersonas();
+      await refreshPersonaDetail(result.persona.slug);
+      setNotice(isZh ? '人格已开始创建，系统正在后台处理。' : 'Persona creation started in the background.');
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
-  async function handleInspectMemory(memoryId: string) {
-    if (!selectedPersonaSlug) return;
+  async function handleSavePersona(slug: string, payload: CreatePayload) {
     try {
-      const [node, assets] = await Promise.all([
-        api.getMemoryNode(selectedPersonaSlug, memoryId),
-        api.getMemoryNodeSourceAssets(selectedPersonaSlug, memoryId),
-      ]);
-      setSelectedMemoryNode(node);
-      setSelectedMemorySourceAssets(assets);
-      setActiveTab('Memory');
-      setInspectorOpen(true);
-      setNotice(t('Memory detail loaded.'));
-      setError(null);
-    } catch (err) {
-      reportError(err);
+      const result = await api.updatePersona(slug, payload as unknown as Record<string, unknown>);
+      setCurrentRun(result.run);
+      await refreshPersonas();
+      await refreshPersonaDetail(slug);
+      setNotice(isZh ? '修改已保存，系统正在后台重建。' : 'Changes saved. Background rebuild started.');
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
   }
 
-  async function handleImportEvidence(payload: {
-    sourceKind: 'chat' | 'video';
-    sourcePath: string;
-    targetManifestPath: string;
-    chatPlatform?: 'wechat' | 'feishu';
-  }) {
-    if (!selectedPersonaSlug) return;
-    setImportLoading(true);
+  async function handleDeletePersona(slug: string) {
+    const confirmed = window.confirm(isZh ? '确认彻底删除这个人格及其本地资产吗？' : 'Delete this persona and all local assets?');
+    if (!confirmed) return;
     try {
-      let conversationId = selectedConversationId;
-      if (!conversationId) {
-        const created = await api.createConversation(selectedPersonaSlug, t('Evidence Intake'));
-        conversationId = created.id;
-        setSelectedConversationId(created.id);
+      await api.deletePersona(slug);
+      const remaining = personas.filter((item) => item.slug !== slug);
+      setSelectedPersonaSlug(remaining[0]?.slug ?? null);
+      setSelectedConversationId(null);
+      setBundle(null);
+      setPersonaScreenMode('view');
+      await refreshPersonas();
+      setNotice(isZh ? '人格已删除。' : 'Persona deleted.');
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
+    }
+  }
+
+  async function handleStartChat(slug: string) {
+    setSelectedPersonaSlug(slug);
+    setActiveView('chat');
+    setPersonaScreenMode('view');
+    try {
+      const nextThreads = await api.listConversations(slug);
+      if (nextThreads.length === 0) {
+        const conversation = await api.createConversation(slug);
+        setSelectedConversationId(conversation.id);
+      } else {
+        setSelectedConversationId(nextThreads[0].id);
       }
-      const imported = await api.importEvidence(selectedPersonaSlug, {
-        conversationId,
-        sourceKind: payload.sourceKind,
-        sourcePath: payload.sourcePath,
-        targetManifestPath: payload.targetManifestPath,
-        chatPlatform: payload.chatPlatform,
-      });
-      if (selectedPersonaSlug) await refreshThreads(selectedPersonaSlug);
-      if (conversationId) await refreshConversation(conversationId);
-      const detail = await api.getEvidenceImportDetail(imported.id).catch(() => null);
-      setSelectedEvidenceImportId(imported.id);
-      if (detail) setSelectedEvidenceImportDetail(detail);
-      setNotice(payload.sourceKind === 'chat' ? t('聊天证据已导入工作台。') : t('视频证据已导入工作台。'));
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    } finally {
-      setImportLoading(false);
+      await refreshThreads(slug);
+    } catch (nextError) {
+      setError(toUserMessage(nextError, isZh));
     }
-  }
-
-  function handleUseEvidenceImport(item: WorkbenchEvidenceImport) {
-    setFormDefaults((current) => ({
-      ...current,
-      trainPrepDocumentsPath: item.artifacts.documents_path,
-      trainPrepEvidencePath: item.artifacts.evidence_index_path,
-      trainPrepArtifactId: '',
-      trainEvidenceImportId: item.id,
-    }));
-    setActiveShellView('settings');
-    setActiveSettingsSection('training');
-    setActiveTab('Training');
-      setNotice(t('Evidence intake has been attached to the train form.'));
-    setError(null);
-  }
-
-  async function handleInspectEvidenceImport(importId: string) {
-    try {
-      const detail = await api.getEvidenceImportDetail(importId);
-      setSelectedEvidenceImportId(importId);
-      setSelectedEvidenceImportDetail(detail);
-      setActiveTab('Evidence');
-      setInspectorOpen(true);
-      setNotice(t('Evidence detail loaded.'));
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  function handleUseTrainingPrep(prep: TrainingPrepArtifact) {
-    setFormDefaults((current) => ({
-      ...current,
-      trainPrepDocumentsPath: prep.documents_path,
-      trainPrepEvidencePath: prep.evidence_index_path,
-      trainPrepArtifactId: prep.id,
-      trainEvidenceImportId: '',
-    }));
-    setActiveShellView('settings');
-    setActiveSettingsSection('training');
-    setActiveTab('Training');
-      setNotice(t('Training prep has been attached to the train form.'));
-    setError(null);
-  }
-
-  async function handleExportTrainingPrep(prepId: string, format: 'markdown' | 'json') {
-    try {
-      const exported = await api.exportTrainingPrep(prepId, format);
-      await navigator.clipboard.writeText(exported.content);
-      setNotice(`${exported.filename} copied to clipboard.`);
-      setError(null);
-    } catch (err) {
-      reportError(err);
-    }
-  }
-
-  function handleApiBaseUrlChange(value: string) {
-    setApiBaseUrlState(value);
-    setApiBaseUrl(value);
-    void refreshHealth({ allowRecover: true, silent: false, baseUrl: value });
   }
 
   async function handleRefreshConnection() {
-    await refreshBootstrapStatus(workbenchRepoRoot);
     const connected = await refreshHealth({ allowRecover: true, silent: false });
-    if (connected) {
-      await refreshPersonas();
-      if (selectedPersonaSlug) {
-        await refreshPersona(selectedPersonaSlug);
-        await refreshThreads(selectedPersonaSlug);
-        await refreshRuns(selectedPersonaSlug);
-      }
+    if (!connected) return;
+    await refreshPersonas();
+    if (selectedPersonaSlug) {
+      await refreshPersonaDetail(selectedPersonaSlug);
+      await refreshThreads(selectedPersonaSlug);
     }
+    setNotice(isZh ? '连接已刷新。' : 'Connection refreshed.');
   }
 
   async function attemptServiceRecovery(baseUrl: string): Promise<boolean> {
     if (!canBootstrapLocalService(baseUrl)) return false;
-    setServiceConnectionState('recovering');
     try {
-      const result = await bootstrapWorkbenchService(getLocalWorkbenchPort(baseUrl), workbenchRepoRoot);
+      const result = await bootstrapWorkbenchService(getLocalWorkbenchPort(baseUrl), repoRoot);
       const recovered = await waitForServiceHealth();
-      if (!recovered) {
-        await refreshBootstrapStatus(workbenchRepoRoot);
-        return false;
-      }
+      if (!recovered) return false;
       setServiceHealthy(true);
-      setServiceConnectionState('connected');
-      setError(null);
-      await refreshBootstrapStatus(result.runtime_root ?? workbenchRepoRoot);
-      if (result.runtime_root) setWorkbenchRepoRoot(result.runtime_root);
-      setNotice(t(result.status === 'spawned' ? 'Local workbench service recovered.' : 'Local workbench service is ready.'));
+      if (result.runtime_root) setRepoRoot(result.runtime_root);
+      setNotice(isZh ? '本地服务已自动恢复。' : 'Local service recovered.');
       return true;
     } catch {
       return false;
     }
   }
 
-  async function refreshBootstrapStatus(repoRoot = workbenchRepoRoot) {
-    if (!isTauriRuntime()) {
-      setBootstrapStatus(null);
-      return;
-    }
-    try {
-      const status = await getWorkbenchBootstrapStatus(repoRoot);
-      setBootstrapStatus(status);
-    } catch {
-      setBootstrapStatus(null);
-    }
+  function handleApiBaseUrlChange(value: string) {
+    setApiBaseUrlState(value);
+    setApiBaseUrl(value);
   }
 
-  function handleWorkbenchRepoRootChange(value: string) {
-    setWorkbenchRepoRoot(value);
-  }
-
-  function handleFormDefaultsChange(patch: Partial<WorkbenchFormDefaults>) {
-    setFormDefaults((current) => ({ ...current, ...patch }));
-  }
-
-  function handleOpenInspector(tab: InfoTab) {
-    setActiveTab(tab);
-    setInspectorOpen(true);
-  }
-
-  function handleSelectEvidenceImport(importId: string) {
-    setSelectedEvidenceImportId(importId);
-  }
+  const sidebar = activeView === 'chat' ? (
+    <ThreadSidebar
+      personas={personas}
+      selectedPersonaSlug={selectedPersonaSlug}
+      selectedConversationId={selectedConversationId}
+      threads={threads}
+      onSelectPersona={(slug) => {
+        setSelectedPersonaSlug(slug);
+        setPersonaScreenMode('view');
+      }}
+      onSelectConversation={setSelectedConversationId}
+      onCreateConversation={() => void handleCreateConversation()}
+      onRenameConversation={() => void handleRenameConversation()}
+      onDeleteConversation={() => void handleDeleteConversation()}
+    />
+  ) : activeView === 'personas' ? (
+    <PersonaLibrarySidebar
+      personas={personas}
+      selectedPersonaSlug={selectedPersonaSlug}
+      onSelectPersona={(slug) => {
+        setSelectedPersonaSlug(slug);
+        setPersonaScreenMode('view');
+      }}
+      onCreatePersona={() => {
+        setPersonaScreenMode('create');
+        setActiveView('personas');
+      }}
+    />
+  ) : (
+    <aside className="sidebar-panel settings-side-panel">
+      <p className="sidebar-eyebrow">{isZh ? '设置' : 'Settings'}</p>
+      <h2>{isZh ? '基础连接与语言' : 'Connection and Language'}</h2>
+      <p className="empty-note">{isZh ? '这里不再展示任何训练或内部控制项。' : 'Internal controls stay hidden from this surface.'}</p>
+    </aside>
+  );
 
   return (
-    <div className={inspectorOpen ? 'app-shell drawer-open' : 'app-shell'}>
-      <MiniRail
-        activeView={activeShellView}
-        personaName={selectedPersonaSummary?.name ?? null}
-        onChangeView={setActiveShellView}
-        onCreateThread={() => void handleCreateConversation()}
-      />
-      <ConversationSidebar
-        personas={personas}
-        selectedPersonaSlug={selectedPersonaSlug}
-        selectedConversationId={selectedConversationId}
-        threads={threads}
-        onSelectPersona={setSelectedPersonaSlug}
-        onSelectConversation={setSelectedConversationId}
-        onCreateConversation={() => void handleCreateConversation()}
-        onRenameConversation={() => void handleRenameConversation()}
-        onDeleteConversation={() => void handleDeleteConversation()}
-        onRefreshSummary={() => void handleRefreshSummary()}
-      />
-
+    <div className="app-shell">
+      <MiniRail activeView={activeView} onChangeView={setActiveView} />
+      {sidebar}
       <main className="main-stage">
-        {error ? <div className="error-banner stage-error">{error}</div> : null}
-        {activeShellView === 'chat' ? (
+        {error ? <div className="error-banner">{error}</div> : null}
+        {notice ? <div className="notice-banner">{notice}</div> : null}
+        {activeView === 'chat' ? (
           <ChatWorkspace
+            persona={selectedPersonaSummary}
             bundle={bundle}
             loading={chatLoading}
-            personaSlug={selectedPersonaSlug}
-            evidenceImports={evidenceImports}
-            selectedEvidenceImportId={selectedEvidenceImportId}
-            importLoading={importLoading}
-            notice={notice}
             onSend={handleSendMessage}
             onCopyMessage={handleCopyMessage}
-            onCopyValue={handleCopyValue}
-            onUseEvidenceImport={handleUseEvidenceImport}
-            onInspectEvidenceImport={handleInspectEvidenceImport}
-            onSelectEvidenceImport={handleSelectEvidenceImport}
-            onImportEvidence={handleImportEvidence}
-            onOpenInspector={handleOpenInspector}
           />
-        ) : (
+        ) : null}
+        {activeView === 'personas' ? (
+          <PersonaLibraryScreen
+            detail={personaScreenMode === 'create' ? null : selectedPersonaDetail}
+            run={currentRun}
+            mode={personaScreenMode}
+            onCreate={handleCreatePersona}
+            onSave={handleSavePersona}
+            onDelete={handleDeletePersona}
+            onStartChat={handleStartChat}
+            onCancelCreate={() => setPersonaScreenMode('view')}
+          />
+        ) : null}
+        {activeView === 'settings' ? (
           <SettingsScreen
-            activeSection={activeSettingsSection}
-            onSectionChange={setActiveSettingsSection}
-            selectedPersona={selectedPersonaSummary}
-            currentRun={currentRun}
-            recentRuns={recentRuns}
-            trainingPreps={trainingPreps}
-            evidenceImports={evidenceImports}
-            onCreatePersona={(payload) => launchRun(api.createPersona(payload), 'create')}
-            onStartTraining={(payload) => launchRun(api.startTraining(payload), 'train')}
-            onStartExperiment={(payload) => launchRun(api.startExperiment(payload), 'experiment')}
-            onExportPersona={(payload) => launchRun(api.exportPersona(payload), 'export')}
-            onSelectRun={handleSelectRun}
-            onCopyValue={handleCopyValue}
             apiBaseUrl={apiBaseUrl}
-            onApiBaseUrlChange={handleApiBaseUrlChange}
-            onRefreshHealth={handleRefreshConnection}
-            defaultValues={formDefaults}
-            onDefaultValuesChange={handleFormDefaultsChange}
+            repoRoot={repoRoot}
+            dataDir={dataDir}
             serviceHealthy={serviceHealthy}
-            serviceConnectionState={serviceConnectionState}
-            workbenchRepoRoot={workbenchRepoRoot}
-            onWorkbenchRepoRootChange={handleWorkbenchRepoRootChange}
-            bootstrapStatus={bootstrapStatus}
+            onApiBaseUrlChange={handleApiBaseUrlChange}
+            onRepoRootChange={setRepoRoot}
+            onDataDirChange={setDataDir}
+            onRefreshConnection={handleRefreshConnection}
           />
-        )}
+        ) : null}
       </main>
-
-      <InspectorDrawer
-        open={inspectorOpen}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onClose={() => setInspectorOpen(false)}
-        profile={selectedPersona}
-        bundle={bundle}
-        candidates={candidates}
-        evidenceImports={evidenceImports}
-        selectedEvidenceImportId={selectedEvidenceImportId}
-        selectedEvidenceImportDetail={selectedEvidenceImportDetail}
-        selectedMemoryNode={selectedMemoryNode}
-        selectedMemorySourceAssets={selectedMemorySourceAssets}
-        promotionHandoffs={promotionHandoffs}
-        trainingPreps={trainingPreps}
-        recentRuns={recentRuns}
-        currentRunId={currentRun?.id ?? null}
-        onSelectRun={handleSelectRun}
-        onInspectMemory={handleInspectMemory}
-        onInspectEvidenceImport={handleInspectEvidenceImport}
-        onSelectEvidenceImport={handleSelectEvidenceImport}
-        onReviewCandidate={handleReviewCandidate}
-        onSetCandidatePromotionState={handleCandidatePromotionState}
-        onCreatePromotionHandoff={handleCreatePromotionHandoff}
-        onUpdatePromotionHandoff={handleUpdatePromotionHandoff}
-        onExportPromotionHandoff={handleExportPromotionHandoff}
-        onCreateTrainingPrep={handleCreateTrainingPrep}
-        onExportTrainingPrep={handleExportTrainingPrep}
-        onCopyValue={handleCopyValue}
-        onUseTrainingPrep={handleUseTrainingPrep}
-        onUseEvidenceImport={handleUseEvidenceImport}
-        runReport={runReport}
-      />
     </div>
   );
 }
 
-function deriveInitialShellView(): ShellView {
-  const next = window.localStorage.getItem(ACTIVE_SHELL_VIEW_KEY) as ShellView | null;
-  if (next === 'chat' || next === 'settings') return next;
-  const legacy = window.localStorage.getItem(LEGACY_ACTIVE_VIEW_KEY) as NavView | null;
-  return legacy === 'Chat' || !legacy ? 'chat' : 'settings';
-}
-
-function deriveInitialSettingsSection(): SettingsSection {
-  const next = window.localStorage.getItem(ACTIVE_SETTINGS_SECTION_KEY) as SettingsSection | null;
-  if (next && SETTINGS_SECTIONS.includes(next)) return next;
-  const legacy = window.localStorage.getItem(LEGACY_ACTIVE_VIEW_KEY) as NavView | null;
-  if (legacy === 'Create') return 'persona';
-  if (legacy === 'Train') return 'training';
-  if (legacy === 'Experiment') return 'experiment';
-  if (legacy === 'Export') return 'export';
-  return 'runtime';
-}
-
-function deriveInitialInspectorTab(): InfoTab {
-  const next = window.localStorage.getItem(ACTIVE_TAB_KEY) as InfoTab | null;
-  if (next && INSPECTOR_TABS.includes(next)) return next;
-  return 'Soul';
-}
-
-function mapRunTypeToSettingsSection(type: WorkbenchRun['type']): SettingsSection {
-  if (type === 'create') return 'persona';
-  if (type === 'train') return 'training';
-  if (type === 'experiment') return 'experiment';
-  return 'export';
+function toUserMessage(error: unknown, isZh: boolean): string {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  if (message.includes('persona') && message.includes('not')) return isZh ? '这个人格当前不可用。' : 'This persona is not available right now.';
+  if (message.includes('conversation') || message.includes('thread')) return isZh ? '这个线程当前不可用。' : 'This thread is not available right now.';
+  if (message.includes('required') || message.includes('missing')) return isZh ? '还有必填信息未补充完整。' : 'Some required information is still missing.';
+  if (message.includes('absolute') || message.includes('path')) return isZh ? '请使用有效的本地绝对路径。' : 'Please use a valid absolute local path.';
+  if (message.includes('timeout') || message.includes('network') || message.includes('fetch') || message.includes('connection')) {
+    return isZh ? '本地服务正在处理临时问题，请稍后再试。' : 'The local service is handling a temporary issue. Please try again shortly.';
+  }
+  return isZh ? '当前操作暂时无法完成，请稍后再试。' : 'This action could not be completed right now.';
 }
 
 function canBootstrapLocalService(baseUrl: string): boolean {
@@ -984,12 +495,6 @@ async function bootstrapWorkbenchService(port: number, repoRoot?: string): Promi
   return invoke<BootstrapWorkbenchServiceResult>('bootstrap_workbench_service', {
     port,
     repoRoot: repoRoot?.trim() || undefined,
-  });
-}
-
-async function getWorkbenchBootstrapStatus(repoRoot: string): Promise<WorkbenchBootstrapStatus> {
-  return invoke<WorkbenchBootstrapStatus>('get_workbench_bootstrap_status', {
-    repoRoot: repoRoot.trim() || undefined,
   });
 }
 

@@ -117,6 +117,7 @@ export async function cmdCreate(
     skill?: string;
     targetManifest?: string;
     chatPlatform?: string;
+    slug?: string;
     yes?: boolean;
     rounds?: string;
     trainingProfile?: string;
@@ -226,7 +227,8 @@ export async function cmdCreate(
 
   // ── Create persona + soul ─────────────────────────────────────────────────
   const persona = createPersona(displayName, mode, sourceTargets,
-    (s) => existsSync(settings.getPersonaDir(s))
+    (s) => existsSync(settings.getPersonaDir(s)),
+    options.slug?.trim()
   );
   const soul = createEmptySoul(displayName, handle ? `@${handle}` : undefined);
   console.log(chalk.dim(`Slug: ${persona.slug}`));

@@ -1,117 +1,77 @@
-import { SettingsSection } from '../lib/types';
 import { useI18n } from '../lib/i18n';
-import { WorkbenchForms, WorkbenchFormsProps } from './WorkbenchForms';
 
-interface SettingsScreenProps extends Omit<WorkbenchFormsProps, 'activeView' | 'embedded'> {
-  activeSection: SettingsSection;
-  onSectionChange: (section: SettingsSection) => void;
+interface SettingsScreenProps {
+  apiBaseUrl: string;
+  repoRoot: string;
+  dataDir: string;
+  serviceHealthy: boolean;
+  onApiBaseUrlChange: (value: string) => void;
+  onRepoRootChange: (value: string) => void;
+  onDataDirChange: (value: string) => void;
+  onRefreshConnection: () => Promise<void>;
 }
 
-const SECTION_CONFIG: Array<{
-  id: SettingsSection;
-  title: string;
-  summary: string;
-  view: WorkbenchFormsProps['activeView'];
-}> = [
-  {
-    id: 'persona',
-    title: 'Persona',
-    summary: 'Create personas, point to target manifests, and manage source inputs.',
-    view: 'Create',
-  },
-  {
-    id: 'training',
-    title: 'Training',
-    summary: 'Launch training, attach evidence context, and run smoke verification.',
-    view: 'Train',
-  },
-  {
-    id: 'experiment',
-    title: 'Experiment',
-    summary: 'Compare profiles, routing strategies, and seed modes without leaving the client.',
-    view: 'Experiment',
-  },
-  {
-    id: 'export',
-    title: 'Export',
-    summary: 'Export persona artifacts and keep the output path easy to recover later.',
-    view: 'Export',
-  },
-  {
-    id: 'runtime',
-    title: 'Runtime',
-    summary: 'Check the local service, bundled runtime, and recovery readiness.',
-    view: 'Settings',
-  },
-];
+export function SettingsScreen({
+  apiBaseUrl,
+  repoRoot,
+  dataDir,
+  serviceHealthy,
+  onApiBaseUrlChange,
+  onRepoRootChange,
+  onDataDirChange,
+  onRefreshConnection,
+}: SettingsScreenProps) {
+  const { locale, setLocale } = useI18n();
+  const isZh = locale === 'zh-CN';
 
-export function SettingsScreen({ activeSection, onSectionChange, ...formProps }: SettingsScreenProps) {
-  const { locale, setLocale, t } = useI18n();
   return (
-    <section className="settings-screen panel">
-      <div className="settings-screen-header">
+    <section className="screen settings-screen">
+      <header className="screen-header compact-gap">
         <div>
-          <p className="eyebrow">{t('Settings')}</p>
-          <h2>{t('Workbench Controls')}</h2>
-          <p className="settings-screen-copy">
-            {t('Advanced actions stay here so the main surface can stay focused on conversation.')}
+          <p className="screen-eyebrow">{isZh ? '基础设置' : 'Basic Settings'}</p>
+          <h1>{isZh ? '只保留必要配置' : 'Only the essentials'}</h1>
+          <p className="screen-subtitle">
+            {isZh ? '这里不展示训练、实验或内部诊断术语，只保留连接和语言等基础项。' : 'Training and internal diagnostics stay hidden here too.'}
           </p>
         </div>
-        <div className="language-switch">
-          <button
-            type="button"
-            className={locale === 'zh-CN' ? 'settings-pill active' : 'settings-pill'}
-            onClick={() => setLocale('zh-CN')}
-          >
-            中文
-          </button>
-          <button
-            type="button"
-            className={locale === 'en-US' ? 'settings-pill active' : 'settings-pill'}
-            onClick={() => setLocale('en-US')}
-          >
-            EN
-          </button>
+        <div className={serviceHealthy ? 'service-pill healthy' : 'service-pill'}>
+          {serviceHealthy ? (isZh ? '连接正常' : 'Connected') : (isZh ? '连接异常' : 'Offline')}
         </div>
-      </div>
+      </header>
 
-      <div className="settings-section-pills">
-        {SECTION_CONFIG.map((section) => (
-          <button
-            key={section.id}
-            type="button"
-            className={section.id === activeSection ? 'settings-pill active' : 'settings-pill'}
-            onClick={() => onSectionChange(section.id)}
-          >
-            {t(section.title)}
-          </button>
-        ))}
-      </div>
+      <div className="settings-grid">
+        <section className="detail-card wide">
+          <h3>{isZh ? '连接' : 'Connection'}</h3>
+          <label className="field-block">
+            <span>{isZh ? 'API 地址' : 'API Address'}</span>
+            <input value={apiBaseUrl} onChange={(event) => onApiBaseUrlChange(event.target.value)} placeholder="http://127.0.0.1:4310" />
+          </label>
+          <label className="field-block">
+            <span>{isZh ? '仓库根目录' : 'Repository Root'}</span>
+            <input value={repoRoot} onChange={(event) => onRepoRootChange(event.target.value)} placeholder="/absolute/path/to/Neeko" />
+          </label>
+          <label className="field-block">
+            <span>{isZh ? '数据目录' : 'Data Directory'}</span>
+            <input value={dataDir} onChange={(event) => onDataDirChange(event.target.value)} placeholder="/absolute/path/to/data" />
+          </label>
+          <div className="form-actions">
+            <button type="button" className="primary-button" onClick={() => void onRefreshConnection()}>
+              {isZh ? '刷新连接' : 'Refresh Connection'}
+            </button>
+          </div>
+        </section>
 
-      <div className="settings-section-stack">
-        {SECTION_CONFIG.map((section) => {
-          const open = section.id === activeSection;
-          return (
-            <section key={section.id} className={open ? 'settings-group active' : 'settings-group'}>
-              <button
-                type="button"
-                className="settings-group-header"
-                onClick={() => onSectionChange(section.id)}
-              >
-                <div>
-                  <strong>{t(section.title)}</strong>
-                  <p>{t(section.summary)}</p>
-                </div>
-                <span className={open ? 'badge success' : 'badge'}>{open ? t('open') : t('show')}</span>
-              </button>
-              {open ? (
-                <div className="settings-group-body">
-                  <WorkbenchForms {...formProps} activeView={section.view} embedded />
-                </div>
-              ) : null}
-            </section>
-          );
-        })}
+        <section className="detail-card">
+          <h3>{isZh ? '语言' : 'Language'}</h3>
+          <div className="language-switcher">
+            <button type="button" className={locale === 'zh-CN' ? 'ghost-button active' : 'ghost-button'} onClick={() => setLocale('zh-CN')}>
+              中文
+            </button>
+            <button type="button" className={locale === 'en-US' ? 'ghost-button active' : 'ghost-button'} onClick={() => setLocale('en-US')}>
+              English
+            </button>
+          </div>
+        </section>
       </div>
     </section>
   );

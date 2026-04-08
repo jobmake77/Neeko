@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, extname, isAbsolute, join } from 'path';
 import { spawn } from 'child_process';
 import yaml from 'js-yaml';
@@ -28,6 +28,9 @@ import {
   ConversationBundle,
   ConversationMessage,
   MemoryCandidate,
+  PersonaConfig,
+  PersonaDetail,
+  PersonaMutationResult,
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
@@ -53,6 +56,17 @@ export interface WorkbenchCreateInput {
   inputRouting?: string;
   trainingSeedMode?: string;
   kimiStabilityMode?: string;
+  slug?: string;
+}
+
+export interface PersonaConfigInput {
+  persona_slug?: string;
+  name: string;
+  source_type: PersonaConfig['source_type'];
+  source_target?: string;
+  source_path?: string;
+  target_manifest_path?: string;
+  platform?: string;
 }
 
 export interface WorkbenchTrainingInput {
@@ -156,6 +170,22 @@ function readJsonFile<T>(path: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function slugifyPersonaName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'persona';
+}
+
+function detectConfigSourceType(source: string | undefined): PersonaConfig['source_type'] {
+  if (!source) return 'social';
+  if (!isAbsolute(source)) return 'social';
+  const extension = extname(source).toLowerCase();
+  if (['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'].includes(extension)) return 'video_file';
+  return 'chat_file';
 }
 
 function inferConversationTitle(content: string): string {
@@ -426,7 +456,7 @@ export class WorkbenchService {
     if (!existsSync(personasDir)) return [];
     return readdirSync(personasDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => this.readPersonaSummary(entry.name))
+      .map((entry) => this.readPersonaSummary(entry.name) ?? this.readPersonaConfigSummary(entry.name))
       .filter((item): item is PersonaSummary => Boolean(item))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   }
@@ -443,6 +473,137 @@ export class WorkbenchService {
         coverage_score: soul.coverage_score,
       },
     };
+  }
+
+  getPersonaDetail(slug: string): PersonaDetail {
+    const persona = this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug);
+    if (!persona) {
+      throw new Error(`Persona "${slug}" not found.`);
+    }
+    return {
+      persona,
+      config: this.getPersonaConfig(slug),
+    };
+  }
+
+  getPersonaConfig(slug: string): PersonaConfig {
+    const stored = this.store.getPersonaConfig(slug);
+    if (stored) return stored;
+
+    const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+    if (!existsSync(personaPath)) {
+      throw new Error(`Persona "${slug}" not found.`);
+    }
+    const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+    const primarySource = persona.source_targets[0];
+    const sourceType = detectConfigSourceType(primarySource);
+    const inferred: PersonaConfig = {
+      persona_slug: persona.slug,
+      name: persona.name,
+      source_type: sourceType,
+      source_target: sourceType === 'social' ? primarySource : undefined,
+      source_path: sourceType === 'social' ? undefined : primarySource,
+      target_manifest_path: undefined,
+      platform: sourceType === 'social' ? 'x' : undefined,
+      updated_at: persona.updated_at,
+    };
+    this.store.savePersonaConfig(inferred);
+    return inferred;
+  }
+
+  createPersonaFromConfig(input: PersonaConfigInput): PersonaMutationResult {
+    const now = new Date().toISOString();
+    const slug = input.persona_slug?.trim() || this.buildAvailablePersonaSlug(input.name);
+    const config: PersonaConfig = {
+      persona_slug: slug,
+      name: input.name.trim(),
+      source_type: input.source_type,
+      source_target: input.source_target?.trim() || undefined,
+      source_path: input.source_path?.trim() || undefined,
+      target_manifest_path: input.target_manifest_path?.trim() || undefined,
+      platform: input.platform?.trim() || undefined,
+      updated_at: now,
+    };
+    this.validatePersonaConfig(config);
+    this.store.savePersonaConfig(config);
+
+    const run = this.startCreateRunFromConfig(config);
+    return {
+      persona: this.readPersonaConfigSummary(slug) ?? this.readPersonaSummary(slug) ?? {
+        slug,
+        name: config.name,
+        status: 'creating',
+        doc_count: 0,
+        memory_node_count: 0,
+        training_rounds: 0,
+        updated_at: config.updated_at,
+      },
+      run,
+    };
+  }
+
+  async updatePersona(slug: string, input: PersonaConfigInput): Promise<PersonaMutationResult> {
+    const current = this.getPersonaConfig(slug);
+    const nextConfig: PersonaConfig = {
+      ...current,
+      ...input,
+      persona_slug: slug,
+      name: input.name?.trim() || current.name,
+      source_target: input.source_target !== undefined ? (input.source_target.trim() || undefined) : current.source_target,
+      source_path: input.source_path !== undefined ? (input.source_path.trim() || undefined) : current.source_path,
+      target_manifest_path: input.target_manifest_path !== undefined
+        ? (input.target_manifest_path.trim() || undefined)
+        : current.target_manifest_path,
+      platform: input.platform !== undefined ? (input.platform.trim() || undefined) : current.platform,
+      updated_at: new Date().toISOString(),
+    };
+    this.validatePersonaConfig(nextConfig);
+    this.store.savePersonaConfig(nextConfig);
+    await this.preparePersonaRebuild(slug);
+    this.markPersonaUpdating(slug);
+    const run = this.startCreateRunFromConfig(nextConfig);
+    return {
+      persona: this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug) ?? {
+        slug,
+        name: nextConfig.name,
+        status: 'updating',
+        doc_count: 0,
+        memory_node_count: 0,
+        training_rounds: 0,
+        updated_at: nextConfig.updated_at,
+      },
+      run,
+    };
+  }
+
+  async deletePersona(slug: string): Promise<boolean> {
+    const personaSummary = this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug);
+    if (!personaSummary) {
+      return false;
+    }
+
+    this.store.deleteConversationsByPersona(slug);
+    this.store.deletePromotionHandoffsByPersona(slug);
+    this.store.deleteEvidenceImportsByPersona(slug);
+    this.store.deleteTrainingPrepsByPersona(slug);
+    this.store.deleteRunsByPersona(slug);
+
+    const config = this.store.getPersonaConfig(slug);
+    this.store.deletePersonaConfig(slug);
+
+    const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+    if (existsSync(personaPath)) {
+      const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+      await this.deleteMemoryCollection(persona.memory_collection);
+    } else if (config) {
+      await this.deleteMemoryCollection(`nico_${slug}`);
+    }
+
+    const personaDir = settings.getPersonaDir(slug);
+    if (existsSync(personaDir)) {
+      rmSync(personaDir, { recursive: true, force: true });
+    }
+    return true;
   }
 
   listConversations(personaSlug: string): Conversation[] {
@@ -1012,12 +1173,13 @@ export class WorkbenchService {
     if (input.targetManifest) args.push('--target-manifest', input.targetManifest);
     if (input.chatPlatform) args.push('--chat-platform', input.chatPlatform);
     args.push('--yes');
+    if (input.slug) args.push('--slug', input.slug);
     if (typeof input.rounds === 'number') args.push('--rounds', String(input.rounds));
     if (input.trainingProfile) args.push('--training-profile', input.trainingProfile);
     if (input.inputRouting) args.push('--input-routing', input.inputRouting);
     if (input.trainingSeedMode) args.push('--training-seed-mode', input.trainingSeedMode);
     if (input.kimiStabilityMode) args.push('--kimi-stability-mode', input.kimiStabilityMode);
-    return this.startCliRun('create', undefined, args);
+    return this.startCliRun('create', input.slug, args);
   }
 
   startTraining(input: WorkbenchTrainingInput): WorkbenchRun {
@@ -1135,6 +1297,75 @@ export class WorkbenchService {
     return { run, report, context, context_path: contextPath };
   }
 
+  private validatePersonaConfig(config: PersonaConfig): void {
+    if (!config.name.trim()) throw new Error('name is required');
+    if (config.source_type === 'social' && !config.source_target?.trim()) {
+      throw new Error('source_target is required');
+    }
+    if ((config.source_type === 'chat_file' || config.source_type === 'video_file') && !config.source_path?.trim()) {
+      throw new Error('source_path is required');
+    }
+    if ((config.source_type === 'chat_file' || config.source_type === 'video_file') && !config.target_manifest_path?.trim()) {
+      throw new Error('target_manifest_path is required');
+    }
+  }
+
+  private buildAvailablePersonaSlug(name: string): string {
+    const base = slugifyPersonaName(name);
+    const personasDir = join(settings.getDataDir(), 'personas');
+    const existing = existsSync(personasDir)
+      ? new Set(
+        readdirSync(personasDir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name)
+      )
+      : new Set<string>();
+    let slug = base;
+    let counter = 1;
+    while (existing.has(slug)) {
+      slug = `${base}-${counter++}`;
+    }
+    return slug;
+  }
+
+  private startCreateRunFromConfig(config: PersonaConfig): WorkbenchRun {
+    const input = this.mapPersonaConfigToCreateInput(config);
+    return this.createPersona({
+      ...input,
+      slug: config.persona_slug,
+      rounds: 1,
+    });
+  }
+
+  private mapPersonaConfigToCreateInput(config: PersonaConfig): WorkbenchCreateInput {
+    if (config.source_type === 'social') {
+      return {
+        target: config.source_target,
+      };
+    }
+    return {
+      target: config.source_path,
+      targetManifest: config.target_manifest_path,
+      chatPlatform: config.source_type === 'chat_file'
+        ? (config.platform as 'wechat' | 'feishu' | undefined) ?? 'wechat'
+        : undefined,
+    };
+  }
+
+  private readPersonaConfigSummary(slug: string): PersonaSummary | null {
+    const config = this.store.getPersonaConfig(slug);
+    if (!config) return null;
+    return {
+      slug: config.persona_slug,
+      name: config.name,
+      status: existsSync(join(settings.getPersonaDir(slug), 'persona.json')) ? 'available' : 'creating',
+      doc_count: 0,
+      memory_node_count: 0,
+      training_rounds: 0,
+      updated_at: config.updated_at,
+    };
+  }
+
   private readPersonaSummary(slug: string): PersonaSummary | null {
     try {
       const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
@@ -1151,6 +1382,42 @@ export class WorkbenchService {
       };
     } catch {
       return null;
+    }
+  }
+
+  private markPersonaUpdating(slug: string): void {
+    const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+    if (!existsSync(personaPath)) return;
+    try {
+      const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+      const next: Persona = {
+        ...persona,
+        status: 'training',
+        updated_at: new Date().toISOString(),
+      };
+      writeFileSync(personaPath, JSON.stringify(next, null, 2), 'utf-8');
+    } catch {
+      // Keep rebuild resilient even if the existing persona asset is partially broken.
+    }
+  }
+
+  private async preparePersonaRebuild(slug: string): Promise<void> {
+    const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+    if (!existsSync(personaPath)) return;
+    try {
+      const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+      await this.deleteMemoryCollection(persona.memory_collection);
+    } catch {
+      // Rebuild should continue even if cleanup cannot complete.
+    }
+  }
+
+  private async deleteMemoryCollection(collectionName: string): Promise<void> {
+    const store = this.createMemoryStore();
+    try {
+      await store.deleteCollection(collectionName);
+    } catch {
+      // Hard delete should stay best-effort for local vector state.
     }
   }
 

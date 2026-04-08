@@ -89,8 +89,8 @@ export function PersonaLibraryScreen({
 
   if (mode === 'create') {
     return (
-      <section className="screen persona-screen">
-        <header className="screen-header compact-gap">
+      <section className="screen persona-screen create-screen">
+        <header className="screen-header compact-gap persona-hero">
           <div>
             <p className="screen-eyebrow">{isZh ? '两步创建' : 'Two-step Create'}</p>
             <h1>{isZh ? '新建人格' : 'Create Persona'}</h1>
@@ -107,7 +107,7 @@ export function PersonaLibraryScreen({
         </div>
 
         {step === 1 ? (
-          <div className="form-card">
+          <div className="form-card persona-form-shell">
             <label className="field-block">
               <span>{isZh ? '名称' : 'Name'}</span>
               <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder={isZh ? '例如：Karpathy' : 'For example: Karpathy'} />
@@ -130,7 +130,7 @@ export function PersonaLibraryScreen({
             </div>
           </div>
         ) : (
-          <div className="form-card">
+          <div className="form-card persona-form-shell">
             <SourceFields form={form} setForm={setForm} isZh={isZh} />
             <div className="form-actions split">
               <button type="button" className="ghost-button" onClick={() => setStep(1)}>
@@ -160,7 +160,7 @@ export function PersonaLibraryScreen({
 
   return (
     <section className="screen persona-screen">
-      <header className="screen-header compact-gap">
+      <header className="screen-header compact-gap persona-hero">
         <div>
           <p className="screen-eyebrow">{isZh ? '人格详情' : 'Persona Detail'}</p>
           <h1>{detail.persona.name}</h1>
@@ -176,18 +176,38 @@ export function PersonaLibraryScreen({
         </div>
       </header>
 
-      <div className="detail-grid">
-        <section className="detail-card">
-          <h3>{isZh ? '基础信息' : 'Basics'}</h3>
-          <div className="detail-row"><span>{isZh ? '名称' : 'Name'}</span><strong>{detail.persona.name}</strong></div>
-          <div className="detail-row"><span>{isZh ? '标识' : 'Slug'}</span><strong>{detail.persona.slug}</strong></div>
-          <div className="detail-row"><span>{isZh ? '状态' : 'Status'}</span><strong>{statusLabel(detail.persona.status, isZh)}</strong></div>
-          <div className="detail-row"><span>{isZh ? '最近更新' : 'Updated'}</span><strong>{new Date(detail.persona.updated_at).toLocaleString()}</strong></div>
-        </section>
+      <section className="persona-summary-strip">
+        <div className="summary-chip">
+          <span>{isZh ? '名称' : 'Name'}</span>
+          <strong>{detail.persona.name}</strong>
+        </div>
+        <div className="summary-chip">
+          <span>{isZh ? '标识' : 'Slug'}</span>
+          <strong>{detail.persona.slug}</strong>
+        </div>
+        <div className="summary-chip">
+          <span>{isZh ? '状态' : 'Status'}</span>
+          <strong>{statusLabel(detail.persona.status, isZh)}</strong>
+        </div>
+        <div className="summary-chip">
+          <span>{isZh ? '更新' : 'Updated'}</span>
+          <strong>{new Date(detail.persona.updated_at).toLocaleDateString()}</strong>
+        </div>
+      </section>
 
-        <section className="detail-card wide">
-          <h3>{isZh ? '来源设置' : 'Source Settings'}</h3>
-          <div className="form-card embedded">
+      <section className="detail-card persona-editor-card">
+        <div className="persona-editor-header">
+          <div>
+            <h3>{isZh ? '来源设置' : 'Source Settings'}</h3>
+            <p className="screen-subtitle">{isZh ? '修改后会自动在后台重建，不需要再手动训练。' : 'Saving here will rebuild the persona in the background.'}</p>
+          </div>
+          {run?.persona_slug === detail.persona.slug && run.status === 'running' ? (
+            <span className="service-pill">{isZh ? '后台更新中' : 'Updating'}</span>
+          ) : null}
+        </div>
+
+        <div className="persona-editor-grid">
+          <div className="editor-section">
             <label className="field-block">
               <span>{isZh ? '名称' : 'Name'}</span>
               <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
@@ -203,16 +223,20 @@ export function PersonaLibraryScreen({
                 <option value="video_file">{isZh ? '视频资料' : 'Video File'}</option>
               </select>
             </label>
-            <SourceFields form={form} setForm={setForm} isZh={isZh} />
-            <div className="form-actions split">
-              <div className="inline-status">{run?.persona_slug === detail.persona.slug && run.status === 'running' ? (isZh ? '后台正在更新这个人格…' : 'Updating this persona in the background...') : null}</div>
-              <button type="button" className="primary-button" onClick={() => void handleSubmit()} disabled={!canSubmit || submitting}>
-                {submitting ? (isZh ? '保存中…' : 'Saving...') : (isZh ? '保存并后台重建' : 'Save and Rebuild')}
-              </button>
-            </div>
           </div>
-        </section>
-      </div>
+
+          <div className="editor-section">
+            <SourceFields form={form} setForm={setForm} isZh={isZh} />
+          </div>
+        </div>
+
+        <div className="form-actions split persona-editor-actions">
+          <div className="inline-status">{run?.persona_slug === detail.persona.slug && run.status === 'running' ? (isZh ? '系统正在后台更新这个人格。' : 'The system is updating this persona in the background.') : null}</div>
+          <button type="button" className="primary-button" onClick={() => void handleSubmit()} disabled={!canSubmit || submitting}>
+            {submitting ? (isZh ? '保存中…' : 'Saving...') : (isZh ? '保存并后台重建' : 'Save and Rebuild')}
+          </button>
+        </div>
+      </section>
     </section>
   );
 }

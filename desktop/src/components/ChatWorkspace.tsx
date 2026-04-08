@@ -62,15 +62,17 @@ export function ChatWorkspace({ persona, bundle, loading, onSend, onCopyMessage 
       </div>
 
       <form className="composer" onSubmit={handleSubmit}>
-        <textarea
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          onKeyDown={(event) => void handleKeyDown(event)}
-          placeholder={persona ? (isZh ? '输入你想和这个人格说的话' : 'Type a message for this persona') : (isZh ? '先在左侧选择一个人格' : 'Select a persona first')}
-          rows={4}
-          disabled={!persona}
-        />
-        <div className="composer-footer">
+        <div className="composer-shell">
+          <textarea
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => void handleKeyDown(event)}
+            placeholder={persona ? (isZh ? '输入你想和这个人格说的话' : 'Type a message for this persona') : (isZh ? '先在左侧选择一个人格' : 'Select a persona first')}
+            rows={4}
+            disabled={!persona}
+          />
+        </div>
+        <div className="composer-footer composer-footer-tight">
           <small>{isZh ? 'Cmd/Ctrl + Enter 发送' : 'Cmd/Ctrl + Enter to send'}</small>
           <button type="submit" className="primary-button" disabled={loading || !message.trim() || !persona}>
             {loading ? (isZh ? '发送中…' : 'Sending...') : (isZh ? '发送' : 'Send')}

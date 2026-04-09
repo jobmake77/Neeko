@@ -1,0 +1,268 @@
+/* ── i18n ───────────────────────────────────────────────── */
+export type Locale = 'zh' | 'en';
+
+const ZH: Record<string, string> = {
+  // 导航
+  chat: '聊天',
+  personas: '人格库',
+  settings: '设置',
+  newChat: '新建对话',
+  recentChats: '最近对话',
+  noChats: '暂无对话',
+
+  // 聊天
+  selectPersona: '选择一个人格开始对话',
+  typeMessage: '输入消息…',
+  send: '发送',
+  sendHint: 'Cmd/Ctrl+Enter 发送',
+  thinking: '思考中…',
+  copyMessage: '复制',
+  deleteThread: '删除对话',
+  renameThread: '重命名',
+  newThread: '新建对话',
+  enterThreadName: '输入对话名称',
+
+  // 人格库
+  allPersonas: '我的人格',
+  noPersonas: '还没有人格',
+  noPersonasHint: '点击「新建人格」开始蒸馏你的第一个数字孪生',
+  newPersona: '新建人格',
+  editPersona: '编辑',
+  deletePersona: '删除',
+  startChat: '开始对话',
+  personaName: '名称',
+  personaSlug: '标识符',
+  personaSource: '数据来源',
+  personaHandle: '社交账号（如 @elonmusk）',
+  sourceSocial: 'Social',
+  sourceSocialDesc: 'X/Twitter 公开推文',
+  sourceChatFile: 'Chat File',
+  sourceChatFileDesc: '微信/飞书聊天记录',
+  sourceVideoFile: 'Video File',
+  sourceVideoFileDesc: '视频/音频文件',
+  stepBasicInfo: '基本信息',
+  stepDataSource: '数据来源',
+  create: '创建',
+  save: '保存',
+  cancel: '取消',
+  confirm: '确认',
+  confirmDelete: '确认删除',
+  confirmDeletePersonaMsg: '此操作将永久删除该人格及所有相关数据，无法恢复。',
+  delete: '删除',
+  created: '创建于',
+  updated: '更新于',
+  status_pending: '待创建',
+  status_building: '构建中',
+  status_ready: '就绪',
+  status_error: '错误',
+
+  // 设置
+  connection: '连接',
+  apiUrl: 'API 地址',
+  apiUrlDesc: 'workbench-server 的地址',
+  repoRoot: '仓库根目录',
+  repoRootDesc: 'Neeko 数据仓库路径',
+  dataDir: '数据目录',
+  dataDirDesc: '人格数据存储目录',
+  appearance: '外观',
+  language: '语言',
+  theme: '主题',
+  themeLight: '浅色',
+  themeDark: '深色',
+  themeSystem: '跟随系统',
+  serviceStatus: '服务状态',
+  connected: '已连接',
+  disconnected: '未连接',
+  reconnect: '重新连接',
+  checkStatus: '检测状态',
+  saved: '已保存',
+  browse: '浏览…',
+
+  // 通用
+  loading: '加载中…',
+  error: '出错了',
+  retry: '重试',
+  empty: '暂无内容',
+  search: '搜索',
+  close: '关闭',
+  back: '返回',
+  more: '更多',
+
+  // 培养中心
+  cultivationCenter: '培养中心',
+  myPersonas: '我的人格',
+  cultivating: '培养中…',
+  cultivationComplete: '培养完成',
+  awaitingCultivation: '等待培养',
+  cultivationFailed: '培养遇到问题',
+  cultivationDesc_pending: '人格已创建，等待启动培养',
+  cultivationDesc_building: '正在从数据中提炼人格特征',
+  cultivationDesc_ready: '人格已就绪，可以开始对话',
+  cultivationDesc_error: '培养过程中遇到问题，请重试',
+
+  // 数据来源扩展
+  uploadFile: '上传文件',
+  chatFileHint: '上传微信 / 飞书导出的聊天记录',
+  chatFileFormats: '支持 .txt  .json  .csv  .html  .zip',
+  channelUrl: '频道链接',
+  channelUrlHint: '输入 YouTube / B 站创作者主页 URL，获取全部视频',
+  singleVideoUrl: '单个视频',
+  singleVideoUrlHint: '输入单条视频 URL',
+  localFile: '本地文件',
+  localFileHint: '上传音视频文件',
+  selectSubMode: '选择方式',
+
+  // 模型配置
+  modelConfig: '模型配置',
+  provider: '服务商',
+  apiKeyHint: '输入 API Key',
+  modelSelect: '选择模型',
+  showKey: '显示',
+  hideKey: '隐藏',
+
+  // 培养细节（步骤3）
+  stepCultivation: '培养细节',
+  quickMode: '快速培养',
+  quickModeDesc: '3 轮问答，快速体验',
+  fullMode: '全量培养',
+  fullModeDesc: '10 轮问答，深度培养（推荐）',
+  createAndCultivate: '创建并培养',
+};
+
+const EN: Record<string, string> = {
+  chat: 'Chat',
+  personas: 'Personas',
+  settings: 'Settings',
+  newChat: 'New Chat',
+  recentChats: 'Recent Chats',
+  noChats: 'No chats yet',
+  selectPersona: 'Select a persona to start chatting',
+  typeMessage: 'Type a message…',
+  send: 'Send',
+  sendHint: 'Cmd/Ctrl+Enter to send',
+  thinking: 'Thinking…',
+  copyMessage: 'Copy',
+  deleteThread: 'Delete',
+  renameThread: 'Rename',
+  newThread: 'New Thread',
+  enterThreadName: 'Enter thread name',
+  allPersonas: 'My Personas',
+  noPersonas: 'No personas yet',
+  noPersonasHint: 'Click "New Persona" to create your first digital twin',
+  newPersona: 'New Persona',
+  editPersona: 'Edit',
+  deletePersona: 'Delete',
+  startChat: 'Start Chat',
+  personaName: 'Name',
+  personaSlug: 'Identifier',
+  personaSource: 'Data Source',
+  personaHandle: 'Social handle (e.g. @elonmusk)',
+  sourceSocial: 'Social',
+  sourceSocialDesc: 'X/Twitter public tweets',
+  sourceChatFile: 'Chat File',
+  sourceChatFileDesc: 'WeChat/Lark chat logs',
+  sourceVideoFile: 'Video File',
+  sourceVideoFileDesc: 'Video/audio file',
+  stepBasicInfo: 'Basic Info',
+  stepDataSource: 'Data Source',
+  create: 'Create',
+  save: 'Save',
+  cancel: 'Cancel',
+  confirm: 'Confirm',
+  confirmDelete: 'Confirm Delete',
+  confirmDeletePersonaMsg:
+    'This will permanently delete the persona and all associated data. This action cannot be undone.',
+  delete: 'Delete',
+  created: 'Created',
+  updated: 'Updated',
+  status_pending: 'Pending',
+  status_building: 'Building',
+  status_ready: 'Ready',
+  status_error: 'Error',
+  connection: 'Connection',
+  apiUrl: 'API URL',
+  apiUrlDesc: 'workbench-server address',
+  repoRoot: 'Repo Root',
+  repoRootDesc: 'Neeko data repository path',
+  dataDir: 'Data Directory',
+  dataDirDesc: 'Persona data storage directory',
+  appearance: 'Appearance',
+  language: 'Language',
+  theme: 'Theme',
+  themeLight: 'Light',
+  themeDark: 'Dark',
+  themeSystem: 'System',
+  serviceStatus: 'Service Status',
+  connected: 'Connected',
+  disconnected: 'Disconnected',
+  reconnect: 'Reconnect',
+  checkStatus: 'Check Status',
+  saved: 'Saved',
+  browse: 'Browse…',
+  loading: 'Loading…',
+  error: 'Something went wrong',
+  retry: 'Retry',
+  empty: 'Nothing here',
+  search: 'Search',
+  close: 'Close',
+  back: 'Back',
+  more: 'More',
+
+  cultivationCenter: 'Cultivation',
+  myPersonas: 'My Personas',
+  cultivating: 'Cultivating…',
+  cultivationComplete: 'Ready',
+  awaitingCultivation: 'Awaiting Cultivation',
+  cultivationFailed: 'Cultivation Failed',
+  cultivationDesc_pending: 'Persona created, waiting to start cultivation',
+  cultivationDesc_building: 'Extracting personality traits from data',
+  cultivationDesc_ready: 'Persona is ready for conversation',
+  cultivationDesc_error: 'An error occurred during cultivation',
+  uploadFile: 'Upload File',
+  chatFileHint: 'Upload exported WeChat / Feishu chat logs',
+  chatFileFormats: 'Supports .txt  .json  .csv  .html  .zip',
+  channelUrl: 'Channel URL',
+  channelUrlHint: 'Enter YouTube / Bilibili creator page URL',
+  singleVideoUrl: 'Single Video',
+  singleVideoUrlHint: 'Enter a single video URL',
+  localFile: 'Local File',
+  localFileHint: 'Upload audio/video file',
+  selectSubMode: 'Select method',
+  modelConfig: 'Model Config',
+  provider: 'Provider',
+  apiKeyHint: 'Enter API Key',
+  modelSelect: 'Select model',
+  showKey: 'Show',
+  hideKey: 'Hide',
+
+  // Cultivation details (step 3)
+  stepCultivation: 'Cultivation',
+  quickMode: 'Quick',
+  quickModeDesc: '3 rounds, fast experience',
+  fullMode: 'Full',
+  fullModeDesc: '10 rounds, deep cultivation (recommended)',
+  createAndCultivate: 'Create & Cultivate',
+};
+
+let _locale: Locale = (localStorage.getItem('neeko.locale') as Locale) || 'zh';
+const _listeners = new Set<() => void>();
+
+export function getLocale(): Locale {
+  return _locale;
+}
+
+export function setLocale(l: Locale) {
+  _locale = l;
+  localStorage.setItem('neeko.locale', l);
+  _listeners.forEach((fn) => fn());
+}
+
+export function t(key: string): string {
+  const map = _locale === 'zh' ? ZH : EN;
+  return map[key] ?? key;
+}
+
+export function onLocaleChange(fn: () => void): () => void {
+  _listeners.add(fn);
+  return () => _listeners.delete(fn);
+}

@@ -1,75 +1,160 @@
-import {
+import type {
+  PersonaSummary,
+  PersonaMutationResult,
+  PersonaConfig,
   Conversation,
   ConversationBundle,
-  PersonaConfig,
-  PersonaDetail,
-  PersonaMutationResult,
-  PersonaSummary,
+  ConversationMessage,
   WorkbenchRun,
+  HealthStatus,
 } from './types';
 
-const DEFAULT_BASE_URL = import.meta.env.VITE_NEEKO_WORKBENCH_URL ?? 'http://127.0.0.1:4310';
+let _baseUrl = localStorage.getItem('neeko.apiBaseUrl') || 'http://127.0.0.1:4310';
 
-export function getApiBaseUrl(): string {
-  return window.localStorage.getItem('neeko.workbench.apiBaseUrl') ?? DEFAULT_BASE_URL;
+export function getBaseUrl(): string {
+  return _baseUrl;
 }
 
-export function setApiBaseUrl(value: string): void {
-  window.localStorage.setItem('neeko.workbench.apiBaseUrl', value);
+export function setBaseUrl(url: string) {
+  _baseUrl = url;
+  localStorage.setItem('neeko.apiBaseUrl', url);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${getApiBaseUrl()}${path}`, {
+  const res = await fetch(`${_baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers ?? {}),
     },
   });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(typeof payload.error === 'string' ? payload.error : 'Request failed');
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`API ${res.status}: ${text}`);
   }
-  if (response.status === 204) return {} as T;
-  return response.json() as Promise<T>;
+  // 204 No Content
+  if (res.status === 204) return undefined as T;
+  return res.json();
 }
 
-export const api = {
-  health: () => request<{ ok: boolean; port: number }>('/health'),
-  listPersonas: () => request<PersonaSummary[]>('/api/personas'),
-  getPersonaDetail: (slug: string) => request<PersonaDetail>(`/api/personas/${encodeURIComponent(slug)}/detail`),
-  getPersonaConfig: (slug: string) => request<PersonaConfig>(`/api/personas/${encodeURIComponent(slug)}/config`),
-  createPersona: (payload: Record<string, unknown>) =>
-    request<PersonaMutationResult>('/api/personas', { method: 'POST', body: JSON.stringify(payload) }),
-  updatePersona: (slug: string, payload: Record<string, unknown>) =>
-    request<PersonaMutationResult>(`/api/personas/${encodeURIComponent(slug)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    }),
-  deletePersona: (slug: string) =>
-    request<{ ok: boolean }>(`/api/personas/${encodeURIComponent(slug)}`, {
-      method: 'DELETE',
-    }),
-  listConversations: (slug: string) => request<Conversation[]>(`/api/personas/${encodeURIComponent(slug)}/conversations`),
-  createConversation: (slug: string, title?: string) =>
-    request<Conversation>(`/api/personas/${encodeURIComponent(slug)}/conversations`, {
-      method: 'POST',
-      body: JSON.stringify({ title }),
-    }),
-  getConversation: (id: string) => request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}`),
-  renameConversation: (id: string, title: string) =>
-    request<Conversation>(`/api/conversations/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ title }),
-    }),
-  deleteConversation: (id: string) =>
-    request<{ ok: boolean }>(`/api/conversations/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    }),
-  sendMessage: (id: string, message: string) =>
-    request<ConversationBundle>(`/api/conversations/${encodeURIComponent(id)}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({ message }),
-    }),
-  getRun: (id: string) => request<WorkbenchRun>(`/api/runs/${encodeURIComponent(id)}`),
-};
+// ── Health ──────────────────────────────────────────────────
+export async function checkHealth(): Promise<HealthStatus> {
+  try {
+    return await request<HealthStatus>('/health');
+  } catch {
+    return { ok: false };
+  }
+}
+
+// ── Personas ────────────────────────────────────────────────
+export async function listPersonas(): Promise<PersonaSummary[]> {
+  return request<PersonaSummary[]>('/api/personas');
+}
+
+export async function getPersona(slug: string): Promise<PersonaMutationResult> {
+  return request<PersonaMutationResult>(`/api/personas/${slug}/detail`);
+}
+
+/**
+ * Create a persona from config (source_type + data source).
+ * Server reads `persona_slug` (not `slug`) and returns PersonaMutationResult.
+ */
+export async function createPersona(config: {
+  name: string;
+  persona_slug: string;
+  source_type: string;
+  source_target?: string;
+  source_path?: string;
+  channel_url?: string;
+  video_url?: string;
+  platform?: string;
+}): Promise<PersonaMutationResult> {
+  return request<PersonaMutationResult>('/api/personas', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function updatePersona(
+  slug: string,
+  data: Partial<PersonaConfig & { name: string }>,
+): Promise<PersonaMutationResult> {
+  return request<PersonaMutationResult>(`/api/personas/${slug}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deletePersona(slug: string): Promise<void> {
+  await request<{ ok: boolean }>(`/api/personas/${slug}`, { method: 'DELETE' });
+}
+
+// ── Conversations ───────────────────────────────────────────
+export async function listConversations(personaSlug: string): Promise<Conversation[]> {
+  return request<Conversation[]>(`/api/personas/${personaSlug}/conversations`);
+}
+
+export async function getConversation(id: string): Promise<ConversationBundle> {
+  return request<ConversationBundle>(`/api/conversations/${id}`);
+}
+
+export async function createConversation(personaSlug: string, title?: string): Promise<Conversation> {
+  return request<Conversation>(`/api/personas/${personaSlug}/conversations`, {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await request<{ ok: boolean }>(`/api/conversations/${id}`, { method: 'DELETE' });
+}
+
+export async function renameConversation(id: string, title: string): Promise<Conversation> {
+  return request<Conversation>(`/api/conversations/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  });
+}
+
+// ── Messages ────────────────────────────────────────────────
+
+/**
+ * GET messages for a conversation — the server has no separate /messages GET endpoint,
+ * so we fetch the ConversationBundle and return its messages array.
+ */
+export async function listMessages(conversationId: string): Promise<ConversationMessage[]> {
+  const bundle = await getConversation(conversationId);
+  return bundle.messages;
+}
+
+/**
+ * Send a message. Server expects { message: string } and returns ConversationBundle.
+ * We extract the last user message and last assistant reply to match the chat store interface.
+ */
+export async function sendMessage(
+  conversationId: string,
+  content: string,
+): Promise<{ message: ConversationMessage; reply: ConversationMessage }> {
+  const bundle = await request<ConversationBundle>(`/api/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ message: content }),
+  });
+  const msgs = bundle.messages;
+  const userMsg = [...msgs].reverse().find((m) => m.role === 'user');
+  const aiReply = [...msgs].reverse().find((m) => m.role === 'assistant');
+  if (!userMsg || !aiReply) throw new Error('Unexpected response: missing message or reply');
+  return { message: userMsg, reply: aiReply };
+}
+
+// ── Training ────────────────────────────────────────────────
+
+/**
+ * Start a training run. Server reads: { slug, mode, rounds }.
+ */
+export async function startTraining(slug: string, mode: 'quick' | 'full'): Promise<WorkbenchRun> {
+  const rounds = mode === 'quick' ? 3 : 10;
+  return request<WorkbenchRun>('/api/runs/train', {
+    method: 'POST',
+    body: JSON.stringify({ slug, mode, rounds }),
+  });
+}

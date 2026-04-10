@@ -37,22 +37,25 @@
 
 ### 2.2 工作台主壳层已经完成极简重排
 
-当前桌面工作台已经不再维持“控制台式六面并列”，而是切成两层主结构：
+当前桌面工作台已经不再维持“控制台式六面并列”，而是切成三层主结构：
 
-1. `Chat`
-2. `Settings`
+1. `Chat`：单人格多线程对话
+2. `Personas`：人格库 + 培养中心（Tab 切换）
+3. `Settings`：API 连接、外观、模型配置
 
 其中：
 
-1. `Chat` 成为默认产品入口，只保留线程交流、轻量 attach、轻量 inspect
-2. `Settings` 统一收纳 `Create / Train / Experiment / Export / Runtime`
-3. `Soul / Memory / Citations / Evidence / Training` 不再常驻，而是进入右侧抽屉式 Inspector
-4. 左侧不再保留独立 persona 大栏，而是切成 `mini rail + conversation sidebar`
-5. 桌面端现在会在本地 URL 下自动恢复 `workbench-server`
-6. 桌面端现在允许显式配置本地 `repo root`，并把 bootstrap readiness 作为状态卡展示出来
-7. 打包态 app 现在会优先使用 bundle 内置 runtime，而不是依赖源码仓库路径
-8. 打包态 app 现在会优先使用 bundle 内置 `bin/node`，不再要求用户机器预装 Node 才能启动本地 service
-9. Evidence Intake 已经从摘要卡升级到 detail 读取，能直接把 sample evidence items 和 target manifest 拉进工作台
+1. `Chat` 成为默认产品入口，只保留线程列表、消息流、输入框
+2. `Personas` 负责人格的浏览、创建、编辑、删除，以及训练状态追踪（培养中心）
+3. `Settings` 统一收纳 API 连接、主题/语言切换、AI 模型配置
+4. 左侧为可折叠/可拖拽宽度的侧边栏，包含导航、最近对话列表、底部语言/主题切换
+5. 人格创建改为屏幕中心三步弹窗（名称 → 数据来源 → 培养深度），创建成功后直接触发训练
+6. 人格卡片去掉"开始对话"按钮，点击卡片主体即切到对应人格的聊天视图
+7. 桌面端现在会在本地 URL 下自动恢复 `workbench-server`
+8. 桌面端现在允许显式配置本地 `repo root`，并把 bootstrap readiness 作为状态卡展示出来
+9. 打包态 app 现在会优先使用 bundle 内置 runtime，而不是依赖源码仓库路径
+10. 打包态 app 现在会优先使用 bundle 内置 `bin/node`，不再要求用户机器预装 Node 才能启动本地 service
+11. 聊天输入区左侧已补充附件按钮（当前仅 UI），并支持 `Cmd/Ctrl+Enter` 发送
 
 ### 2.3 工作台 guidance 层已经补齐
 
@@ -116,10 +119,10 @@
 
 1. 单 Persona 单线程聊天
 2. 线程创建、重命名、删除
-3. 线程搜索
-4. 线程状态筛选：`all / active / idle / archived`
-5. 会话 summary 刷新
-6. 会话状态与 summary 新鲜度展示
+3. 侧边栏展示最近线程列表，支持悬停删除
+4. 会话状态展示
+5. 聊天输入支持 `Cmd/Ctrl+Enter` 发送，左侧已补充附件按钮（仅 UI，待后端接口接入）
+6. AI 思考状态带 Unicode 动画 spinner
 
 ### 3.2 证据与写回层
 
@@ -139,13 +142,15 @@
 
 当前已稳定具备：
 
-1. train launch
-2. train prep / evidence intake 上下文挂载
-3. `Run Smoke`
-4. experiment launch
-5. recent runs 查看
-6. run report 与 context 联动查看
-7. 轻量 run center
+1. 人格创建后可直接通过 `/api/runs/train` 启动训练
+2. 人格库内嵌「培养中心」子 Tab，展示 `pending / building / ready / error` 状态与进度
+3. 创建人格时可选 Quick（3轮）/ Full（10轮）培养模式
+4. train prep / evidence intake 上下文挂载
+5. `Run Smoke`
+6. experiment launch
+7. recent runs 查看
+8. run report 与 context 联动查看
+9. 轻量 run center
 
 ### 3.4 消息可解释性
 
@@ -215,11 +220,12 @@
 
 当前主要边界包括：
 
-1. run center 已经升级到 V2 的第一步，支持最近 run 的搜索、状态筛选、类型筛选和汇总 badge，但详情 drill-down 仍然偏轻量
-2. 线程还没有标签体系、分组体系和更强的历史管理
-3. citation / memory source 已经进入第一层下钻，但 retrieved memory 到正式来源资产的链路还不够深
-4. handoff / prep 仍然主要是单线程内部链路，还没有更强的跨线程整理体验
-5. 桌面端已经能完成本机 Rust 编译与原生启动验证，也能通过 app bundle 内置 runtime 和 bundled Node 完成本地 service 启动；当前剩余边界主要转向 runtime 体积、架构兼容和更新策略
+1. 桌面端 UI 已完成重构为 Chat / Personas / Settings 三视图极简结构，但旧版中的右侧 Inspector Drawer（Soul / Memory / Citations / Evidence / Training）、Evidence Intake 面板、Run Center V2 等高级功能尚未在新 UI 中恢复，后续需要按需重新接入
+2. run center 已经升级到 V2 的第一步，支持最近 run 的搜索、状态筛选、类型筛选和汇总 badge，但详情 drill-down 仍然偏轻量
+3. 线程还没有标签体系、分组体系和更强的历史管理
+4. citation / memory source 已经进入第一层下钻，但 retrieved memory 到正式来源资产的链路还不够深
+5. handoff / prep 仍然主要是单线程内部链路，还没有更强的跨线程整理体验
+6. 桌面端已经能完成本机 Rust 编译与原生启动验证，也能通过 app bundle 内置 runtime 和 bundled Node 完成本地 service 启动；当前剩余边界主要转向 runtime 体积、架构兼容和更新策略
 
 ## 6. 下一阶段最值得继续补什么
 

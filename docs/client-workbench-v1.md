@@ -67,19 +67,20 @@
 1. `desktop/` React + Vite 前端
 2. `desktop/src-tauri/` Tauri 壳工程
 
-当前桌面壳层已经切到“聊天优先”的极简布局：
+当前桌面壳层采用三视图极简布局：
 
-1. `mini rail`
-2. `conversation sidebar`
-3. `chat / settings main stage`
-4. `right inspector drawer`
+1. `Chat`：单人格多线程对话
+2. `Personas`：人格库 + 培养中心（Tab 切换）
+3. `Settings`：API 连接、外观、模型配置
 
 默认原则：
 
 1. 首屏默认进入 `Chat`
-2. `Inspector` 默认关闭
-3. `Create / Train / Experiment / Export` 全部收进 `Settings`
-4. `Soul / Memory / Citations / Evidence / Training` 统一改为右侧抽屉按需展开
+2. 左侧为可折叠/可拖拽宽度的侧边栏，包含导航、最近对话列表、底部语言/主题切换
+3. 人格创建改为屏幕中心三步弹窗（基本信息 → 数据来源 → 培养细节）
+4. 人格卡片点击主体即可开始对话，无"开始对话"大按钮
+5. `Soul / Memory / Citations / Evidence / Training` 等复杂 inspector 暂未常驻，优先保证主流程可用
+6. 聊天输入区左侧带附件按钮（当前仅 UI，文件上传后待后端接口支持）
 
 ## 3. 当前行为边界
 
@@ -91,21 +92,21 @@
 4. 回复返回 citation / persona dimension / writeback candidate 元信息
 5. create / train / experiment / export 的结构化触发与状态轮询
 6. recent runs 列表查看与历史 report 回看
-7. 工作台状态本地恢复：shell view、settings section、active tab、selected persona、selected thread
-8. 线程栏支持 persona 切换、搜索、新建线程与基础线程管理
-9. 线程卡默认只展示标题、最近一句预览和更新时间，减少控制台噪音
-10. 聊天主区默认只展示标题、消息流、输入框，以及轻量 `Inspect / Attach` 入口
-11. `Session Summary` 已改成折叠式摘要条，不再用大卡片常驻占据主区
-12. `Evidence Intake` 已改成按需展开的 attach 面板，导入完成后只保留紧凑 intake badge
-13. `Create / Train / Experiment / Export / Runtime` 已统一进入 `Settings` 分组，并按 section 折叠展开
-14. Settings 表单默认值本地持久化，且仍覆盖真实 CLI 参数
+7. 工作台状态本地恢复：shell view、settings section、active tab、selected persona、selected thread、locale、theme、sidebar width
+8. 侧边栏支持拖拽调整宽度（160–400px），底部集成语言与主题切换
+9. 人格库支持新建、编辑、删除人格；创建人格为三步弹窗（名称 → 数据来源 → 培养深度）
+10. 人格卡片点击主体即可开始对话，无"开始对话"大按钮；hover 显示编辑/删除
+11. 培养中心（Cultivation Center）已作为人格库的子 Tab 加入，展示全部人格的培养状态
+12. 创建人格后可直接触发 `/api/runs/train` 启动训练，支持 Quick（3轮）/ Full（10轮）模式
+13. 设置页包含 API 连接、外观主题、AI 模型配置（Provider / API Key / 模型选择），配置本地持久化
+14. 模型配置已支持 Claude、OpenAI、Kimi（含 kimi-k2.5），可切换服务商并保存对应 API Key
 15. Settings 支持手动刷新 service 健康状态并展示本地启动命令
 16. 桌面端在使用本地 URL 时，会自动尝试恢复本地 `workbench-server`，不再强依赖手动启动
 17. Settings 支持配置本地 `Neeko repo path`，帮助客户端在非源码工作目录下定位本地 core
 18. Settings 支持展示 `bootstrap readiness`，可直接看到 repo root、Node、dist 构建和 desktop managed service 状态
 19. Tauri build 会自动准备 `desktop/runtime/neeko-runtime`，并把它打进 app bundle 资源中
 20. `neeko-runtime` 现在会同时携带内置 `bin/node`，打包 app 启动本地 service 时优先使用 bundle 自带的 Node
-21. `Inspector Drawer` 已统一承接 `Soul / Memory / Citations / Evidence / Training`
+21. 聊天输入区带附件按钮（仅 UI，文件选择后展示文件名 chip），支持 `Cmd/Ctrl+Enter` 发送
 22. Evidence Intake 现在支持 `detail` 读取：客户端可直接查看 target manifest 和 sample evidence items
 23. Writeback review：memory candidates 支持 accept / reject / reset 状态管理
 24. accepted candidate 可进入 `promotion-ready queue`，但仍不直接写正式 memory
@@ -119,7 +120,8 @@
 32. Evidence 结构化明细现在主要通过 `Inspector > Evidence` 查看，而不是在聊天主区常驻展开
 33. 聊天消息卡默认只显示正文和少量 badge，细节按需展开
 34. 用户侧不再展示原始技术错误；客户端和 workbench API 都会返回安全文案
-35. 桌面客户端现已接入轻量语言层，默认中文，并支持在 Settings 内切换中英文
+35. 桌面客户端现已接入轻量语言层，默认中文，并支持在侧边栏内切换中英文
+36. 人格培养状态支持 `pending / building / ready / error` 四层展示，building 状态带 Unicode 动画进度条
 
 ### 3.2 默认写回规则
 

@@ -1,11 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { t } from '@/lib/i18n';
 import type { PersonaSummary } from '@/lib/types';
 import { useChatStore } from '@/stores/chat';
 import { useAppStore } from '@/stores/app';
 import { Edit2, Trash2 } from 'lucide-react';
 
-// 服务端实际返回的 PersonaSchema 状态
 const STATUS_COLORS: Record<string, string> = {
   creating:   '#f59e0b',
   created:    '#94a3b8',
@@ -30,12 +29,21 @@ interface Props {
 export function PersonaCard({ persona, onEdit, onDelete }: Props) {
   const { setPersona } = useChatStore();
   const { setView } = useAppStore();
+  const [hovered, setHovered] = useState(false);
 
-  function handleClick(e: React.MouseEvent) {
-    // 点击编辑/删除按钮不触发切换
-    if ((e.target as HTMLElement).closest('.card-action-btn')) return;
+  function handleCardClick() {
     setPersona(persona.slug);
     setView('chat');
+  }
+
+  function handleEdit(e: React.MouseEvent) {
+    e.stopPropagation();
+    onEdit();
+  }
+
+  function handleDelete(e: React.MouseEvent) {
+    e.stopPropagation();
+    onDelete();
   }
 
   const statusColor = STATUS_COLORS[persona.status ?? 'created'] ?? '#94a3b8';
@@ -44,7 +52,9 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
   return (
     <div
       className="card card-hover"
-      onClick={handleClick}
+      onClick={handleCardClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         padding: 20,
         display: 'flex',
@@ -54,32 +64,32 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
         cursor: 'pointer',
       }}
     >
-      {/* 操作按钮（悬停显示） */}
+      {/* 操作按钮 */}
       <div
-        className="card-actions"
         style={{
           position: 'absolute',
           top: 12,
           right: 12,
           display: 'flex',
           gap: 4,
-          opacity: 0,
+          opacity: hovered ? 1 : 0,
           transition: 'opacity 0.15s',
+          pointerEvents: hovered ? 'auto' : 'none',
         }}
       >
         <button
-          className="btn btn-icon card-action-btn"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onEdit(); }}
+          className="btn btn-icon"
+          onClick={handleEdit}
           title={t('editPersona')}
-          style={{ width: 28, height: 28, borderRadius: 6, pointerEvents: 'auto' }}
+          style={{ width: 28, height: 28, borderRadius: 6 }}
         >
           <Edit2 size={13} />
         </button>
         <button
-          className="btn btn-icon card-action-btn"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(); }}
+          className="btn btn-icon"
+          onClick={handleDelete}
           title={t('deletePersona')}
-          style={{ width: 28, height: 28, borderRadius: 6, color: '#ef4444', pointerEvents: 'auto' }}
+          style={{ width: 28, height: 28, borderRadius: 6, color: '#ef4444' }}
         >
           <Trash2 size={13} />
         </button>
@@ -104,7 +114,7 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
         >
           {initial}
         </div>
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, paddingRight: 40 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'rgb(var(--text-primary))', marginBottom: 2 }}>
             {persona.name}
           </div>
@@ -116,10 +126,6 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
           </div>
         </div>
       </div>
-
-      <style>{`
-        .card:hover .card-actions { opacity: 1 !important; }
-      `}</style>
     </div>
   );
 }

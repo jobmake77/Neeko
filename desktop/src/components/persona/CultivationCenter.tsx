@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { CheckCircle2, AlertCircle, RefreshCw, Trash2 } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import type { PersonaSummary } from '@/lib/types';
 import { usePersonaStore } from '@/stores/persona';
@@ -38,17 +38,37 @@ const STATUS_META: Record<string, { color: string; labelKey: string; descKey: st
 interface TrainingCardProps {
   persona: PersonaSummary;
   onReload: () => void;
+  onDelete: () => void;
 }
 
-function TrainingCard({ persona, onReload }: TrainingCardProps) {
+function TrainingCard({ persona, onReload, onDelete }: TrainingCardProps) {
   const status = persona.status ?? 'created';
   const meta = STATUS_META[status] ?? STATUS_META.created;
   const isBuilding = meta.inProgress;
   const spinner = useSpinner(isBuilding);
   const initial = persona.name.charAt(0).toUpperCase();
+  const [hovered, setHovered] = useState(false);
 
   return (
-    <div className="card" style={{ padding: 20, display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+    <div
+      className="card"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ padding: 20, display: 'flex', alignItems: 'flex-start', gap: 16, position: 'relative' }}
+    >
+      {/* 删除按钮 */}
+      <button
+        className="btn btn-icon"
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        title={t('deletePersona')}
+        style={{
+          position: 'absolute', top: 12, right: 12, width: 28, height: 28, borderRadius: 6, color: '#ef4444',
+          opacity: hovered ? 1 : 0, transition: 'opacity 0.15s', pointerEvents: hovered ? 'auto' : 'none',
+        }}
+      >
+        <Trash2 size={13} />
+      </button>
+
       {/* 头像 */}
       <div style={{
         width: 44, height: 44, borderRadius: 11,
@@ -59,7 +79,7 @@ function TrainingCard({ persona, onReload }: TrainingCardProps) {
       </div>
 
       {/* 内容 */}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minWidth: 0, paddingRight: 36 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'rgb(var(--text-primary))' }}>{persona.name}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -117,7 +137,11 @@ function TrainingCard({ persona, onReload }: TrainingCardProps) {
   );
 }
 
-export function CultivationCenter() {
+interface CultivationCenterProps {
+  onDelete: (p: PersonaSummary) => void;
+}
+
+export function CultivationCenter({ onDelete }: CultivationCenterProps) {
   const { personas, load, reload } = usePersonaStore();
 
   useEffect(() => {
@@ -156,7 +180,7 @@ export function CultivationCenter() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {inProgress.map((p) => (
-              <TrainingCard key={p.slug} persona={p} onReload={reload} />
+              <TrainingCard key={p.slug} persona={p} onReload={reload} onDelete={() => onDelete(p)} />
             ))}
           </div>
         </section>
@@ -169,7 +193,7 @@ export function CultivationCenter() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {done.map((p) => (
-              <TrainingCard key={p.slug} persona={p} onReload={reload} />
+              <TrainingCard key={p.slug} persona={p} onReload={reload} onDelete={() => onDelete(p)} />
             ))}
           </div>
         </section>

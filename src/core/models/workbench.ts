@@ -209,6 +209,37 @@ export interface PersonaSummary {
   memory_node_count: number;
   training_rounds: number;
   updated_at: string;
+  is_ready?: boolean;
+  progress_percent?: number;
+  current_stage?: string;
+  current_round?: number;
+  total_rounds?: number;
+}
+
+export interface PersonaSkillSummary {
+  origin_skills: Array<{ id: string; name: string; confidence: number }>;
+  distilled_skills: Array<{ id: string; name: string; quality_score: number }>;
+}
+
+export interface CultivationDetail {
+  persona: PersonaSummary;
+  skills: PersonaSkillSummary;
+  progress: {
+    percent: number;
+    current_stage: string;
+    current_round: number;
+    total_rounds: number;
+    stages: Array<{
+      key: string;
+      label: string;
+      completed: boolean;
+      active: boolean;
+    }>;
+  };
+  assets: {
+    evidence_imports: WorkbenchEvidenceImport[];
+    training_preps: TrainingPrepArtifact[];
+  };
 }
 
 export interface PersonaWorkbenchProfile {

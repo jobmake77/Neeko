@@ -122,11 +122,34 @@ const ZH: Record<string, string> = {
 
   // 培养细节（步骤3）
   stepCultivation: '培养细节',
+  stage_created: '已创建',
+  stage_ingesting: '数据采集中',
+  stage_refining: '灵魂提炼中',
+  stage_training: '培养循环中',
+  stage_error: '培养中断',
+  stage_converged: '培养完成',
   quickMode: '快速培养',
   quickModeDesc: '3 轮问答，快速体验',
   fullMode: '全量培养',
   fullModeDesc: '10 轮问答，深度培养（推荐）',
   createAndCultivate: '创建并培养',
+
+  // 培养中心扩展
+  currentRound: '当前轮次',
+  rounds: '轮',
+  skillsTitle: '技能',
+  originSkills: '来源技能',
+  distilledSkills: '提炼技能',
+  cultivationAssets: '培养素材',
+  evidenceImports: '证据导入',
+  trainingPreps: '训练预备',
+  trainingPrep: '预备',
+  fromHandoff: '来自交接',
+  noCultivating: '还没有人格在培养中',
+  noCultivatingHint: '在「人格库」中创建人格后，可在此查看培养进度',
+  cultivatingCount: '培养中 ({count})',
+  collapse: '收起',
+  expand: '展开',
 };
 
 const EN: Record<string, string> = {
@@ -237,11 +260,34 @@ const EN: Record<string, string> = {
 
   // Cultivation details (step 3)
   stepCultivation: 'Cultivation',
+  stage_created: 'Created',
+  stage_ingesting: 'Ingesting',
+  stage_refining: 'Refining',
+  stage_training: 'Training',
+  stage_error: 'Interrupted',
+  stage_converged: 'Converged',
   quickMode: 'Quick',
   quickModeDesc: '3 rounds, fast experience',
   fullMode: 'Full',
   fullModeDesc: '10 rounds, deep cultivation (recommended)',
   createAndCultivate: 'Create & Cultivate',
+
+  // Cultivation Center Extended
+  currentRound: 'Current Round',
+  rounds: 'rounds',
+  skillsTitle: 'Skills',
+  originSkills: 'Origin Skills',
+  distilledSkills: 'Distilled Skills',
+  cultivationAssets: 'Cultivation Assets',
+  evidenceImports: 'Evidence Imports',
+  trainingPreps: 'Training Preps',
+  trainingPrep: 'Prep',
+  fromHandoff: 'from handoff',
+  noCultivating: 'No personas cultivating',
+  noCultivatingHint: 'Create a persona in the library to see cultivation progress here',
+  cultivatingCount: 'Cultivating ({count})',
+  collapse: 'Collapse',
+  expand: 'Expand',
 };
 
 let _locale: Locale = (localStorage.getItem('neeko.locale') as Locale) || 'zh';
@@ -257,9 +303,15 @@ export function setLocale(l: Locale) {
   _listeners.forEach((fn) => fn());
 }
 
-export function t(key: string): string {
+export function t(key: string, vars?: Record<string, string | number>): string {
   const map = _locale === 'zh' ? ZH : EN;
-  return map[key] ?? key;
+  let value = map[key] ?? key;
+  if (vars) {
+    Object.entries(vars).forEach(([k, v]) => {
+      value = value.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+    });
+  }
+  return value;
 }
 
 export function onLocaleChange(fn: () => void): () => void {

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { usePersonaStore } from '@/stores/persona';
+import { useCultivationStore } from '@/stores/cultivation';
 import { t } from '@/lib/i18n';
 import type { PersonaSummary } from '@/lib/types';
 import { PersonaCard } from './PersonaCard';
@@ -63,6 +64,7 @@ export function PersonaView() {
     console.log('[PersonaView] Deleting persona:', deleteTarget.slug);
     try {
       await remove(deleteTarget.slug);
+      useCultivationStore.getState().remove(deleteTarget.slug);
       console.log('[PersonaView] Delete succeeded');
       setDeleteTarget(null);
     } catch (e: unknown) {

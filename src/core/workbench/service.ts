@@ -27,10 +27,12 @@ import {
   Conversation,
   ConversationBundle,
   ConversationMessage,
+  CultivationDetail,
   MemoryCandidate,
   PersonaConfig,
   PersonaDetail,
   PersonaMutationResult,
+  PersonaSkillSummary,
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
@@ -452,13 +454,25 @@ export class WorkbenchService {
   ) {}
 
   listPersonas(): PersonaSummary[] {
+    return this.listAllPersonaSummaries().filter((p) => this.isPersonaReady(p));
+  }
+
+  listCultivatingPersonas(): PersonaSummary[] {
+    return this.listAllPersonaSummaries().filter((p) => !this.isPersonaReady(p));
+  }
+
+  private listAllPersonaSummaries(): PersonaSummary[] {
     const personasDir = join(settings.getDataDir(), 'personas');
     if (!existsSync(personasDir)) return [];
     return readdirSync(personasDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => this.readPersonaSummary(entry.name) ?? this.readPersonaConfigSummary(entry.name))
+      .map((entry) => this.buildPersonaSummary(entry.name))
       .filter((item): item is PersonaSummary => Boolean(item))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  private isPersonaReady(summary: PersonaSummary): boolean {
+    return summary.status === 'converged' || summary.status === 'exported';
   }
 
   getPersona(slug: string): PersonaWorkbenchProfile {
@@ -1700,6 +1714,133 @@ export class WorkbenchService {
         ? 'System is retrying from saved progress.'
         : 'System is retrying automatically.',
     };
+  }
+
+  buildPersonaSummary(slug: string): PersonaSummary | null {
+    const personaSummary = this.readPersonaSummary(slug);
+    const configSummary = this.readPersonaConfigSummary(slug);
+    const base = personaSummary ?? configSummary;
+    if (!base) return null;
+
+    const trainingContext = this.readTrainingContext(slug);
+    const trainingReport = this.readTrainingReport(slug);
+    const stage = this.resolveStage(base.status, trainingContext, trainingReport);
+    const currentRound = trainingContext?.completed_rounds ?? base.training_rounds ?? 0;
+    const totalRounds = trainingContext?.requested_rounds ?? trainingReport?.total_rounds ?? 0;
+
+    return {
+      ...base,
+      is_ready: this.isPersonaReady(base),
+      current_stage: stage,
+      current_round: currentRound,
+      total_rounds: totalRounds,
+      progress_percent: this.computeProgressPercent(base.status, currentRound, totalRounds),
+    };
+  }
+
+  private readTrainingContext(slug: string): { state: string; requested_rounds: number; completed_rounds: number } | null {
+    const path = join(settings.getPersonaDir(slug), 'training-context.json');
+    if (!existsSync(path)) return null;
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      return {
+        state: String(raw.state ?? ''),
+        requested_rounds: Number(raw.requested_rounds ?? 0),
+        completed_rounds: Number(raw.completed_rounds ?? 0),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private readTrainingReport(slug: string): { total_rounds: number } | null {
+    const path = join(settings.getPersonaDir(slug), 'training-report.json');
+    if (!existsSync(path)) return null;
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      return { total_rounds: Number(raw.total_rounds ?? 0) };
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveStage(
+    status: string,
+    context: ReturnType<typeof this.readTrainingContext>,
+    report: ReturnType<typeof this.readTrainingReport>
+  ): string {
+    if (status === 'converged' || status === 'exported') return 'converged';
+    if (status === 'training') {
+      if (context?.state === 'interrupted') return 'error';
+      return 'training';
+    }
+    if (status === 'refining') return 'refining';
+    if (status === 'ingesting') return 'ingesting';
+    if (report && report.total_rounds > 0 && (!context || context.state === 'completed')) return 'converged';
+    if (status === 'created') return 'created';
+    return 'creating';
+  }
+
+  private computeProgressPercent(status: string, currentRound: number, totalRounds: number): number {
+    if (status === 'converged' || status === 'exported') return 100;
+    const stageMax: Record<string, number> = { created: 5, ingesting: 25, refining: 45, training: 99, error: 45, converged: 100 };
+    const base = stageMax[status] ?? 0;
+    if (status === 'training' && totalRounds > 0) {
+      const roundContribution = (currentRound / totalRounds) * ((stageMax.training ?? 99) - (stageMax.refining ?? 45));
+      return Math.min(99, Math.round((stageMax.refining ?? 45) + roundContribution));
+    }
+    return base;
+  }
+
+  getCultivationDetail(slug: string): CultivationDetail {
+    const persona = this.buildPersonaSummary(slug);
+    if (!persona) {
+      throw new Error(`Persona "${slug}" not found.`);
+    }
+    const skills = this.readSkillSummary(slug);
+    const trainingContext = this.readTrainingContext(slug);
+    const trainingReport = this.readTrainingReport(slug);
+    return {
+      persona,
+      skills,
+      progress: {
+        percent: persona.progress_percent ?? 0,
+        current_stage: persona.current_stage ?? 'created',
+        current_round: persona.current_round ?? 0,
+        total_rounds: persona.total_rounds ?? 0,
+        stages: this.buildStages(persona.current_stage ?? 'created'),
+      },
+      assets: {
+        evidence_imports: this.store.listEvidenceImports(slug),
+        training_preps: this.store.listTrainingPrepArtifacts(slug),
+      },
+    };
+  }
+
+  readSkillSummary(slug: string): PersonaSkillSummary {
+    const library = loadSkillLibrary(settings.getPersonaDir(slug), slug);
+    return {
+      origin_skills: library.origin_skills.map((s) => ({ id: s.id, name: s.name, confidence: s.confidence })),
+      distilled_skills: library.distilled_skills.map((s) => ({ id: s.id, name: s.name, quality_score: s.quality_score })),
+    };
+  }
+
+  private buildStages(currentStage: string): CultivationDetail['progress']['stages'] {
+    const order = [
+      { key: 'created', label: 'stage_created' },
+      { key: 'ingesting', label: 'stage_ingesting' },
+      { key: 'refining', label: 'stage_refining' },
+      { key: 'training', label: 'stage_training' },
+      { key: 'error', label: 'stage_error' },
+      { key: 'converged', label: 'stage_converged' },
+    ];
+    const idx = order.findIndex((s) => s.key === currentStage);
+    return order.map((s, i) => ({
+      key: s.key,
+      label: s.label,
+      active: i === idx,
+      completed: i < idx,
+    }));
   }
 }
 

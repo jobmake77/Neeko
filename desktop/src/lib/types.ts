@@ -12,6 +12,11 @@ export interface PersonaSummary {
   training_rounds: number;
   updated_at: string;
   source_type?: string;     // from config, may be absent
+  is_ready?: boolean;
+  progress_percent?: number;
+  current_stage?: string;
+  current_round?: number;
+  total_rounds?: number;
 }
 
 export interface PersonaDetail {
@@ -22,6 +27,32 @@ export interface PersonaDetail {
 export interface PersonaMutationResult {
   persona: PersonaSummary;
   run: WorkbenchRun | null;
+}
+
+export interface PersonaSkillSummary {
+  origin_skills: Array<{ id: string; name: string; confidence: number }>;
+  distilled_skills: Array<{ id: string; name: string; quality_score: number }>;
+}
+
+export interface CultivationDetail {
+  persona: PersonaSummary;
+  skills: PersonaSkillSummary;
+  progress: {
+    percent: number;
+    current_stage: string;
+    current_round: number;
+    total_rounds: number;
+    stages: Array<{
+      key: string;
+      label: string;
+      completed: boolean;
+      active: boolean;
+    }>;
+  };
+  assets: {
+    evidence_imports: Array<{ id: string; persona_slug: string; source_path: string; status: string; created_at: string }>;
+    training_preps: Array<{ id: string; persona_slug: string; handoff_id?: string; created_at: string }>;
+  };
 }
 
 export interface PersonaConfig {

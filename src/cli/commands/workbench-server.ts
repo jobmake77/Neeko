@@ -87,6 +87,17 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      if (req.method === 'GET' && path === '/api/cultivating') {
+        writeJson(res, 200, service.listCultivatingPersonas());
+        return;
+      }
+
+      const cultivationMatch = path.match(/^\/api\/cultivating\/([^/]+)$/);
+      if (req.method === 'GET' && cultivationMatch) {
+        writeJson(res, 200, service.getCultivationDetail(decodeURIComponent(cultivationMatch[1])));
+        return;
+      }
+
       const personaDetailMatch = path.match(/^\/api\/personas\/([^/]+)\/detail$/);
       if (req.method === 'GET' && personaDetailMatch) {
         writeJson(res, 200, service.getPersonaDetail(decodeURIComponent(personaDetailMatch[1])));
@@ -96,6 +107,12 @@ export async function cmdWorkbenchServer(
       const personaConfigMatch = path.match(/^\/api\/personas\/([^/]+)\/config$/);
       if (req.method === 'GET' && personaConfigMatch) {
         writeJson(res, 200, service.getPersonaConfig(decodeURIComponent(personaConfigMatch[1])));
+        return;
+      }
+
+      const skillsMatch = path.match(/^\/api\/personas\/([^/]+)\/skills$/);
+      if (req.method === 'GET' && skillsMatch) {
+        writeJson(res, 200, service.readSkillSummary(decodeURIComponent(skillsMatch[1])));
         return;
       }
 

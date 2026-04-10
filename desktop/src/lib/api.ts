@@ -2,6 +2,8 @@ import type {
   PersonaSummary,
   PersonaMutationResult,
   PersonaConfig,
+  CultivationDetail,
+  PersonaSkillSummary,
   Conversation,
   ConversationBundle,
   ConversationMessage,
@@ -85,6 +87,18 @@ export async function updatePersona(
 
 export async function deletePersona(slug: string): Promise<void> {
   await request<{ ok: boolean }>(`/api/personas/${slug}`, { method: 'DELETE' });
+}
+
+export async function listCultivatingPersonas(): Promise<PersonaSummary[]> {
+  return request<PersonaSummary[]>('/api/cultivating');
+}
+
+export async function getCultivationDetail(slug: string): Promise<CultivationDetail> {
+  return request<CultivationDetail>(`/api/cultivating/${slug}`);
+}
+
+export async function getPersonaSkills(slug: string): Promise<PersonaSkillSummary> {
+  return request<PersonaSkillSummary>(`/api/personas/${slug}/skills`);
 }
 
 // ── Conversations ───────────────────────────────────────────

@@ -3,14 +3,12 @@ import { CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import type { PersonaSummary } from '@/lib/types';
 import { usePersonaStore } from '@/stores/persona';
-import { getPersona } from '@/lib/api';
 
-// Unicode spinner 使用 unicode-animations
+// Unicode spinner
 function useSpinner(active: boolean) {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     if (!active) return;
-    // 使用内联 frames（避免类型问题）
     const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
     const id = setInterval(() => setFrame((f) => (f + 1) % frames.length), 80);
     return () => clearInterval(id);
@@ -19,11 +17,22 @@ function useSpinner(active: boolean) {
   return frames[frame];
 }
 
-const STATUS_META: Record<string, { color: string; labelKey: string; descKey: string }> = {
-  pending: { color: '#94a3b8', labelKey: 'awaitingCultivation', descKey: 'cultivationDesc_pending' },
-  building: { color: '#f59e0b', labelKey: 'cultivating', descKey: 'cultivationDesc_building' },
-  ready:   { color: '#22c55e', labelKey: 'cultivationComplete', descKey: 'cultivationDesc_ready' },
-  error:   { color: '#ef4444', labelKey: 'cultivationFailed', descKey: 'cultivationDesc_error' },
+// 服务端 PersonaSchema 实际返回的状态：created / ingesting / refining / training / converged / exported
+// 以及 config summary 回退状态：creating / available
+// 统一映射到产品态展示
+const STATUS_META: Record<string, { color: string; labelKey: string; descKey: string; inProgress: boolean }> = {
+  creating:   { color: '#f59e0b', labelKey: 'cultivating', descKey: 'cultivationDesc_building', inProgress: true },
+  created:    { color: '#94a3b8', labelKey: 'awaitingCultivation', descKey: 'cultivationDesc_pending', inProgress: true },
+  ingesting:  { color: '#f59e0b', labelKey: 'cultivating', descKey: 'cultivationDesc_building', inProgress: true },
+  refining:   { color: '#f59e0b', labelKey: 'cultivating', descKey: 'cultivationDesc_building', inProgress: true },
+  training:   { color: '#f59e0b', labelKey: 'cultivating', descKey: 'cultivationDesc_building', inProgress: true },
+  converged:  { color: '#22c55e', labelKey: 'cultivationComplete', descKey: 'cultivationDesc_ready', inProgress: false },
+  exported:   { color: '#22c55e', labelKey: 'cultivationComplete', descKey: 'cultivationDesc_ready', inProgress: false },
+  available:  { color: '#22c55e', labelKey: 'cultivationComplete', descKey: 'cultivationDesc_ready', inProgress: false },
+  pending:    { color: '#94a3b8', labelKey: 'awaitingCultivation', descKey: 'cultivationDesc_pending', inProgress: true },
+  building:   { color: '#f59e0b', labelKey: 'cultivating', descKey: 'cultivationDesc_building', inProgress: true },
+  ready:      { color: '#22c55e', labelKey: 'cultivationComplete', descKey: 'cultivationDesc_ready', inProgress: false },
+  error:      { color: '#ef4444', labelKey: 'cultivationFailed', descKey: 'cultivationDesc_error', inProgress: false },
 };
 
 interface TrainingCardProps {
@@ -32,9 +41,9 @@ interface TrainingCardProps {
 }
 
 function TrainingCard({ persona, onReload }: TrainingCardProps) {
-  const status = persona.status ?? 'pending';
-  const meta = STATUS_META[status] ?? STATUS_META.pending;
-  const isBuilding = status === 'building';
+  const status = persona.status ?? 'created';
+  const meta = STATUS_META[status] ?? STATUS_META.created;
+  const isBuilding = meta.inProgress;
   const spinner = useSpinner(isBuilding);
   const initial = persona.name.charAt(0).toUpperCase();
 
@@ -57,7 +66,7 @@ function TrainingCard({ persona, onReload }: TrainingCardProps) {
             {isBuilding && (
               <span style={{ fontFamily: 'monospace', fontSize: 14, color: meta.color }}>{spinner}</span>
             )}
-            {status === 'ready' && <CheckCircle2 size={15} style={{ color: meta.color }} />}
+            {!isBuilding && status !== 'error' && <CheckCircle2 size={15} style={{ color: meta.color }} />}
             {status === 'error' && <AlertCircle size={15} style={{ color: meta.color }} />}
             <span style={{ fontSize: 12, fontWeight: 500, color: meta.color }}>{t(meta.labelKey)}</span>
           </div>
@@ -67,7 +76,7 @@ function TrainingCard({ persona, onReload }: TrainingCardProps) {
           {t(meta.descKey)}
         </div>
 
-        {/* 进度条（building 时显示） */}
+        {/* 进度条（进行中时显示） */}
         {isBuilding && (
           <div style={{ height: 3, background: 'rgb(var(--border))', borderRadius: 2, overflow: 'hidden' }}>
             <div style={{
@@ -80,7 +89,7 @@ function TrainingCard({ persona, onReload }: TrainingCardProps) {
         )}
 
         {/* 就绪时的提示 */}
-        {status === 'ready' && (
+        {!isBuilding && status !== 'error' && (
           <div style={{
             fontSize: 11, color: '#22c55e',
             padding: '4px 8px', background: 'rgb(34 197 94 / 0.08)',
@@ -113,17 +122,20 @@ export function CultivationCenter() {
 
   useEffect(() => {
     load();
-    // 每 5 秒轮询一次，用于 building 状态刷新
+  }, []);
+
+  useEffect(() => {
+    // 每 5 秒轮询一次，用于进行中状态刷新
     const interval = setInterval(() => {
-      if (personas.some((p) => p.status === 'building')) {
+      if (personas.some((p) => (STATUS_META[p.status ?? 'created']?.inProgress ?? true))) {
         reload();
       }
     }, 5000);
     return () => clearInterval(interval);
   }, [personas]);
 
-  const inProgress = personas.filter((p) => p.status === 'building' || p.status === 'pending');
-  const done = personas.filter((p) => p.status === 'ready' || p.status === 'error');
+  const inProgress = personas.filter((p) => STATUS_META[p.status ?? 'created']?.inProgress ?? true);
+  const done = personas.filter((p) => !(STATUS_META[p.status ?? 'created']?.inProgress ?? true));
 
   if (personas.length === 0) {
     return (
@@ -144,7 +156,7 @@ export function CultivationCenter() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {inProgress.map((p) => (
-              <TrainingCard key={p.id} persona={p} onReload={reload} />
+              <TrainingCard key={p.slug} persona={p} onReload={reload} />
             ))}
           </div>
         </section>
@@ -157,7 +169,7 @@ export function CultivationCenter() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {done.map((p) => (
-              <TrainingCard key={p.id} persona={p} onReload={reload} />
+              <TrainingCard key={p.slug} persona={p} onReload={reload} />
             ))}
           </div>
         </section>

@@ -65,11 +65,9 @@ export async function createPersona(config: {
   source_type: string;
   source_target?: string;
   source_path?: string;
-  channel_url?: string;
-  video_url?: string;
   platform?: string;
-}): Promise<PersonaMutationResult> {
-  return request<PersonaMutationResult>('/api/personas', {
+}): Promise<void> {
+  await request<unknown>('/api/personas', {
     method: 'POST',
     body: JSON.stringify(config),
   });

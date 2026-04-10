@@ -83,7 +83,7 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
           source_path = chatFile || undefined;
         }
 
-        const result = await api.createPersona({
+        await api.createPersona({
           name: name.trim(),
           persona_slug,
           source_type: sourceType,
@@ -91,9 +91,8 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
           source_path,
         });
 
-        // Kick off training with the chosen mode (fire-and-forget, don't block UI)
-        const createdSlug = result.persona.slug;
-        api.startTraining(createdSlug, trainingMode).catch(console.warn);
+        // Use the slug we computed — more reliable than reading back from the response
+        api.startTraining(persona_slug, trainingMode).catch(console.warn);
 
       } else if (persona) {
         await api.updatePersona(persona.slug, { name: name.trim(), source_type: sourceType as 'social' | 'chat_file' | 'video_file' });

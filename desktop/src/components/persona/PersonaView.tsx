@@ -60,11 +60,14 @@ export function PersonaView() {
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleteError('');
+    console.log('[PersonaView] Deleting persona:', deleteTarget.slug);
     try {
       await remove(deleteTarget.slug);
+      console.log('[PersonaView] Delete succeeded');
       setDeleteTarget(null);
     } catch (e: unknown) {
-      setDeleteError((e as Error).message);
+      console.error('[PersonaView] Delete failed:', e);
+      setDeleteError((e as Error).message || '删除失败');
     }
   }
 

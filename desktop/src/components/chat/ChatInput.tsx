@@ -62,12 +62,16 @@ export function ChatInput() {
     if (paths.length === 0) return;
     setAttachments((prev) => [
       ...prev,
-      ...paths.map((path) => ({
-        id: crypto.randomUUID(),
-        type: inferAttachmentType(path),
-        name: path.split(/[\\/]/).pop() || path,
-        path,
-      })),
+      ...paths.map((path) => {
+        const type = inferAttachmentType(path);
+        return {
+          id: crypto.randomUUID(),
+          type,
+          name: path.split(/[\\/]/).pop() || path,
+          path,
+          mime: inferAttachmentMime(path, type),
+        };
+      }),
     ]);
   }
 
@@ -188,4 +192,31 @@ function inferAttachmentType(path: string): AttachmentRef['type'] {
   if (/\.(mp3|wav|m4a|ogg|flac)$/.test(lower)) return 'audio';
   if (/\.(txt|md|json|csv|html|yaml|yml)$/.test(lower)) return 'text';
   return 'file';
+}
+
+function inferAttachmentMime(path: string, type: AttachmentRef['type']): string | undefined {
+  const lower = path.toLowerCase();
+  if (type === 'image') {
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    return 'image/jpeg';
+  }
+  if (type === 'video') {
+    if (lower.endsWith('.mov')) return 'video/quicktime';
+    if (lower.endsWith('.webm')) return 'video/webm';
+    return 'video/mp4';
+  }
+  if (type === 'audio') {
+    if (lower.endsWith('.wav')) return 'audio/wav';
+    if (lower.endsWith('.ogg')) return 'audio/ogg';
+    if (lower.endsWith('.m4a')) return 'audio/mp4';
+    return 'audio/mpeg';
+  }
+  if (type === 'text') {
+    if (lower.endsWith('.json')) return 'application/json';
+    if (lower.endsWith('.csv')) return 'text/csv';
+    return 'text/plain';
+  }
+  return undefined;
 }

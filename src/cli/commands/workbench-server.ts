@@ -10,7 +10,7 @@ function writeJson(res: ServerResponse, statusCode: number, payload: unknown): v
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.end(JSON.stringify(payload));
 }
 
@@ -87,6 +87,40 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      if (req.method === 'GET' && path === '/api/runtime/model-config') {
+        writeJson(res, 200, service.getRuntimeModelConfig());
+        return;
+      }
+      if (req.method === 'PUT' && path === '/api/runtime/model-config') {
+        const body = await readBody(req);
+        writeJson(res, 200, service.updateRuntimeModelConfig({
+          provider: (getString(body.provider) as 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek' | undefined) ?? 'claude',
+          model: getString(body.model) ?? 'claude-sonnet-4-6',
+          api_keys: {
+            claude: getString((body.api_keys as Record<string, unknown> | undefined)?.claude),
+            openai: getString((body.api_keys as Record<string, unknown> | undefined)?.openai),
+            kimi: getString((body.api_keys as Record<string, unknown> | undefined)?.kimi),
+            gemini: getString((body.api_keys as Record<string, unknown> | undefined)?.gemini),
+            deepseek: getString((body.api_keys as Record<string, unknown> | undefined)?.deepseek),
+          },
+        }));
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/runtime/settings') {
+        writeJson(res, 200, service.getRuntimeSettings());
+        return;
+      }
+      if (req.method === 'PUT' && path === '/api/runtime/settings') {
+        const body = await readBody(req);
+        writeJson(res, 200, service.updateRuntimeSettings({
+          default_training_profile: getString(body.default_training_profile),
+          default_input_routing_strategy: getString(body.default_input_routing_strategy),
+          qdrant_url: getString(body.qdrant_url),
+          data_dir: getString(body.data_dir),
+        }));
+        return;
+      }
+
       if (req.method === 'GET' && path === '/api/cultivating') {
         writeJson(res, 200, service.listCultivatingPersonas());
         return;
@@ -110,6 +144,34 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const personaSourcesMatch = path.match(/^\/api\/personas\/([^/]+)\/sources$/);
+      if (req.method === 'GET' && personaSourcesMatch) {
+        writeJson(res, 200, service.getPersonaSources(decodeURIComponent(personaSourcesMatch[1])));
+        return;
+      }
+      if (req.method === 'PUT' && personaSourcesMatch) {
+        const slug = decodeURIComponent(personaSourcesMatch[1]);
+        const body = await readBody(req);
+        writeJson(res, 200, await service.updatePersonaSources(slug, {
+          name: getString(body.name),
+          update_policy: body.update_policy as any,
+          sources: Array.isArray(body.sources) ? body.sources as any : [],
+        }));
+        return;
+      }
+
+      const personaCheckUpdatesMatch = path.match(/^\/api\/personas\/([^/]+)\/check-updates$/);
+      if (req.method === 'POST' && personaCheckUpdatesMatch) {
+        writeJson(res, 200, await service.checkPersonaUpdates(decodeURIComponent(personaCheckUpdatesMatch[1])));
+        return;
+      }
+
+      const personaContinueCultivationMatch = path.match(/^\/api\/personas\/([^/]+)\/continue-cultivation$/);
+      if (req.method === 'POST' && personaContinueCultivationMatch) {
+        writeJson(res, 200, await service.continueCultivationFromSources(decodeURIComponent(personaContinueCultivationMatch[1])));
+        return;
+      }
+
       const skillsMatch = path.match(/^\/api\/personas\/([^/]+)\/skills$/);
       if (req.method === 'GET' && skillsMatch) {
         writeJson(res, 200, service.readSkillSummary(decodeURIComponent(skillsMatch[1])));
@@ -126,11 +188,13 @@ export async function cmdWorkbenchServer(
         const body = await readBody(req);
         writeJson(res, 200, await service.updatePersona(slug, {
           name: getString(body.name) ?? '',
-          source_type: (getString(body.source_type) as 'social' | 'chat_file' | 'video_file' | undefined) ?? 'social',
+          source_type: (getString(body.source_type) as 'social' | 'chat_file' | 'video_file' | undefined) ?? undefined,
           source_target: getString(body.source_target),
           source_path: getString(body.source_path),
           target_manifest_path: getString(body.target_manifest_path),
           platform: getString(body.platform),
+          sources: Array.isArray(body.sources) ? body.sources as any : undefined,
+          update_policy: body.update_policy as any,
         }));
         return;
       }
@@ -234,15 +298,17 @@ export async function cmdWorkbenchServer(
       if (req.method === 'POST' && path === '/api/personas') {
         const body = await readBody(req);
         const sourceType = getString(body.source_type);
-        if (sourceType) {
+        if (sourceType || Array.isArray(body.sources)) {
           writeJson(res, 200, service.createPersonaFromConfig({
             persona_slug: getString(body.persona_slug),
             name: getString(body.name) ?? '',
-            source_type: sourceType as 'social' | 'chat_file' | 'video_file',
+            source_type: sourceType as 'social' | 'chat_file' | 'video_file' | undefined,
             source_target: getString(body.source_target),
             source_path: getString(body.source_path),
             target_manifest_path: getString(body.target_manifest_path),
             platform: getString(body.platform),
+            sources: Array.isArray(body.sources) ? body.sources as any : undefined,
+            update_policy: body.update_policy as any,
           }));
           return;
         }
@@ -299,9 +365,23 @@ export async function cmdWorkbenchServer(
         const body = await readBody(req);
         const message = getString(body.message);
         if (!message) throw new Error('message is required');
+        const attachments = Array.isArray(body.attachments)
+          ? body.attachments
+            .map((item) => item as Record<string, unknown>)
+            .filter((item) => getString(item.path) && getString(item.name))
+            .map((item) => ({
+              id: getString(item.id) ?? crypto.randomUUID(),
+              type: (getString(item.type) as 'image' | 'video' | 'audio' | 'text' | 'file' | undefined) ?? 'file',
+              name: getString(item.name) ?? 'attachment',
+              path: getString(item.path) ?? '',
+              mime: getString(item.mime),
+              size: getNumber(item.size),
+            }))
+          : [];
         const bundle = await service.sendMessage(
           decodeURIComponent(conversationMessageMatch[1]),
-          message
+          message,
+          attachments
         );
         writeJson(res, 200, bundle);
         return;

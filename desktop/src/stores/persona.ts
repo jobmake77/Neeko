@@ -1,10 +1,10 @@
 import { create } from 'zustand';
-import type { PersonaSummary, PersonaMutationResult } from '@/lib/types';
+import type { PersonaSummary, PersonaDetail } from '@/lib/types';
 import * as api from '@/lib/api';
 
 interface PersonaState {
   personas: PersonaSummary[];
-  selected: PersonaMutationResult | null;
+  selected: PersonaDetail | null;
   loading: boolean;
   error: string | null;
 

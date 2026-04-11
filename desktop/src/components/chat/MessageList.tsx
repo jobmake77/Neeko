@@ -109,6 +109,25 @@ export function MessageList() {
               >
                 {msg.content}
               </div>
+              {msg.attachments && msg.attachments.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                  {msg.attachments.map((attachment) => (
+                    <span
+                      key={attachment.id}
+                      style={{
+                        fontSize: 11,
+                        color: 'rgb(var(--text-secondary))',
+                        border: '1px solid rgb(var(--border))',
+                        background: 'rgb(var(--bg-hover))',
+                        borderRadius: 999,
+                        padding: '3px 8px',
+                      }}
+                    >
+                      {attachment.name}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div
                 style={{
                   fontSize: 11,

@@ -1,452 +1,329 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, ChevronRight, ChevronLeft, Upload, Link, Film, FileAudio } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Plus, Trash2, X, FolderOpen, RefreshCw } from 'lucide-react';
 import { t } from '@/lib/i18n';
-import type { PersonaSummary } from '@/lib/types';
+import type { PersonaConfig, PersonaDetail, PersonaSource, PersonaSummary } from '@/lib/types';
 import * as api from '@/lib/api';
 import { usePersonaStore } from '@/stores/persona';
+import { pickFiles } from '@/lib/tauri';
 
-type SourceType = 'social' | 'chat_file' | 'video_file';
-type VideoSubMode = 'channel' | 'single' | 'local';
-type TrainingMode = 'quick' | 'full';
-
-interface Props {
+type Props = {
   mode: 'create' | 'edit';
   persona?: PersonaSummary;
   open: boolean;
   onClose: () => void;
+};
+
+const DEFAULT_POLICY: PersonaConfig['update_policy'] = {
+  auto_check_remote: true,
+  check_interval_minutes: 60,
+  strategy: 'incremental',
+};
+
+function makeSource(type: PersonaSource['type'] = 'social'): PersonaSource {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    mode: type === 'social' ? 'handle' : 'local_file',
+    enabled: true,
+    status: 'idle',
+    platform: type === 'social' ? 'twitter' : type === 'chat_file' ? 'wechat' : 'local',
+  };
 }
 
-const SOURCE_OPTIONS: { type: SourceType; label: string; desc: string; icon: string }[] = [
-  { type: 'social', label: 'Social', desc: 'X/Twitter 公开推文', icon: '𝕏' },
-  { type: 'chat_file', label: 'Chat File', desc: '微信 / 飞书聊天记录', icon: '💬' },
-  { type: 'video_file', label: 'Video File', desc: '视频 / 音频文件', icon: '🎬' },
-];
+function buildSlug(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || `persona-${Date.now()}`;
+}
 
-const STEPS_CREATE = ['stepBasicInfo', 'stepDataSource', 'stepCultivation'];
+function SourceEditor({
+  source,
+  onChange,
+  onRemove,
+}: {
+  source: PersonaSource;
+  onChange: (next: PersonaSource) => void;
+  onRemove: () => void;
+}) {
+  async function pickLocalPath(field: 'local_path' | 'manifest_path') {
+    const paths = await pickFiles({ multiple: false });
+    if (paths[0]) onChange({ ...source, [field]: paths[0] });
+  }
+
+  return (
+    <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <select
+            className="input"
+            value={source.type}
+            onChange={(e) => {
+              const type = e.target.value as PersonaSource['type'];
+              onChange({ ...makeSource(type), id: source.id, enabled: source.enabled });
+            }}
+            style={{ width: 140 }}
+          >
+            <option value="social">公开账号</option>
+            <option value="chat_file">聊天文件</option>
+            <option value="video_file">视频资料</option>
+          </select>
+          <select
+            className="input"
+            value={source.mode}
+            onChange={(e) => onChange({ ...source, mode: e.target.value as PersonaSource['mode'] })}
+            style={{ width: 140 }}
+          >
+            {source.type === 'social' ? <option value="handle">账号</option> : null}
+            {source.type === 'video_file' ? <option value="channel_url">频道链接</option> : null}
+            {source.type === 'video_file' ? <option value="single_url">视频链接</option> : null}
+            {source.type !== 'social' ? <option value="local_file">本地文件</option> : null}
+            {source.type !== 'social' ? <option value="remote_url">远程链接</option> : null}
+          </select>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={source.enabled}
+              onChange={(e) => onChange({ ...source, enabled: e.target.checked })}
+            />
+            启用
+          </label>
+          <button className="btn btn-icon" onClick={onRemove} title="删除来源" style={{ color: '#ef4444' }}>
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        {source.type === 'social' ? (
+          <>
+            <input
+              className="input"
+              value={source.handle_or_url ?? ''}
+              onChange={(e) => onChange({ ...source, handle_or_url: e.target.value })}
+              placeholder="@karpathy"
+            />
+            <input
+              className="input"
+              value={source.platform ?? ''}
+              onChange={(e) => onChange({ ...source, platform: e.target.value })}
+              placeholder="twitter / x"
+            />
+          </>
+        ) : (
+          <>
+            {source.mode === 'local_file' ? (
+              <div style={{ display: 'flex', gap: 8, gridColumn: '1 / span 2' }}>
+                <input
+                  className="input"
+                  value={source.local_path ?? ''}
+                  onChange={(e) => onChange({ ...source, local_path: e.target.value })}
+                  placeholder="选择真实本地路径"
+                />
+                <button className="btn btn-secondary" onClick={() => void pickLocalPath('local_path')}>
+                  <FolderOpen size={14} /> 选择
+                </button>
+              </div>
+            ) : (
+              <input
+                className="input"
+                value={source.handle_or_url ?? ''}
+                onChange={(e) => onChange({ ...source, handle_or_url: e.target.value })}
+                placeholder={source.mode === 'channel_url' ? '频道链接' : source.mode === 'single_url' ? '视频链接' : '远程链接'}
+                style={{ gridColumn: '1 / span 2' }}
+              />
+            )}
+            <input
+              className="input"
+              value={source.platform ?? ''}
+              onChange={(e) => onChange({ ...source, platform: e.target.value })}
+              placeholder={source.type === 'chat_file' ? 'wechat / feishu' : 'youtube / bilibili / local'}
+            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                className="input"
+                value={source.manifest_path ?? ''}
+                onChange={(e) => onChange({ ...source, manifest_path: e.target.value })}
+                placeholder="target manifest 路径"
+              />
+              <button className="btn btn-secondary" onClick={() => void pickLocalPath('manifest_path')}>
+                <FolderOpen size={14} />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {source.summary ? (
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>{source.summary}</div>
+      ) : null}
+    </div>
+  );
+}
 
 export function PersonaEditor({ mode, persona, open, onClose }: Props) {
   const { reload } = usePersonaStore();
-  const [step, setStep] = useState(0);
-  const [name, setName] = useState('');
-  const [sourceType, setSourceType] = useState<SourceType>('social');
-  const [handle, setHandle] = useState('');
-  const [chatFile, setChatFile] = useState<string>('');
-  const [videoSubMode, setVideoSubMode] = useState<VideoSubMode>('channel');
-  const [channelUrl, setChannelUrl] = useState('');
-  const [videoUrl, setVideoUrl] = useState('');
-  const [videoFile, setVideoFile] = useState<string>('');
-  const [trainingMode, setTrainingMode] = useState<TrainingMode>('quick');
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const chatFileInputRef = useRef<HTMLInputElement>(null);
-  const videoFileInputRef = useRef<HTMLInputElement>(null);
+  const [name, setName] = useState('');
+  const [sources, setSources] = useState<PersonaSource[]>([makeSource('social')]);
+  const [policy, setPolicy] = useState<PersonaConfig['update_policy']>(DEFAULT_POLICY);
 
   useEffect(() => {
-    if (open) {
-      if (mode === 'edit' && persona) {
-        setName(persona.name);
-        setSourceType((persona.source_type as SourceType) || 'social');
-      } else {
-        setName('');
-        setSourceType('social');
-        setHandle('');
-        setChatFile('');
-        setChannelUrl('');
-        setVideoUrl('');
-        setVideoFile('');
-        setTrainingMode('quick');
-      }
-      setStep(0);
-      setError('');
+    if (!open) return;
+    setError('');
+    if (mode === 'create' || !persona) {
+      setName('');
+      setSources([makeSource('social')]);
+      setPolicy(DEFAULT_POLICY);
+      return;
     }
+    setLoading(true);
+    api.getPersona(persona.slug)
+      .then((detail: PersonaDetail) => {
+        setName(detail.config.name ?? detail.persona.name);
+        setSources(detail.config.sources.length > 0 ? detail.config.sources : [makeSource('social')]);
+        setPolicy(detail.config.update_policy ?? DEFAULT_POLICY);
+      })
+      .catch((nextError) => setError((nextError as Error).message))
+      .finally(() => setLoading(false));
   }, [open, mode, persona]);
 
+  const canSave = useMemo(() => {
+    if (!name.trim()) return false;
+    return sources.some((source) => {
+      if (!source.enabled) return false;
+      if (source.type === 'social') return Boolean(source.handle_or_url?.trim());
+      if (source.mode === 'local_file') return Boolean(source.local_path?.trim()) && Boolean(source.manifest_path?.trim());
+      return Boolean(source.handle_or_url?.trim());
+    });
+  }, [name, sources]);
+
   async function handleSave() {
-    if (!name.trim()) { setError('请填写人格名称'); return; }
+    if (!canSave || saving) return;
     setSaving(true);
     setError('');
     try {
-      // Server reads `persona_slug` (not `slug`) when source_type is present
-      const persona_slug = name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 32) || `persona-${Date.now()}`;
-
       if (mode === 'create') {
-        // Build source_target from the appropriate sub-field
-        let source_target: string | undefined;
-        let source_path: string | undefined;
-        if (sourceType === 'social') source_target = handle || undefined;
-        else if (sourceType === 'video_file') {
-          if (videoSubMode === 'channel') source_target = channelUrl || undefined;
-          else if (videoSubMode === 'single') source_target = videoUrl || undefined;
-          else source_path = videoFile || undefined;
-        } else if (sourceType === 'chat_file') {
-          source_path = chatFile || undefined;
-        }
-
         await api.createPersona({
           name: name.trim(),
-          persona_slug,
-          source_type: sourceType,
-          source_target,
-          source_path,
+          persona_slug: buildSlug(name),
+          sources,
+          update_policy: policy,
         });
-
-        // Use the slug we computed — more reliable than reading back from the response
-        api.startTraining(persona_slug, trainingMode).catch(console.warn);
-
       } else if (persona) {
-        await api.updatePersona(persona.slug, { name: name.trim(), source_type: sourceType as 'social' | 'chat_file' | 'video_file' });
+        await api.updatePersonaSources(persona.slug, { name: name.trim(), sources, update_policy: policy });
       }
       await reload();
       onClose();
-    } catch (e: unknown) {
-      setError((e as Error).message);
+    } catch (nextError) {
+      setError((nextError as Error).message);
     } finally {
       setSaving(false);
     }
   }
 
-  const isCreate = mode === 'create';
-  const canProceed = name.trim().length > 0;
-  const totalSteps = isCreate ? 3 : 1;
-
   return (
     <AnimatePresence>
-      {open && (
+      {open ? (
         <>
-          {/* 遮罩 */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
             onClick={onClose}
-            style={{
-              position: 'fixed', inset: 0,
-              background: 'rgb(0 0 0 / 0.5)',
-              backdropFilter: 'blur(4px)',
-              zIndex: 200,
-            }}
+            style={{ position: 'fixed', inset: 0, background: 'rgb(0 0 0 / 0.46)', zIndex: 200 }}
           />
-
-          {/* 居中 wrapper */}
-          <div style={{
-            position: 'fixed', inset: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 201, pointerEvents: 'none',
-          }}>
           <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ type: 'spring', damping: 28, stiffness: 380, duration: 0.2 }}
+            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.98 }}
             style={{
-              pointerEvents: 'auto',
-              width: 480,
-              maxHeight: '82vh',
+              position: 'fixed',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 860,
+              maxWidth: 'calc(100vw - 48px)',
+              maxHeight: '84vh',
+              overflow: 'hidden',
               background: 'rgb(var(--bg-card))',
               border: '1px solid rgb(var(--border))',
               borderRadius: 14,
+              boxShadow: '0 24px 60px rgb(0 0 0 / 0.24)',
+              zIndex: 201,
               display: 'flex',
               flexDirection: 'column',
-              boxShadow: '0 24px 48px rgb(0 0 0 / 0.25)',
-              overflow: 'hidden',
             }}
           >
-            {/* 头部 */}
-            <div style={{
-              padding: '18px 20px 14px',
-              borderBottom: '1px solid rgb(var(--border-light))',
-              display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-            }}>
+            <div style={{ padding: '18px 20px', borderBottom: '1px solid rgb(var(--border-light))', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'rgb(var(--text-primary))' }}>
-                  {isCreate ? t('newPersona') : t('editPersona')}
-                </div>
-                {isCreate && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                    {STEPS_CREATE.map((labelKey, i) => (
-                      <React.Fragment key={i}>
-                        <div style={{
-                          fontSize: 11, fontWeight: 500,
-                          color: step === i ? 'rgb(var(--accent))' : 'rgb(var(--text-tertiary))',
-                          display: 'flex', alignItems: 'center', gap: 4,
-                        }}>
-                          <div style={{
-                            width: 16, height: 16, borderRadius: '50%', fontSize: 9, fontWeight: 700,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            background: step === i ? 'rgb(var(--accent))' : step > i ? '#22c55e' : 'rgb(var(--border))',
-                            color: step >= i ? '#fff' : 'rgb(var(--text-tertiary))',
-                          }}>{i + 1}</div>
-                          {t(labelKey)}
-                        </div>
-                        {i < totalSteps - 1 && <div style={{ width: 16, height: 1, background: 'rgb(var(--border))' }} />}
-                      </React.Fragment>
-                    ))}
-                  </div>
-                )}
+                <div style={{ fontSize: 16, fontWeight: 700 }}>{mode === 'create' ? '新建人格' : '编辑人格'}</div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>统一素材池；保存后后台继续同步与培养。</div>
               </div>
-              <button className="btn btn-icon" onClick={onClose} style={{ width: 30, height: 30, marginTop: -2 }}>
-                <X size={15} />
-              </button>
+              <button className="btn btn-icon" onClick={onClose}><X size={16} /></button>
             </div>
 
-            {/* 内容 */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '18px 20px' }}>
-              {/* 步骤 0：名称 */}
-              {(step === 0 || !isCreate) && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 500, color: 'rgb(var(--text-secondary))', display: 'block', marginBottom: 6 }}>
-                      {t('personaName')} *
-                    </label>
-                    <input
-                      className="input"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="给这个人格取个名字…"
-                      autoFocus
-                      onKeyDown={(e) => { if (e.key === 'Enter' && isCreate && canProceed) setStep(1); }}
-                    />
-                  </div>
+            <div style={{ padding: 20, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={t('personaName')} />
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>素材池</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('social')])}><Plus size={14} />账号</button>
+                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('chat_file')])}><Plus size={14} />聊天</button>
+                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('video_file')])}><Plus size={14} />视频</button>
                 </div>
-              )}
+              </div>
 
-              {/* 步骤 1：数据来源 */}
-              {(step === 1 || !isCreate) && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: !isCreate ? 14 : 0 }}>
-                  {!isCreate && (
-                    <div style={{ height: 1, background: 'rgb(var(--border-light))', margin: '4px 0' }} />
-                  )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {sources.map((source, index) => (
+                  <SourceEditor
+                    key={source.id}
+                    source={source}
+                    onChange={(next) => setSources((prev) => prev.map((item, i) => i === index ? next : item))}
+                    onRemove={() => setSources((prev) => prev.filter((item) => item.id !== source.id))}
+                  />
+                ))}
+              </div>
 
-                  {/* 来源类型选择 */}
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 500, color: 'rgb(var(--text-secondary))', display: 'block', marginBottom: 8 }}>
-                      {t('personaSource')}
-                    </label>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {SOURCE_OPTIONS.map((opt) => (
-                        <button
-                          key={opt.type}
-                          onClick={() => setSourceType(opt.type)}
-                          style={{
-                            flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
-                            padding: '10px 8px', borderRadius: 8, border: '1px solid',
-                            borderColor: sourceType === opt.type ? 'rgb(var(--accent))' : 'rgb(var(--border))',
-                            background: sourceType === opt.type ? 'rgb(var(--accent) / 0.06)' : 'transparent',
-                            cursor: 'pointer', transition: 'all 0.15s', gap: 4,
-                          }}
-                        >
-                          <span style={{ fontSize: 18, lineHeight: 1 }}>{opt.icon}</span>
-                          <span style={{ fontSize: 11, fontWeight: 600, color: sourceType === opt.type ? 'rgb(var(--accent))' : 'rgb(var(--text-primary))' }}>
-                            {opt.label}
-                          </span>
-                          <span style={{ fontSize: 10, color: 'rgb(var(--text-tertiary))', textAlign: 'center', lineHeight: 1.3 }}>
-                            {opt.desc}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Social */}
-                  {sourceType === 'social' && (
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 500, color: 'rgb(var(--text-secondary))', display: 'block', marginBottom: 6 }}>
-                        {t('personaHandle')}
-                      </label>
-                      <input className="input" value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="@username" />
-                    </div>
-                  )}
-
-                  {/* Chat File */}
-                  {sourceType === 'chat_file' && (
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 500, color: 'rgb(var(--text-secondary))', display: 'block', marginBottom: 6 }}>
-                        {t('uploadFile')}
-                      </label>
-                      <div
-                        onClick={() => chatFileInputRef.current?.click()}
-                        style={{
-                          border: '2px dashed rgb(var(--border))', borderRadius: 8, padding: '20px 16px',
-                          textAlign: 'center', cursor: 'pointer', transition: 'border-color 0.15s',
-                        }}
-                        onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'rgb(var(--accent))')}
-                        onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'rgb(var(--border))')}
-                      >
-                        <Upload size={20} style={{ color: 'rgb(var(--text-tertiary))', margin: '0 auto 8px' }} />
-                        <div style={{ fontSize: 13, fontWeight: 500, color: 'rgb(var(--text-primary))' }}>
-                          {chatFile ? chatFile.split(/[\\/]/).pop() : t('chatFileHint')}
-                        </div>
-                        <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>
-                          {t('chatFileFormats')}
-                        </div>
-                      </div>
-                      <input
-                        ref={chatFileInputRef} type="file" hidden
-                        accept=".txt,.json,.csv,.html,.zip"
-                        onChange={(e) => { if (e.target.files?.[0]) setChatFile(e.target.files[0].name); }}
-                      />
-                    </div>
-                  )}
-
-                  {/* Video File */}
-                  {sourceType === 'video_file' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      {/* 子模式选择 */}
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        {([
-                          { mode: 'channel' as VideoSubMode, icon: <Link size={12} />, label: t('channelUrl') },
-                          { mode: 'single' as VideoSubMode, icon: <Film size={12} />, label: t('singleVideoUrl') },
-                          { mode: 'local' as VideoSubMode, icon: <FileAudio size={12} />, label: t('localFile') },
-                        ] as const).map((opt) => (
-                          <button
-                            key={opt.mode}
-                            onClick={() => setVideoSubMode(opt.mode)}
-                            className={`btn ${videoSubMode === opt.mode ? 'btn-primary' : 'btn-secondary'}`}
-                            style={{ flex: 1, fontSize: 11, padding: '5px 8px', gap: 4 }}
-                          >
-                            {opt.icon}{opt.label}
-                          </button>
-                        ))}
-                      </div>
-
-                      {videoSubMode === 'channel' && (
-                        <div>
-                          <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginBottom: 6 }}>{t('channelUrlHint')}</div>
-                          <input className="input" value={channelUrl} onChange={(e) => setChannelUrl(e.target.value)} placeholder="https://youtube.com/@creator" />
-                        </div>
-                      )}
-                      {videoSubMode === 'single' && (
-                        <div>
-                          <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginBottom: 6 }}>{t('singleVideoUrlHint')}</div>
-                          <input className="input" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="https://youtube.com/watch?v=..." />
-                        </div>
-                      )}
-                      {videoSubMode === 'local' && (
-                        <div>
-                          <div
-                            onClick={() => videoFileInputRef.current?.click()}
-                            style={{
-                              border: '2px dashed rgb(var(--border))', borderRadius: 8, padding: '16px',
-                              textAlign: 'center', cursor: 'pointer', transition: 'border-color 0.15s',
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'rgb(var(--accent))')}
-                            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'rgb(var(--border))')}
-                          >
-                            <FileAudio size={18} style={{ color: 'rgb(var(--text-tertiary))', margin: '0 auto 6px' }} />
-                            <div style={{ fontSize: 12, color: 'rgb(var(--text-primary))' }}>
-                              {videoFile ? videoFile.split(/[\\/]/).pop() : t('localFileHint')}
-                            </div>
-                            <div style={{ fontSize: 10, color: 'rgb(var(--text-tertiary))', marginTop: 3 }}>
-                              .mp4  .mp3  .wav  .m4a  .webm
-                            </div>
-                          </div>
-                          <input
-                            ref={videoFileInputRef} type="file" hidden
-                            accept=".mp4,.mp3,.wav,.m4a,.webm,.ogg,.flac"
-                            onChange={(e) => { if (e.target.files?.[0]) setVideoFile(e.target.files[0].name); }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
+              <div className="card" style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>自动检查更新</div>
+                  <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>远程来源按固定周期检查新增内容，发现增量后继续培养。</div>
                 </div>
-              )}
-
-              {/* 步骤 2：培养细节 */}
-              {isCreate && step === 2 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <div style={{ fontSize: 13, color: 'rgb(var(--text-secondary))', lineHeight: 1.6 }}>
-                    选择培养深度，这将决定人格学习的轮数和精细程度。
-                  </div>
-                  {([
-                    {
-                      mode: 'quick' as TrainingMode,
-                      icon: '⚡',
-                      label: t('quickMode'),
-                      desc: t('quickModeDesc'),
-                      detail: '约 3 轮问答，适合快速预览',
-                    },
-                    {
-                      mode: 'full' as TrainingMode,
-                      icon: '🌊',
-                      label: t('fullMode'),
-                      desc: t('fullModeDesc'),
-                      detail: '约 10 轮问答，人格更丰富精准',
-                    },
-                  ]).map((opt) => (
-                    <button
-                      key={opt.mode}
-                      onClick={() => setTrainingMode(opt.mode)}
-                      style={{
-                        display: 'flex', alignItems: 'flex-start', gap: 14,
-                        padding: '14px 16px', borderRadius: 10, border: '1.5px solid',
-                        borderColor: trainingMode === opt.mode ? 'rgb(var(--accent))' : 'rgb(var(--border))',
-                        background: trainingMode === opt.mode ? 'rgb(var(--accent) / 0.06)' : 'transparent',
-                        cursor: 'pointer', transition: 'all 0.15s', textAlign: 'left', width: '100%',
-                      }}
-                    >
-                      <span style={{ fontSize: 24, lineHeight: 1, marginTop: 2 }}>{opt.icon}</span>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                          <span style={{ fontSize: 14, fontWeight: 600, color: trainingMode === opt.mode ? 'rgb(var(--accent))' : 'rgb(var(--text-primary))' }}>
-                            {opt.label}
-                          </span>
-                          {opt.mode === 'full' && (
-                            <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: 'rgb(var(--accent) / 0.12)', color: 'rgb(var(--accent))' }}>
-                              推荐
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>{opt.desc}</div>
-                        <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 2 }}>{opt.detail}</div>
-                      </div>
-                      <div style={{
-                        width: 18, height: 18, borderRadius: '50%', flexShrink: 0, marginTop: 2,
-                        border: `2px solid ${trainingMode === opt.mode ? 'rgb(var(--accent))' : 'rgb(var(--border))'}`,
-                        background: trainingMode === opt.mode ? 'rgb(var(--accent))' : 'transparent',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      }}>
-                        {trainingMode === opt.mode && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff' }} />}
-                      </div>
-                    </button>
-                  ))}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input type="checkbox" checked={policy.auto_check_remote} onChange={(e) => setPolicy({ ...policy, auto_check_remote: e.target.checked })} /> 自动
+                  </label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={5}
+                    value={policy.check_interval_minutes}
+                    onChange={(e) => setPolicy({ ...policy, check_interval_minutes: Number(e.target.value || 60) })}
+                    style={{ width: 96 }}
+                  />
                 </div>
-              )}
+              </div>
 
-              {error && (
-                <div style={{ fontSize: 12, color: '#ef4444', padding: '8px 12px', background: 'rgb(239 68 68 / 0.08)', borderRadius: 6, marginTop: 12 }}>
-                  {error}
-                </div>
-              )}
+              {loading ? <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}><RefreshCw size={14} style={{ verticalAlign: 'middle' }} /> 加载中…</div> : null}
+              {error ? <div style={{ fontSize: 12, color: '#ef4444', background: 'rgb(239 68 68 / 0.08)', borderRadius: 8, padding: '10px 12px' }}>{error}</div> : null}
             </div>
 
-            {/* 底部按钮 */}
-            <div style={{
-              padding: '14px 20px', borderTop: '1px solid rgb(var(--border-light))',
-              display: 'flex', gap: 8, justifyContent: 'flex-end',
-            }}>
-              {isCreate && step > 0 && (
-                <button className="btn btn-ghost" onClick={() => setStep((s) => s - 1)} style={{ marginRight: 'auto', gap: 4 }}>
-                  <ChevronLeft size={13} />{t('back')}
-                </button>
-              )}
-              <button className="btn btn-secondary" onClick={onClose}>{t('cancel')}</button>
-              {isCreate && step < 2 ? (
-                <button className="btn btn-primary" onClick={() => setStep((s) => s + 1)} disabled={step === 0 && !canProceed} style={{ gap: 4 }}>
-                  下一步 <ChevronRight size={13} />
-                </button>
-              ) : (
-                <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-                  {saving ? t('loading') : isCreate ? t('createAndCultivate') : t('save')}
-                </button>
-              )}
+            <div style={{ padding: '16px 20px', borderTop: '1px solid rgb(var(--border-light))', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn btn-secondary" onClick={onClose}>取消</button>
+              <button className="btn btn-primary" onClick={() => void handleSave()} disabled={!canSave || saving}>{saving ? '保存中…' : mode === 'create' ? '创建人格' : '保存修改'}</button>
             </div>
           </motion.div>
-          </div>
         </>
-      )}
+      ) : null}
     </AnimatePresence>
   );
 }

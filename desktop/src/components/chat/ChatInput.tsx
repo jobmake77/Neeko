@@ -3,14 +3,15 @@ import { Send, Paperclip, X } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { useAppStore } from '@/stores/app';
 import { t } from '@/lib/i18n';
+import type { AttachmentRef } from '@/lib/types';
+import { pickFiles } from '@/lib/tauri';
 
 export function ChatInput() {
   const { sending, sendMessage } = useChatStore();
   const { view } = useAppStore();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const valueRef = useRef('');
-  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
 
   // Auto-focus when chat view is active
   useEffect(() => {
@@ -43,10 +44,11 @@ export function ChatInput() {
       el.style.height = 'auto';
     }
     valueRef.current = '';
+    const currentAttachments = [...attachments];
     setAttachments([]);
-    await sendMessage(val);
+    await sendMessage(val, currentAttachments);
     textareaRef.current?.focus();
-  }, [sending, sendMessage]);
+  }, [attachments, sending, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -55,9 +57,18 @@ export function ChatInput() {
     }
   };
 
-  function handleFiles(files: FileList | null) {
-    if (!files) return;
-    setAttachments((prev) => [...prev, ...Array.from(files)]);
+  async function handlePickFiles() {
+    const paths = await pickFiles({ multiple: true });
+    if (paths.length === 0) return;
+    setAttachments((prev) => [
+      ...prev,
+      ...paths.map((path) => ({
+        id: crypto.randomUUID(),
+        type: inferAttachmentType(path),
+        name: path.split(/[\\/]/).pop() || path,
+        path,
+      })),
+    ]);
   }
 
   return (
@@ -107,21 +118,13 @@ export function ChatInput() {
         {/* Attachment button */}
         <button
           className="btn btn-icon"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => void handlePickFiles()}
           disabled={sending}
           title="添加附件"
           style={{ width: 30, height: 30, flexShrink: 0, color: 'rgb(var(--text-tertiary))' }}
         >
           <Paperclip size={15} />
         </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          hidden
-          multiple
-          onChange={(e) => handleFiles(e.target.files)}
-        />
-
         <textarea
           ref={textareaRef}
           disabled={sending}
@@ -176,4 +179,13 @@ export function ChatInput() {
       </div>
     </div>
   );
+}
+
+function inferAttachmentType(path: string): AttachmentRef['type'] {
+  const lower = path.toLowerCase();
+  if (/\.(png|jpg|jpeg|gif|webp|heic)$/.test(lower)) return 'image';
+  if (/\.(mp4|mov|mkv|webm)$/.test(lower)) return 'video';
+  if (/\.(mp3|wav|m4a|ogg|flac)$/.test(lower)) return 'audio';
+  if (/\.(txt|md|json|csv|html|yaml|yml)$/.test(lower)) return 'text';
+  return 'file';
 }

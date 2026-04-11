@@ -21,3 +21,14 @@ export async function getWorkbenchStatus(): Promise<{ node_available: boolean; d
     return { node_available: false, dist_ready: false };
   }
 }
+
+export async function pickFiles(options?: {
+  multiple?: boolean;
+  directory?: boolean;
+}): Promise<string[]> {
+  try {
+    return await invoke('pick_files', { request: options ?? {} });
+  } catch {
+    return [];
+  }
+}

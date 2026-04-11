@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, extname, isAbsolute, join } from 'path';
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
 import { PersonaAgent } from '../agents/index.js';
@@ -22,16 +23,20 @@ import {
   writeEvidenceArtifacts,
 } from '../pipeline/evidence-layer.js';
 import { VideoAdapter } from '../pipeline/ingestion/video.js';
+import { AgentReachAdapter } from '../pipeline/ingestion/agentreach.js';
 import {
+  AttachmentRef,
   CitationItem,
   Conversation,
   ConversationBundle,
   ConversationMessage,
+  CultivationSummary,
   CultivationDetail,
   MemoryCandidate,
   PersonaConfig,
   PersonaDetail,
   PersonaMutationResult,
+  PersonaSource,
   PersonaSkillSummary,
   PersonaSummary,
   PersonaWorkbenchProfile,
@@ -64,7 +69,22 @@ export interface WorkbenchCreateInput {
 export interface PersonaConfigInput {
   persona_slug?: string;
   name: string;
-  source_type: PersonaConfig['source_type'];
+  sources?: Array<{
+    id?: string;
+    type: PersonaSource['type'];
+    mode?: PersonaSource['mode'];
+    platform?: string;
+    handle_or_url?: string;
+    local_path?: string;
+    manifest_path?: string;
+    enabled?: boolean;
+    last_synced_at?: string;
+    last_cursor?: string;
+    status?: PersonaSource['status'];
+    summary?: string;
+  }>;
+  update_policy?: PersonaConfig['update_policy'];
+  source_type?: PersonaSource['type'];
   source_target?: string;
   source_path?: string;
   target_manifest_path?: string;
@@ -131,6 +151,19 @@ export interface PersonaResponseMeta {
   personaDimensions: string[];
 }
 
+export interface RuntimeModelConfig {
+  provider: 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
+  model: string;
+  api_keys: Partial<Record<'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek', string>>;
+}
+
+export interface RuntimeSettingsPayload {
+  default_training_profile?: string;
+  default_input_routing_strategy?: string;
+  qdrant_url?: string;
+  data_dir?: string;
+}
+
 export interface PromotionHandoffExport {
   handoff: PromotionHandoff;
   format: 'markdown' | 'json';
@@ -188,6 +221,100 @@ function detectConfigSourceType(source: string | undefined): PersonaConfig['sour
   const extension = extname(source).toLowerCase();
   if (['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'].includes(extension)) return 'video_file';
   return 'chat_file';
+}
+
+function createSourceId(): string {
+  return crypto.randomUUID();
+}
+
+function normalizePersonaSource(input: PersonaConfigInput['sources'] extends Array<infer T> ? T : never): PersonaSource {
+  return {
+    id: input.id?.trim() || createSourceId(),
+    type: input.type,
+    mode: input.mode ?? (
+      input.type === 'social'
+        ? 'handle'
+        : (input.local_path?.trim() ? 'local_file' : 'remote_url')
+    ),
+    platform: input.platform?.trim() || undefined,
+    handle_or_url: input.handle_or_url?.trim() || undefined,
+    local_path: input.local_path?.trim() || undefined,
+    manifest_path: input.manifest_path?.trim() || undefined,
+    enabled: input.enabled !== false,
+    last_synced_at: input.last_synced_at,
+    last_cursor: input.last_cursor?.trim() || undefined,
+    status: input.status ?? 'idle',
+    summary: input.summary?.trim() || undefined,
+  };
+}
+
+function buildLegacySourceFromConfig(config: {
+  source_type?: PersonaSource['type'];
+  source_target?: string;
+  source_path?: string;
+  target_manifest_path?: string;
+  platform?: string;
+}): PersonaSource | null {
+  if (!config.source_type) return null;
+  return {
+    id: createSourceId(),
+    type: config.source_type,
+    mode: config.source_type === 'social'
+      ? 'handle'
+      : (config.source_path?.trim() ? 'local_file' : 'remote_url'),
+    platform: config.platform?.trim() || undefined,
+    handle_or_url: config.source_target?.trim() || undefined,
+    local_path: config.source_path?.trim() || undefined,
+    manifest_path: config.target_manifest_path?.trim() || undefined,
+    enabled: true,
+    status: 'idle',
+  };
+}
+
+function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { name: string; sources: PersonaSource[]; update_policy: PersonaConfig['update_policy'] } {
+  const normalizedSources = (input.sources ?? [])
+    .map((item) => normalizePersonaSource(item))
+    .filter((item) => Boolean(item.handle_or_url || item.local_path));
+  if (normalizedSources.length > 0) {
+    return {
+      name: input.name.trim(),
+      sources: normalizedSources,
+      update_policy: {
+        auto_check_remote: input.update_policy?.auto_check_remote ?? true,
+        check_interval_minutes: input.update_policy?.check_interval_minutes ?? 60,
+        strategy: 'incremental',
+        last_checked_at: input.update_policy?.last_checked_at,
+        latest_result: input.update_policy?.latest_result,
+      },
+    };
+  }
+
+  const legacy = buildLegacySourceFromConfig({
+    source_type: input.source_type,
+    source_target: input.source_target,
+    source_path: input.source_path,
+    target_manifest_path: input.target_manifest_path,
+    platform: input.platform,
+  });
+  return {
+    name: input.name.trim(),
+    sources: legacy ? [legacy] : [],
+    update_policy: {
+      auto_check_remote: input.update_policy?.auto_check_remote ?? true,
+      check_interval_minutes: input.update_policy?.check_interval_minutes ?? 60,
+      strategy: 'incremental',
+      last_checked_at: input.update_policy?.last_checked_at,
+      latest_result: input.update_policy?.latest_result,
+    },
+  };
+}
+
+function summarizeSources(sources: PersonaSource[]): { total_sources: number; enabled_sources: number; source_types: string[] } {
+  return {
+    total_sources: sources.length,
+    enabled_sources: sources.filter((item) => item.enabled).length,
+    source_types: Array.from(new Set(sources.map((item) => item.type))),
+  };
 }
 
 function inferConversationTitle(content: string): string {
@@ -319,6 +446,18 @@ function readPreviewFromPath(path?: string, maxChars = 900): string | undefined 
   } catch {
     return undefined;
   }
+}
+
+function buildAttachmentContext(attachments: AttachmentRef[]): string {
+  return attachments
+    .map((item) => {
+      const header = `[attachment:${item.type}] ${item.name} @ ${item.path}`;
+      if (item.type !== 'text' && item.type !== 'file') return header;
+      const preview = readPreviewFromPath(item.path, 1400);
+      if (!preview) return header;
+      return `${header}\n${preview}`;
+    })
+    .join('\n\n');
 }
 
 function renderTrainingPrepMarkdown(prep: TrainingPrepArtifact): string {
@@ -454,7 +593,7 @@ export class WorkbenchService {
   ) {}
 
   listPersonas(): PersonaSummary[] {
-    return this.listAllPersonaSummaries().filter((p) => this.isPersonaReady(p));
+    return this.listAllPersonaSummaries();
   }
 
   listCultivatingPersonas(): PersonaSummary[] {
@@ -494,15 +633,34 @@ export class WorkbenchService {
     if (!persona) {
       throw new Error(`Persona "${slug}" not found.`);
     }
+    const config = this.getPersonaConfig(slug);
     return {
       persona,
-      config: this.getPersonaConfig(slug),
+      config,
+      cultivation_summary: this.buildCultivationSummary(slug, persona),
+      sources_summary: summarizeSources(config.sources),
     };
   }
 
   getPersonaConfig(slug: string): PersonaConfig {
     const stored = this.store.getPersonaConfig(slug);
-    if (stored) return stored;
+    if (stored) {
+      if (stored.sources.length === 0) {
+        const legacySource = buildLegacySourceFromConfig(stored);
+        const migrated: PersonaConfig = {
+          ...stored,
+          sources: legacySource ? [legacySource] : [],
+          update_policy: stored.update_policy ?? {
+            auto_check_remote: true,
+            check_interval_minutes: 60,
+            strategy: 'incremental',
+          },
+        };
+        this.store.savePersonaConfig(migrated);
+        return migrated;
+      }
+      return stored;
+    }
 
     const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
     if (!existsSync(personaPath)) {
@@ -514,11 +672,22 @@ export class WorkbenchService {
     const inferred: PersonaConfig = {
       persona_slug: persona.slug,
       name: persona.name,
-      source_type: sourceType,
-      source_target: sourceType === 'social' ? primarySource : undefined,
-      source_path: sourceType === 'social' ? undefined : primarySource,
-      target_manifest_path: undefined,
-      platform: sourceType === 'social' ? 'x' : undefined,
+      sources: [{
+        id: createSourceId(),
+        type: sourceType,
+        mode: sourceType === 'social' ? 'handle' : 'local_file',
+        handle_or_url: sourceType === 'social' ? primarySource : undefined,
+        local_path: sourceType === 'social' ? undefined : primarySource,
+        manifest_path: undefined,
+        platform: sourceType === 'social' ? 'x' : undefined,
+        enabled: true,
+        status: 'idle',
+      }],
+      update_policy: {
+        auto_check_remote: true,
+        check_interval_minutes: 60,
+        strategy: 'incremental',
+      },
       updated_at: persona.updated_at,
     };
     this.store.savePersonaConfig(inferred);
@@ -528,20 +697,19 @@ export class WorkbenchService {
   createPersonaFromConfig(input: PersonaConfigInput): PersonaMutationResult {
     const now = new Date().toISOString();
     const slug = input.persona_slug?.trim() || this.buildAvailablePersonaSlug(input.name);
+    const normalized = normalizePersonaConfigInput(input, now);
     const config: PersonaConfig = {
       persona_slug: slug,
-      name: input.name.trim(),
-      source_type: input.source_type,
-      source_target: input.source_target?.trim() || undefined,
-      source_path: input.source_path?.trim() || undefined,
-      target_manifest_path: input.target_manifest_path?.trim() || undefined,
-      platform: input.platform?.trim() || undefined,
+      name: normalized.name,
+      sources: normalized.sources,
+      update_policy: normalized.update_policy,
       updated_at: now,
     };
     this.validatePersonaConfig(config);
     this.store.savePersonaConfig(config);
 
     const run = this.startCreateRunFromConfig(config);
+    this.schedulePostCreateSourceSync(config, run.id);
     return {
       persona: this.readPersonaConfigSummary(slug) ?? this.readPersonaSummary(slug) ?? {
         slug,
@@ -558,17 +726,19 @@ export class WorkbenchService {
 
   async updatePersona(slug: string, input: PersonaConfigInput): Promise<PersonaMutationResult> {
     const current = this.getPersonaConfig(slug);
-    const nextConfig: PersonaConfig = {
+    const normalized = normalizePersonaConfigInput({
       ...current,
       ...input,
-      persona_slug: slug,
       name: input.name?.trim() || current.name,
-      source_target: input.source_target !== undefined ? (input.source_target.trim() || undefined) : current.source_target,
-      source_path: input.source_path !== undefined ? (input.source_path.trim() || undefined) : current.source_path,
-      target_manifest_path: input.target_manifest_path !== undefined
-        ? (input.target_manifest_path.trim() || undefined)
-        : current.target_manifest_path,
-      platform: input.platform !== undefined ? (input.platform.trim() || undefined) : current.platform,
+      sources: input.sources ?? current.sources,
+      update_policy: input.update_policy ?? current.update_policy,
+    }, new Date().toISOString());
+    const nextConfig: PersonaConfig = {
+      ...current,
+      persona_slug: slug,
+      name: normalized.name,
+      sources: normalized.sources,
+      update_policy: normalized.update_policy,
       updated_at: new Date().toISOString(),
     };
     this.validatePersonaConfig(nextConfig);
@@ -576,6 +746,7 @@ export class WorkbenchService {
     await this.preparePersonaRebuild(slug);
     this.markPersonaUpdating(slug);
     const run = this.startCreateRunFromConfig(nextConfig);
+    this.schedulePostCreateSourceSync(nextConfig, run.id);
     return {
       persona: this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug) ?? {
         slug,
@@ -618,6 +789,21 @@ export class WorkbenchService {
       rmSync(personaDir, { recursive: true, force: true });
     }
     return true;
+  }
+
+  getPersonaSources(slug: string): PersonaSource[] {
+    return this.getPersonaConfig(slug).sources;
+  }
+
+  async updatePersonaSources(
+    slug: string,
+    input: { sources: PersonaConfigInput['sources']; name?: string; update_policy?: PersonaConfig['update_policy'] }
+  ): Promise<PersonaMutationResult> {
+    return this.updatePersona(slug, {
+      name: input.name ?? this.getPersonaConfig(slug).name,
+      sources: input.sources,
+      update_policy: input.update_policy,
+    });
   }
 
   listConversations(personaSlug: string): Conversation[] {
@@ -824,7 +1010,7 @@ export class WorkbenchService {
     });
   }
 
-  async sendMessage(conversationId: string, message: string): Promise<ConversationBundle> {
+  async sendMessage(conversationId: string, message: string, attachments: AttachmentRef[] = []): Promise<ConversationBundle> {
     const conversation = this.store.getConversation(conversationId);
     if (!conversation) throw new Error(`Conversation "${conversationId}" not found.`);
 
@@ -840,6 +1026,7 @@ export class WorkbenchService {
       persona_dimensions: [],
       citation_items: [],
       writeback_candidate_ids: [],
+      attachments,
     };
     const nextHistory = [...history, userMessage];
     this.store.appendMessage(userMessage);
@@ -1107,6 +1294,69 @@ export class WorkbenchService {
     });
   }
 
+  async checkPersonaUpdates(slug: string): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
+    const activeRun = this.getActivePersonaRun(slug);
+    if (activeRun) {
+      return { imports: [], run: activeRun, summary: 'A cultivation job is already running for this persona.' };
+    }
+    const config = this.getPersonaConfig(slug);
+    const imports = await this.syncPersonaSources(slug, config, { includeLocal: false, forceRemote: false });
+    return this.finalizeSourceSync(slug, config, imports, 'Checked remote sources.');
+  }
+
+  async continueCultivationFromSources(slug: string): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
+    const activeRun = this.getActivePersonaRun(slug);
+    if (activeRun) {
+      return { imports: [], run: activeRun, summary: 'A cultivation job is already running for this persona.' };
+    }
+    const config = this.getPersonaConfig(slug);
+    const imports = await this.syncPersonaSources(slug, config, { includeLocal: true, forceRemote: true });
+    return this.finalizeSourceSync(slug, config, imports, 'Continued cultivation from configured sources.');
+  }
+
+  getRuntimeModelConfig(): RuntimeModelConfig {
+    const activeProvider = (settings.get('activeProvider') ?? 'claude') as RuntimeModelConfig['provider'];
+    return {
+      provider: activeProvider,
+      model: String(settings.get('defaultModel') ?? 'claude-sonnet-4-6'),
+      api_keys: {
+        claude: settings.get('anthropicApiKey') ?? '',
+        openai: settings.get('openaiApiKey') ?? '',
+        kimi: settings.get('kimiApiKey') ?? '',
+        gemini: settings.get('geminiApiKey') ?? '',
+        deepseek: settings.get('deepseekApiKey') ?? '',
+      },
+    };
+  }
+
+  updateRuntimeModelConfig(input: RuntimeModelConfig): RuntimeModelConfig {
+    settings.set('activeProvider', input.provider);
+    settings.set('defaultModel', input.model);
+    settings.set('anthropicApiKey', input.api_keys.claude ?? '');
+    settings.set('openaiApiKey', input.api_keys.openai ?? '');
+    settings.set('kimiApiKey', input.api_keys.kimi ?? '');
+    settings.set('geminiApiKey', input.api_keys.gemini ?? '');
+    settings.set('deepseekApiKey', input.api_keys.deepseek ?? '');
+    return this.getRuntimeModelConfig();
+  }
+
+  getRuntimeSettings(): RuntimeSettingsPayload {
+    return {
+      default_training_profile: settings.get('defaultTrainingProfile'),
+      default_input_routing_strategy: settings.get('defaultInputRoutingStrategy'),
+      qdrant_url: settings.get('qdrantUrl'),
+      data_dir: settings.get('neekoDataDir'),
+    };
+  }
+
+  updateRuntimeSettings(input: RuntimeSettingsPayload): RuntimeSettingsPayload {
+    if (input.default_training_profile !== undefined) settings.set('defaultTrainingProfile', input.default_training_profile);
+    if (input.default_input_routing_strategy !== undefined) settings.set('defaultInputRoutingStrategy', input.default_input_routing_strategy);
+    if (input.qdrant_url !== undefined) settings.set('qdrantUrl', input.qdrant_url);
+    if (input.data_dir !== undefined) settings.set('neekoDataDir', input.data_dir);
+    return this.getRuntimeSettings();
+  }
+
   createTrainingPrepFromHandoff(handoffId: string): TrainingPrepArtifact {
     const handoff = this.store.getPromotionHandoff(handoffId);
     if (!handoff) {
@@ -1151,6 +1401,289 @@ export class WorkbenchService {
       status: 'drafted',
       item_count: docs.length,
       summary: buildTrainingPrepSummary(handoff, docs),
+      evidence_index_path: batchArtifacts.evidence_index_path,
+      documents_path: documentsPath,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  private async syncPersonaSources(
+    slug: string,
+    config: PersonaConfig,
+    options: { includeLocal: boolean; forceRemote: boolean }
+  ): Promise<WorkbenchEvidenceImport[]> {
+    const imports: WorkbenchEvidenceImport[] = [];
+    for (const source of config.sources.filter((item) => item.enabled)) {
+      if (source.type === 'chat_file' || (source.type === 'video_file' && source.mode === 'local_file')) {
+        if (!options.includeLocal) continue;
+      }
+      const imported = await this.syncSinglePersonaSource(slug, config, source, options);
+      if (imported) imports.push(imported);
+    }
+    return imports;
+  }
+
+  private async syncSinglePersonaSource(
+    slug: string,
+    config: PersonaConfig,
+    source: PersonaSource,
+    options: { includeLocal: boolean; forceRemote: boolean }
+  ): Promise<WorkbenchEvidenceImport | null> {
+    if (source.type === 'chat_file') {
+      if (!source.local_path || !source.manifest_path) return null;
+      return this.importEvidence({
+        personaSlug: slug,
+        sourceKind: 'chat',
+        sourcePath: source.local_path,
+        targetManifestPath: source.manifest_path,
+        chatPlatform: (source.platform as 'wechat' | 'feishu' | undefined) ?? 'wechat',
+      });
+    }
+
+    if (source.type === 'video_file' && source.mode === 'local_file') {
+      if (!source.local_path || !source.manifest_path) return null;
+      return this.importEvidence({
+        personaSlug: slug,
+        sourceKind: 'video',
+        sourcePath: source.local_path,
+        targetManifestPath: source.manifest_path,
+      });
+    }
+
+    const maybeImport = await this.importRemoteSource(slug, config, source, options.forceRemote);
+    return maybeImport;
+  }
+
+  private async importRemoteSource(
+    slug: string,
+    config: PersonaConfig,
+    source: PersonaSource,
+    forceRemote: boolean
+  ): Promise<WorkbenchEvidenceImport | null> {
+    const now = new Date();
+    const checkInterval = (config.update_policy.check_interval_minutes ?? 60) * 60 * 1000;
+    if (!forceRemote && source.last_synced_at) {
+      const last = new Date(source.last_synced_at).getTime();
+      if (Number.isFinite(last) && now.getTime() - last < checkInterval) {
+        return null;
+      }
+    }
+
+    let docs: RawDocument[] = [];
+    let sourcePlatform = source.platform ?? source.type;
+    if (source.type === 'social' && source.handle_or_url) {
+      const adapter = new AgentReachAdapter('twitter');
+      const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
+      docs = await adapter.fetch(source.handle_or_url, { limit: 100, since });
+      sourcePlatform = source.platform ?? 'twitter';
+    } else if (source.handle_or_url) {
+      const adapter = new AgentReachAdapter('article');
+      docs = await adapter.fetch(source.handle_or_url, { limit: 1 });
+      sourcePlatform = source.platform ?? 'web';
+    }
+
+    if (docs.length === 0) {
+      this.touchSourceSyncState(slug, config, source.id, {
+        last_synced_at: now.toISOString(),
+        status: 'ready',
+        summary: 'No new source content.',
+      });
+      return null;
+    }
+
+    const cursor = createHash('sha1')
+      .update(JSON.stringify(docs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
+      .digest('hex');
+    if (!forceRemote && source.last_cursor && source.last_cursor === cursor) {
+      this.touchSourceSyncState(slug, config, source.id, {
+        last_synced_at: now.toISOString(),
+        status: 'ready',
+        summary: 'No source delta detected.',
+      });
+      return null;
+    }
+
+    const manifest = {
+      target_name: config.name,
+      target_aliases: source.type === 'social' && source.handle_or_url ? [source.handle_or_url.replace(/^@/, ''), source.handle_or_url] : [config.name],
+      self_aliases: [],
+      known_other_aliases: [],
+    };
+    const batch = buildStandaloneEvidenceBatch(docs, { manifest, sourceLabel: sourcePlatform });
+    const importId = crypto.randomUUID();
+    const importDir = join(this.store.getEvidenceImportsDir(), importId);
+    mkdirSync(importDir, { recursive: true });
+    const artifacts = writeEvidenceArtifacts(importDir, batch, manifest);
+    const documentsPath = join(importDir, 'documents.json');
+    writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+
+    const imported = this.store.saveEvidenceImport({
+      id: importId,
+      persona_slug: slug,
+      source_kind: source.type === 'social' ? 'chat' : 'video',
+      source_platform: sourcePlatform,
+      source_path: source.handle_or_url ?? source.local_path ?? '',
+      target_manifest_path: source.manifest_path ?? '',
+      status: 'completed',
+      item_count: batch.items.length,
+      summary: `Imported ${docs.length} new items from ${sourcePlatform}.`,
+      stats: batch.stats,
+      artifacts: {
+        ...artifacts,
+        documents_path: documentsPath,
+      },
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    });
+
+    this.touchSourceSyncState(slug, config, source.id, {
+      last_synced_at: now.toISOString(),
+      last_cursor: cursor,
+      status: 'ready',
+      summary: imported.summary,
+    });
+    return imported;
+  }
+
+  private touchSourceSyncState(
+    slug: string,
+    config: PersonaConfig,
+    sourceId: string,
+    patch: Partial<PersonaSource>
+  ): void {
+    const nextConfig: PersonaConfig = {
+      ...config,
+      sources: config.sources.map((item) => item.id === sourceId ? { ...item, ...patch } : item),
+      update_policy: {
+        ...config.update_policy,
+        last_checked_at: new Date().toISOString(),
+        latest_result: patch.summary ?? config.update_policy.latest_result,
+      },
+      updated_at: new Date().toISOString(),
+    };
+    this.store.savePersonaConfig(nextConfig);
+  }
+
+  private finalizeSourceSync(
+    slug: string,
+    config: PersonaConfig,
+    imports: WorkbenchEvidenceImport[],
+    fallbackSummary: string
+  ): { imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string } {
+    if (imports.length === 0) {
+      const nextConfig: PersonaConfig = {
+        ...config,
+        update_policy: {
+          ...config.update_policy,
+          last_checked_at: new Date().toISOString(),
+          latest_result: 'No new source content.',
+        },
+      };
+      this.store.savePersonaConfig(nextConfig);
+      return { imports, run: null, summary: fallbackSummary };
+    }
+
+    const prep = this.createTrainingPrepFromEvidenceImports(slug, imports);
+    const run = this.startTraining({
+      slug,
+      mode: 'quick',
+      rounds: 1,
+      track: 'full_serial',
+      prepDocumentsPath: prep.documents_path,
+      prepEvidencePath: prep.evidence_index_path,
+      prepArtifactId: prep.id,
+    });
+    return {
+      imports,
+      run,
+      summary: `Imported ${imports.length} updated source batches and started continued cultivation.`,
+    };
+  }
+
+  private getActivePersonaRun(slug: string): WorkbenchRun | null {
+    return this.listRuns(slug).find((run) =>
+      (run.type === 'create' || run.type === 'train') &&
+      (run.status === 'running' || run.status === 'queued')
+    ) ?? null;
+  }
+
+  private schedulePostCreateSourceSync(config: PersonaConfig, createRunId: string): void {
+    const enabledSources = config.sources.filter((item) => item.enabled);
+    if (enabledSources.length <= 1) return;
+
+    const primarySource = config.sources.find((item) => item.enabled) ?? config.sources[0];
+    const followupSourceIds = enabledSources
+      .filter((item) => item.id !== primarySource?.id)
+      .map((item) => item.id);
+    if (followupSourceIds.length === 0) return;
+
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const run = this.getRunStatus(createRunId);
+      if (!run || run.status === 'failed') {
+        clearInterval(timer);
+        return;
+      }
+      if (run.status !== 'completed') {
+        if (Date.now() - startedAt > 30 * 60 * 1000) {
+          clearInterval(timer);
+        }
+        return;
+      }
+      clearInterval(timer);
+      void this.continueCultivationFromSelectedSources(config.persona_slug, followupSourceIds).catch(() => undefined);
+    }, 4000);
+  }
+
+  private async continueCultivationFromSelectedSources(
+    slug: string,
+    sourceIds: string[]
+  ): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
+    const activeRun = this.getActivePersonaRun(slug);
+    if (activeRun) {
+      return { imports: [], run: activeRun, summary: 'A cultivation job is already running for this persona.' };
+    }
+
+    const config = this.getPersonaConfig(slug);
+    const selectedSources = config.sources.filter((item) => item.enabled && sourceIds.includes(item.id));
+    if (selectedSources.length === 0) {
+      return { imports: [], run: null, summary: 'No additional sources were selected for cultivation.' };
+    }
+
+    const imports: WorkbenchEvidenceImport[] = [];
+    for (const source of selectedSources) {
+      const imported = await this.syncSinglePersonaSource(slug, config, source, {
+        includeLocal: true,
+        forceRemote: true,
+      });
+      if (imported) imports.push(imported);
+    }
+
+    return this.finalizeSourceSync(
+      slug,
+      config,
+      imports,
+      'No new source content was available for additional cultivation.'
+    );
+  }
+
+  private createTrainingPrepFromEvidenceImports(personaSlug: string, imports: WorkbenchEvidenceImport[]): TrainingPrepArtifact {
+    const prepId = crypto.randomUUID();
+    const prepDir = join(this.store.getTrainingPrepDir(), prepId);
+    mkdirSync(prepDir, { recursive: true });
+    const docs = imports.flatMap((item) => readJsonFile<RawDocument[]>(item.artifacts.documents_path, []));
+    const now = new Date().toISOString();
+    const prepBatch = buildStandaloneEvidenceBatch(docs, { sourceLabel: 'workbench_source_pool' });
+    const batchArtifacts = writeEvidenceArtifacts(prepDir, prepBatch);
+    const documentsPath = join(prepDir, 'documents.json');
+    writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+    return this.store.saveTrainingPrepArtifact({
+      id: prepId,
+      persona_slug: personaSlug,
+      status: 'drafted',
+      item_count: docs.length,
+      summary: `Training prep synthesized from ${imports.length} source batches.`,
       evidence_index_path: batchArtifacts.evidence_index_path,
       documents_path: documentsPath,
       created_at: now,
@@ -1313,14 +1846,25 @@ export class WorkbenchService {
 
   private validatePersonaConfig(config: PersonaConfig): void {
     if (!config.name.trim()) throw new Error('name is required');
-    if (config.source_type === 'social' && !config.source_target?.trim()) {
-      throw new Error('source_target is required');
-    }
-    if ((config.source_type === 'chat_file' || config.source_type === 'video_file') && !config.source_path?.trim()) {
-      throw new Error('source_path is required');
-    }
-    if ((config.source_type === 'chat_file' || config.source_type === 'video_file') && !config.target_manifest_path?.trim()) {
-      throw new Error('target_manifest_path is required');
+    if (config.sources.length === 0) throw new Error('at least one source is required');
+    const enabledSources = config.sources.filter((item) => item.enabled);
+    if (enabledSources.length === 0) throw new Error('at least one enabled source is required');
+    for (const source of enabledSources) {
+      if (source.type === 'social' && !source.handle_or_url?.trim()) {
+        throw new Error('social source requires handle_or_url');
+      }
+      if ((source.type === 'chat_file' || source.type === 'video_file') && source.mode === 'local_file' && !source.local_path?.trim()) {
+        throw new Error(`${source.type} local source requires local_path`);
+      }
+      if ((source.type === 'chat_file' || source.type === 'video_file') && source.mode !== 'local_file' && !source.handle_or_url?.trim()) {
+        throw new Error(`${source.type} remote source requires handle_or_url`);
+      }
+      if (source.type === 'chat_file' && !source.manifest_path?.trim()) {
+        throw new Error('chat_file source requires manifest_path');
+      }
+      if (source.type === 'video_file' && source.mode === 'local_file' && !source.manifest_path?.trim()) {
+        throw new Error('video_file local source requires manifest_path');
+      }
     }
   }
 
@@ -1352,16 +1896,20 @@ export class WorkbenchService {
   }
 
   private mapPersonaConfigToCreateInput(config: PersonaConfig): WorkbenchCreateInput {
-    if (config.source_type === 'social') {
+    const primarySource = config.sources.find((item) => item.enabled) ?? config.sources[0];
+    if (!primarySource) {
+      throw new Error('No available source configured for this persona.');
+    }
+    if (primarySource.type === 'social') {
       return {
-        target: config.source_target,
+        target: primarySource.handle_or_url,
       };
     }
     return {
-      target: config.source_path,
-      targetManifest: config.target_manifest_path,
-      chatPlatform: config.source_type === 'chat_file'
-        ? (config.platform as 'wechat' | 'feishu' | undefined) ?? 'wechat'
+      target: primarySource.mode === 'local_file' ? primarySource.local_path : primarySource.handle_or_url,
+      targetManifest: primarySource.manifest_path,
+      chatPlatform: primarySource.type === 'chat_file'
+        ? (primarySource.platform as 'wechat' | 'feishu' | undefined) ?? 'wechat'
         : undefined,
     };
   }
@@ -1377,6 +1925,28 @@ export class WorkbenchService {
       memory_node_count: 0,
       training_rounds: 0,
       updated_at: config.updated_at,
+    };
+  }
+
+  private buildCultivationSummary(slug: string, persona: PersonaSummary): CultivationSummary {
+    const config = this.getPersonaConfig(slug);
+    const skills = this.readSkillSummary(slug);
+    return {
+      status: persona.status,
+      progress_percent: persona.progress_percent ?? 0,
+      current_round: persona.current_round ?? 0,
+      total_rounds: persona.total_rounds ?? 0,
+      skill_summary: {
+        origin_count: skills.origin_skills.length,
+        distilled_count: skills.distilled_skills.length,
+      },
+      source_summary: {
+        total_sources: config.sources.length,
+        enabled_sources: config.sources.filter((item) => item.enabled).length,
+        last_update_check_at: config.update_policy.last_checked_at,
+        latest_update_result: config.update_policy.latest_result,
+      },
+      last_update_check_at: config.update_policy.last_checked_at,
     };
   }
 
@@ -1461,7 +2031,9 @@ export class WorkbenchService {
     const retriever = new MemoryRetriever(store);
     const skillLibrary = loadSkillLibrary(settings.getPersonaDir(persona.slug), persona.slug);
     const agent = new PersonaAgent(soul, retriever, persona.memory_collection, skillLibrary);
-    const userMessage = messages[messages.length - 1]?.content ?? '';
+    const lastMessage = messages[messages.length - 1];
+    const attachmentContext = buildAttachmentContext(lastMessage?.attachments ?? []);
+    const userMessage = `${lastMessage?.content ?? ''}${attachmentContext ? `\n\nAttached context:\n${attachmentContext}` : ''}`;
     const history = messages.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'assistant' as const : 'user' as const, content: item.content }));
     const result = await agent.respondWithMeta(userMessage, history);
     return {
@@ -1798,8 +2370,7 @@ export class WorkbenchService {
       throw new Error(`Persona "${slug}" not found.`);
     }
     const skills = this.readSkillSummary(slug);
-    const trainingContext = this.readTrainingContext(slug);
-    const trainingReport = this.readTrainingReport(slug);
+    const config = this.getPersonaConfig(slug);
     return {
       persona,
       skills,
@@ -1811,9 +2382,31 @@ export class WorkbenchService {
         stages: this.buildStages(persona.current_stage ?? 'created'),
       },
       assets: {
-        evidence_imports: this.store.listEvidenceImports(slug),
-        training_preps: this.store.listTrainingPrepArtifacts(slug),
+        evidence_imports: this.store.listEvidenceImports(slug).map((item) => ({
+          ...item,
+          artifacts: {
+            ...item.artifacts,
+            evidence_index_path: '',
+            evidence_stats_path: '',
+            speaker_summary_path: '',
+            scene_summary_path: '',
+            documents_path: '',
+          },
+          source_path: basename(item.source_path || ''),
+          target_manifest_path: basename(item.target_manifest_path || ''),
+        })),
+        training_preps: this.store.listTrainingPrepArtifacts(slug).map((item) => ({
+          ...item,
+          evidence_index_path: '',
+          documents_path: '',
+        })),
       },
+      source_summary: {
+        total_sources: config.sources.length,
+        enabled_sources: config.sources.filter((item) => item.enabled).length,
+        last_update_check_at: config.update_policy.last_checked_at,
+        latest_update_result: config.update_policy.latest_result,
+      } as any,
     };
   }
 

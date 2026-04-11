@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { ChevronDown, Users } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { usePersonaStore } from '@/stores/persona';
@@ -7,18 +7,24 @@ import { t } from '@/lib/i18n';
 import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 
+function isChatReady(status?: string, isReady?: boolean): boolean {
+  if (isReady) return true;
+  return ['ready', 'available', 'converged', 'exported'].includes(String(status ?? '').toLowerCase());
+}
+
 function EmptyState() {
   const { personas, load } = usePersonaStore();
   const { setPersona } = useChatStore();
   const { setView } = useAppStore();
+  const readyPersonas = useMemo(() => personas.filter((item) => isChatReady(item.status, item.is_ready)), [personas]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   const handleQuickStart = () => {
-    if (personas.length > 0) {
-      setPersona(personas[0].slug);
+    if (readyPersonas.length > 0) {
+      void setPersona(readyPersonas[0].slug);
     } else {
       setView('personas');
     }
@@ -43,13 +49,11 @@ function EmptyState() {
           {t('selectPersona')}
         </div>
         <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}>
-          {personas.length > 0
-            ? `${personas.length} 个人格可用`
-            : t('noPersonasHint')}
+          {readyPersonas.length > 0 ? `${readyPersonas.length} 个可聊天人格` : t('noPersonasHint')}
         </div>
       </div>
       <button className="btn btn-primary" onClick={handleQuickStart}>
-        {personas.length > 0 ? t('startChat') : t('newPersona')}
+        {readyPersonas.length > 0 ? t('startChat') : t('newPersona')}
       </button>
     </div>
   );
@@ -59,6 +63,7 @@ function PersonaTopBar() {
   const { personaSlug, threads } = useChatStore();
   const { personas } = usePersonaStore();
   const { setPersona } = useChatStore();
+  const readyPersonas = useMemo(() => personas.filter((item) => isChatReady(item.status, item.is_ready)), [personas]);
 
   return (
     <div
@@ -75,8 +80,8 @@ function PersonaTopBar() {
     >
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
         <select
-          value={personaSlug || ''}
-          onChange={(e) => e.target.value && setPersona(e.target.value)}
+          value={personaSlug && readyPersonas.some((item) => item.slug === personaSlug) ? personaSlug : ''}
+          onChange={(e) => e.target.value && void setPersona(e.target.value)}
           style={{
             appearance: 'none',
             background: 'transparent',
@@ -90,14 +95,12 @@ function PersonaTopBar() {
             paddingRight: 22,
           }}
         >
-          {!personaSlug && (
-            <option value="" disabled>
-              {t('selectPersona')}
-            </option>
-          )}
-          {personas.map((p) => (
-            <option key={p.slug} value={p.slug}>
-              {p.name}
+          <option value="" disabled>
+            {readyPersonas.length > 0 ? t('selectPersona') : '暂无可聊天人格'}
+          </option>
+          {readyPersonas.map((persona) => (
+            <option key={persona.slug} value={persona.slug}>
+              {persona.name}
             </option>
           ))}
         </select>
@@ -111,11 +114,11 @@ function PersonaTopBar() {
           }}
         />
       </div>
-      {personaSlug && threads.length > 0 && (
+      {personaSlug && threads.length > 0 ? (
         <span style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginLeft: 2 }}>
           {threads.length} 个对话
         </span>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -125,8 +128,10 @@ export function ChatView() {
   const { personas, load } = usePersonaStore();
 
   useEffect(() => {
-    if (personas.length === 0) load();
-  }, []);
+    if (personas.length === 0) {
+      void load();
+    }
+  }, [load, personas.length]);
 
   return (
     <div

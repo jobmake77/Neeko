@@ -1,7 +1,10 @@
 import type {
+  AttachmentRef,
   PersonaSummary,
   PersonaMutationResult,
+  PersonaDetail,
   PersonaConfig,
+  PersonaSource,
   CultivationDetail,
   PersonaSkillSummary,
   Conversation,
@@ -9,6 +12,8 @@ import type {
   ConversationMessage,
   WorkbenchRun,
   HealthStatus,
+  RuntimeModelConfig,
+  RuntimeSettingsPayload,
 } from './types';
 
 let _baseUrl = localStorage.getItem('neeko.apiBaseUrl') || 'http://127.0.0.1:4310';
@@ -53,8 +58,8 @@ export async function listPersonas(): Promise<PersonaSummary[]> {
   return request<PersonaSummary[]>('/api/personas');
 }
 
-export async function getPersona(slug: string): Promise<PersonaMutationResult> {
-  return request<PersonaMutationResult>(`/api/personas/${slug}/detail`);
+export async function getPersona(slug: string): Promise<PersonaDetail> {
+  return request<PersonaDetail>(`/api/personas/${slug}/detail`);
 }
 
 /**
@@ -64,12 +69,10 @@ export async function getPersona(slug: string): Promise<PersonaMutationResult> {
 export async function createPersona(config: {
   name: string;
   persona_slug: string;
-  source_type: string;
-  source_target?: string;
-  source_path?: string;
-  platform?: string;
-}): Promise<void> {
-  await request<unknown>('/api/personas', {
+  sources: PersonaSource[];
+  update_policy?: PersonaConfig['update_policy'];
+}): Promise<PersonaMutationResult> {
+  return request<PersonaMutationResult>('/api/personas', {
     method: 'POST',
     body: JSON.stringify(config),
   });
@@ -95,6 +98,32 @@ export async function listCultivatingPersonas(): Promise<PersonaSummary[]> {
 
 export async function getCultivationDetail(slug: string): Promise<CultivationDetail> {
   return request<CultivationDetail>(`/api/cultivating/${slug}`);
+}
+
+export async function getPersonaSources(slug: string): Promise<PersonaSource[]> {
+  return request<PersonaSource[]>(`/api/personas/${slug}/sources`);
+}
+
+export async function updatePersonaSources(
+  slug: string,
+  payload: { name?: string; sources: PersonaSource[]; update_policy?: PersonaConfig['update_policy'] }
+): Promise<PersonaMutationResult> {
+  return request<PersonaMutationResult>(`/api/personas/${slug}/sources`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function checkPersonaUpdates(slug: string): Promise<{ imports: unknown[]; run: WorkbenchRun | null; summary: string }> {
+  return request(`/api/personas/${slug}/check-updates`, {
+    method: 'POST',
+  });
+}
+
+export async function continueCultivation(slug: string): Promise<{ imports: unknown[]; run: WorkbenchRun | null; summary: string }> {
+  return request(`/api/personas/${slug}/continue-cultivation`, {
+    method: 'POST',
+  });
 }
 
 export async function getPersonaSkills(slug: string): Promise<PersonaSkillSummary> {
@@ -146,10 +175,11 @@ export async function listMessages(conversationId: string): Promise<Conversation
 export async function sendMessage(
   conversationId: string,
   content: string,
+  attachments: AttachmentRef[] = [],
 ): Promise<{ message: ConversationMessage; reply: ConversationMessage }> {
   const bundle = await request<ConversationBundle>(`/api/conversations/${conversationId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ message: content }),
+    body: JSON.stringify({ message: content, attachments }),
   });
   const msgs = bundle.messages;
   const userMsg = [...msgs].reverse().find((m) => m.role === 'user');
@@ -168,5 +198,27 @@ export async function startTraining(slug: string, mode: 'quick' | 'full'): Promi
   return request<WorkbenchRun>('/api/runs/train', {
     method: 'POST',
     body: JSON.stringify({ slug, mode, rounds }),
+  });
+}
+
+export async function getRuntimeModelConfig(): Promise<RuntimeModelConfig> {
+  return request<RuntimeModelConfig>('/api/runtime/model-config');
+}
+
+export async function updateRuntimeModelConfig(payload: RuntimeModelConfig): Promise<RuntimeModelConfig> {
+  return request<RuntimeModelConfig>('/api/runtime/model-config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getRuntimeSettings(): Promise<RuntimeSettingsPayload> {
+  return request<RuntimeSettingsPayload>('/api/runtime/settings');
+}
+
+export async function updateRuntimeSettings(payload: RuntimeSettingsPayload): Promise<RuntimeSettingsPayload> {
+  return request<RuntimeSettingsPayload>('/api/runtime/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
   });
 }

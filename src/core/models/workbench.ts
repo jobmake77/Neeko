@@ -35,6 +35,16 @@ export const ConversationSchema = z.object({
 });
 export type Conversation = z.infer<typeof ConversationSchema>;
 
+export const AttachmentRefSchema = z.object({
+  id: z.string(),
+  type: z.enum(['image', 'video', 'audio', 'text', 'file']),
+  name: z.string(),
+  path: z.string(),
+  mime: z.string().optional(),
+  size: z.number().int().min(0).optional(),
+});
+export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
+
 export const ConversationMessageSchema = z.object({
   id: z.string().uuid(),
   conversation_id: z.string().uuid(),
@@ -45,6 +55,7 @@ export const ConversationMessageSchema = z.object({
   persona_dimensions: z.array(z.string()).default([]),
   citation_items: z.array(CitationItemSchema).default([]),
   writeback_candidate_ids: z.array(z.string()).default([]),
+  attachments: z.array(AttachmentRefSchema).default([]),
 });
 export type ConversationMessage = z.infer<typeof ConversationMessageSchema>;
 
@@ -124,7 +135,7 @@ export const TrainingPrepArtifactSchema = z.object({
   id: z.string().uuid(),
   persona_slug: z.string(),
   conversation_id: z.string().uuid().optional(),
-  handoff_id: z.string().uuid(),
+  handoff_id: z.string().uuid().optional(),
   status: z.enum(['drafted', 'exported']).default('drafted'),
   item_count: z.number().int().min(0),
   summary: z.string(),
@@ -169,15 +180,63 @@ export const WorkbenchRunReportSchema = z.object({
 });
 export type WorkbenchRunReport = z.infer<typeof WorkbenchRunReportSchema>;
 
+export const PersonaSourceSchema = z.object({
+  id: z.string(),
+  type: z.enum(['social', 'chat_file', 'video_file']),
+  mode: z.enum(['handle', 'remote_url', 'channel_url', 'single_url', 'local_file']).default('handle'),
+  platform: z.string().optional(),
+  handle_or_url: z.string().optional(),
+  local_path: z.string().optional(),
+  manifest_path: z.string().optional(),
+  enabled: z.boolean().default(true),
+  last_synced_at: z.string().datetime().optional(),
+  last_cursor: z.string().optional(),
+  status: z.enum(['idle', 'syncing', 'ready', 'error']).default('idle'),
+  summary: z.string().optional(),
+});
+export type PersonaSource = z.infer<typeof PersonaSourceSchema>;
+
+export const CultivationSummarySchema = z.object({
+  status: z.string(),
+  progress_percent: z.number().int().min(0).max(100).default(0),
+  current_round: z.number().int().min(0).default(0),
+  total_rounds: z.number().int().min(0).default(0),
+  skill_summary: z.object({
+    origin_count: z.number().int().min(0).default(0),
+    distilled_count: z.number().int().min(0).default(0),
+  }).default({ origin_count: 0, distilled_count: 0 }),
+  source_summary: z.object({
+    total_sources: z.number().int().min(0).default(0),
+    enabled_sources: z.number().int().min(0).default(0),
+    last_update_check_at: z.string().datetime().optional(),
+    latest_update_result: z.string().optional(),
+  }).default({ total_sources: 0, enabled_sources: 0 }),
+  last_update_check_at: z.string().datetime().optional(),
+});
+export type CultivationSummary = z.infer<typeof CultivationSummarySchema>;
+
 export const PersonaConfigSchema = z.object({
   persona_slug: z.string(),
   name: z.string(),
-  source_type: z.enum(['social', 'chat_file', 'video_file']),
+  sources: z.array(PersonaSourceSchema).default([]),
+  update_policy: z.object({
+    auto_check_remote: z.boolean().default(true),
+    check_interval_minutes: z.number().int().min(5).default(60),
+    strategy: z.enum(['incremental']).default('incremental'),
+    last_checked_at: z.string().datetime().optional(),
+    latest_result: z.string().optional(),
+  }).default({
+    auto_check_remote: true,
+    check_interval_minutes: 60,
+    strategy: 'incremental',
+  }),
+  updated_at: z.string().datetime(),
+  // Legacy single-source fields for migration.
+  source_type: z.enum(['social', 'chat_file', 'video_file']).optional(),
   source_target: z.string().optional(),
   source_path: z.string().optional(),
   target_manifest_path: z.string().optional(),
   platform: z.string().optional(),
-  updated_at: z.string().datetime(),
 });
 export type PersonaConfig = z.infer<typeof PersonaConfigSchema>;
 
@@ -192,6 +251,12 @@ export const PersonaDetailSchema = z.object({
     updated_at: z.string().datetime(),
   }),
   config: PersonaConfigSchema,
+  cultivation_summary: CultivationSummarySchema.optional(),
+  sources_summary: z.object({
+    total_sources: z.number().int().min(0),
+    enabled_sources: z.number().int().min(0),
+    source_types: z.array(z.string()).default([]),
+  }).optional(),
 });
 export type PersonaDetail = z.infer<typeof PersonaDetailSchema>;
 
@@ -240,6 +305,7 @@ export interface CultivationDetail {
     evidence_imports: WorkbenchEvidenceImport[];
     training_preps: TrainingPrepArtifact[];
   };
+  source_summary?: CultivationSummary['source_summary'];
 }
 
 export interface PersonaWorkbenchProfile {

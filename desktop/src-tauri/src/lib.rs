@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde::Deserialize;
 use std::{
     env,
     path::{Path, PathBuf},
@@ -57,6 +58,13 @@ struct WorkbenchBootstrapStatus {
     dist_ready: bool,
     service_managed: bool,
     message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct PickFilesRequest {
+    multiple: Option<bool>,
+    directory: Option<bool>,
 }
 
 #[tauri::command]
@@ -201,6 +209,37 @@ fn get_workbench_bootstrap_status(
     }
 }
 
+#[tauri::command]
+fn pick_files(request: Option<PickFilesRequest>) -> Result<Vec<String>, String> {
+    let request = request.unwrap_or(PickFilesRequest {
+        multiple: Some(false),
+        directory: Some(false),
+    });
+
+    if request.directory.unwrap_or(false) {
+        let result = rfd::FileDialog::new().pick_folder();
+        return Ok(result
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect());
+    }
+
+    if request.multiple.unwrap_or(false) {
+        let result = rfd::FileDialog::new().pick_files();
+        return Ok(result
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect());
+    }
+
+    Ok(rfd::FileDialog::new()
+        .pick_file()
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect())
+}
+
 fn resolve_workbench_root(app: Option<&AppHandle>, preferred_repo_root: Option<String>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -313,7 +352,8 @@ pub fn run() {
         .manage(WorkbenchServiceState::default())
         .invoke_handler(tauri::generate_handler![
             bootstrap_workbench_service,
-            get_workbench_bootstrap_status
+            get_workbench_bootstrap_status,
+            pick_files
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

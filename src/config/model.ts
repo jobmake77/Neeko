@@ -7,6 +7,14 @@ import type { LanguageModelV1 } from 'ai';
 
 export type ProviderName = 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
 
+const DEFAULT_MODELS: Record<ProviderName, string> = {
+  claude: 'claude-sonnet-4-6',
+  openai: 'gpt-4o-mini',
+  kimi: 'moonshot-v1-128k',
+  gemini: 'gemini-1.5-flash',
+  deepseek: 'deepseek-chat',
+};
+
 export function resolvePreferredProviderName(): ProviderName | undefined {
   const cfg = settings.getAll();
   const preferred = String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim().toLowerCase();
@@ -47,6 +55,7 @@ function getProviderResolutionContext() {
   ].filter(Boolean) as string[];
   const seen = new Set<string>();
   const deduped = order.filter((p) => !seen.has(p) && seen.add(p));
+  const configuredModel = resolveConfiguredModel(rawDefaultModel);
 
   return {
     anthropicKey,
@@ -54,10 +63,22 @@ function getProviderResolutionContext() {
     kimiKey,
     geminiKey,
     deepseekKey,
+    configuredModel,
     isKimiCodeKey,
     kimiModel,
     deduped,
   };
+}
+
+function resolveConfiguredModel(rawDefaultModel: string): Partial<Record<ProviderName, string>> {
+  const value = rawDefaultModel.trim();
+  if (!value) return {};
+  if (/^claude-/i.test(value)) return { claude: value };
+  if (/^(gpt|o1|o3|o4)/i.test(value)) return { openai: value };
+  if (/^(moonshot|kimi)/i.test(value)) return { kimi: value };
+  if (/^gemini/i.test(value)) return { gemini: value };
+  if (/^deepseek/i.test(value)) return { deepseek: value };
+  return {};
 }
 
 export function resolveModelProviderName(): ProviderName {
@@ -71,7 +92,7 @@ export function resolveModelProviderName(): ProviderName {
     if (provider === 'deepseek' && ctx.deepseekKey) return 'deepseek';
   }
 
-  throw new Error('未配置任何 LLM API Key。请在 Web UI 设置页填写至少一个模型的 API Key 并保存。');
+  throw new Error('未配置任何 LLM API Key。请先在设置页填写至少一个模型的 API Key。');
 }
 
 /**
@@ -84,13 +105,15 @@ export function resolveModel(): LanguageModelV1 {
   for (const provider of ctx.deduped) {
     if (provider === 'claude' && ctx.anthropicKey) {
       process.env.ANTHROPIC_API_KEY = ctx.anthropicKey;
-      console.error(`[model] 使用 Claude（Anthropic）`);
-      return anthropic('claude-sonnet-4-6') as unknown as LanguageModelV1;
+      const model = ctx.configuredModel.claude ?? DEFAULT_MODELS.claude;
+      console.error(`[model] 使用 Claude（Anthropic） model=${model}`);
+      return anthropic(model) as unknown as LanguageModelV1;
     }
     if (provider === 'openai' && ctx.openaiKey) {
       process.env.OPENAI_API_KEY = ctx.openaiKey;
-      console.error(`[model] 使用 OpenAI（gpt-4o-mini）`);
-      return openai('gpt-4o-mini') as unknown as LanguageModelV1;
+      const model = ctx.configuredModel.openai ?? DEFAULT_MODELS.openai;
+      console.error(`[model] 使用 OpenAI model=${model}`);
+      return openai(model) as unknown as LanguageModelV1;
     }
     if (provider === 'kimi' && ctx.kimiKey) {
       if (ctx.isKimiCodeKey) {
@@ -110,20 +133,22 @@ export function resolveModel(): LanguageModelV1 {
     }
     if (provider === 'gemini' && ctx.geminiKey) {
       process.env.GOOGLE_GENERATIVE_AI_API_KEY = ctx.geminiKey;
-      console.error(`[model] 使用 Gemini（Google）`);
-      return google('gemini-1.5-flash') as unknown as LanguageModelV1;
+      const model = ctx.configuredModel.gemini ?? DEFAULT_MODELS.gemini;
+      console.error(`[model] 使用 Gemini（Google） model=${model}`);
+      return google(model) as unknown as LanguageModelV1;
     }
     if (provider === 'deepseek' && ctx.deepseekKey) {
-      console.error(`[model] 使用 DeepSeek`);
+      const model = ctx.configuredModel.deepseek ?? DEFAULT_MODELS.deepseek;
+      console.error(`[model] 使用 DeepSeek model=${model}`);
       const deepseek = createOpenAI({
         baseURL: 'https://api.deepseek.com/v1',
         apiKey: ctx.deepseekKey,
       });
-      return deepseek('deepseek-chat') as unknown as LanguageModelV1;
+      return deepseek(model) as unknown as LanguageModelV1;
     }
   }
 
   throw new Error(
-    '未配置任何 LLM API Key。请在 Web UI 设置页填写至少一个模型的 API Key 并保存。'
+    '未配置任何 LLM API Key。请先在设置页填写至少一个模型的 API Key。'
   );
 }

@@ -28,7 +28,7 @@ function ThinkingDots() {
 }
 
 export function MessageList() {
-  const { messages, sending } = useChatStore();
+  const { messages, sending, replyPhase } = useChatStore();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -142,12 +142,22 @@ export function MessageList() {
       {sending && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
           <ThinkingDots />
+          <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginLeft: 4 }}>
+            {formatReplyPhase(replyPhase)}
+          </div>
         </div>
       )}
 
       <div ref={bottomRef} />
     </div>
   );
+}
+
+function formatReplyPhase(phase: ReturnType<typeof useChatStore.getState>['replyPhase']): string {
+  if (phase === 'processing_attachments') return '正在整理附件上下文';
+  if (phase === 'generating') return '正在生成回复';
+  if (phase === 'finalizing') return '正在整理结果';
+  return '正在准备对话上下文';
 }
 
 function AttachmentBadge({ attachment }: { attachment: AttachmentRef }) {

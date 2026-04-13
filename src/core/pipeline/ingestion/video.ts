@@ -152,7 +152,7 @@ export class VideoAdapter extends BaseSourceAdapter {
         url: this.resolveRemoteEntryUrl(entry),
         time: parseUploadTime(entry),
       }))
-      .filter((item) => Boolean(item.url))
+      .filter((item): item is { url: string; time: number | undefined } => Boolean(item.url))
       .filter((item) => !since || !item.time || item.time >= since)
       .slice(0, options.limit ?? REMOTE_VIDEO_LIMIT);
 
@@ -274,7 +274,7 @@ function runYtDlp(args: string[], options: { encoding?: BufferEncoding; timeout?
   let lastError: unknown;
   for (const candidate of candidates) {
     try {
-      return execFileSync(candidate.command, [...(candidate.prefix ?? []), ...args], options);
+      return execFileSync(candidate.command, [...(candidate.prefix ?? []), ...args], options) as string;
     } catch (error) {
       lastError = error;
     }

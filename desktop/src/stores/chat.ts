@@ -8,6 +8,7 @@ interface ChatState {
   threadId: string | null;
   messages: ConversationMessage[];
   sending: boolean;
+  replyPhase: 'idle' | 'preparing' | 'processing_attachments' | 'generating' | 'finalizing';
   loadingThreads: boolean;
   loadingMessages: boolean;
   error: string | null;
@@ -27,6 +28,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   threadId: localStorage.getItem('neeko.threadId'),
   messages: [],
   sending: false,
+  replyPhase: 'idle',
   loadingThreads: false,
   loadingMessages: false,
   error: null,
@@ -110,9 +112,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       created_at: new Date().toISOString(),
       attachments,
     };
-    set((s) => ({ messages: [...s.messages, optimisticUser], sending: true }));
+    set((s) => ({
+      messages: [...s.messages, optimisticUser],
+      sending: true,
+      replyPhase: attachments.length > 0 ? 'processing_attachments' : 'preparing',
+      error: null,
+    }));
 
     try {
+      set({ replyPhase: 'generating' });
       const { message, reply } = await api.sendMessage(tid, content, attachments, modelOverride);
       set((s) => ({
         messages: [
@@ -121,6 +129,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           reply,
         ],
         sending: false,
+        replyPhase: 'finalizing',
       }));
       // 更新线程最后消息
       set((s) => ({
@@ -128,10 +137,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           t.id === tid ? { ...t, last_message: content, updated_at: new Date().toISOString() } : t,
         ),
       }));
+      set({ replyPhase: 'idle' });
     } catch (e: unknown) {
       set((s) => ({
         messages: s.messages.filter((m) => m.id !== optimisticUser.id),
         sending: false,
+        replyPhase: 'idle',
         error: (e as Error).message,
       }));
     }

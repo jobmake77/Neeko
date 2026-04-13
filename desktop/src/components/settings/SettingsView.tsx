@@ -17,6 +17,8 @@ import type { Locale } from '@/lib/i18n';
 import type { RuntimeModelConfig, RuntimeSettingsPayload } from '@/lib/types';
 
 type Provider = RuntimeModelConfig['provider'];
+type ConfigMode = NonNullable<RuntimeModelConfig['mode']>;
+type ModelRole = 'shared_default' | 'chat_default' | 'training_default';
 type ServiceStatus = 'checking' | 'connected' | 'disconnected';
 
 const MODEL_OPTIONS: Record<Provider, string[]> = {
@@ -65,10 +67,16 @@ function Row({ label, desc, children }: { label: string; desc?: string; children
 }
 
 function ModelConfigSection() {
+  const [mode, setMode] = useState<ConfigMode>('shared');
   const [provider, setProvider] = useState<Provider>('claude');
   const [keys, setKeys] = useState<RuntimeModelConfig['api_keys']>({});
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState(MODEL_OPTIONS.claude[1]);
+  const [roles, setRoles] = useState<Record<ModelRole, { provider: Provider; model: string }>>({
+    shared_default: { provider: 'claude', model: MODEL_OPTIONS.claude[1] },
+    chat_default: { provider: 'claude', model: MODEL_OPTIONS.claude[1] },
+    training_default: { provider: 'claude', model: MODEL_OPTIONS.claude[1] },
+  });
   const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
@@ -76,10 +84,20 @@ function ModelConfigSection() {
   useEffect(() => {
     getRuntimeModelConfig()
       .then((config) => {
-        setProvider(config.provider);
+        const nextMode = config.mode ?? 'shared';
+        const shared = config.shared_default ?? { provider: config.provider, model: config.model };
+        const chat = config.chat_default ?? { provider: config.provider, model: config.model };
+        const training = config.training_default ?? shared;
+        setMode(nextMode);
+        setRoles({
+          shared_default: shared,
+          chat_default: chat,
+          training_default: training,
+        });
+        setProvider(chat.provider);
         setKeys(config.api_keys);
-        setApiKey(config.api_keys[config.provider] ?? '');
-        setModel(config.model || MODEL_OPTIONS[config.provider][0]);
+        setApiKey(config.api_keys[chat.provider] ?? '');
+        setModel(chat.model || MODEL_OPTIONS[chat.provider][0]);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -90,13 +108,47 @@ function ModelConfigSection() {
     setModel((current) => MODEL_OPTIONS[nextProvider].includes(current) ? current : MODEL_OPTIONS[nextProvider][0]);
   }
 
+  function updateRole(role: ModelRole, nextProvider: Provider, nextModel?: string) {
+    setRoles((current) => ({
+      ...current,
+      [role]: {
+        provider: nextProvider,
+        model: nextModel && MODEL_OPTIONS[nextProvider].includes(nextModel) ? nextModel : MODEL_OPTIONS[nextProvider][0],
+      },
+    }));
+  }
+
   async function handleSave() {
     const nextKeys = { ...keys, [provider]: apiKey.trim() };
-    const nextConfig = await updateRuntimeModelConfig({ provider, model, api_keys: nextKeys });
+    const nextRoles = {
+      ...roles,
+      chat_default: {
+        provider,
+        model,
+      },
+    };
+    const nextConfig = await updateRuntimeModelConfig({
+      provider: nextRoles.chat_default.provider,
+      model: nextRoles.chat_default.model,
+      mode,
+      shared_default: nextRoles.shared_default,
+      chat_default: nextRoles.chat_default,
+      training_default: mode === 'split' ? nextRoles.training_default : nextRoles.shared_default,
+      api_keys: nextKeys,
+    });
+    const shared = nextConfig.shared_default ?? { provider: nextConfig.provider, model: nextConfig.model };
+    const chat = nextConfig.chat_default ?? { provider: nextConfig.provider, model: nextConfig.model };
+    const training = nextConfig.training_default ?? shared;
     setKeys(nextConfig.api_keys);
-    setApiKey(nextConfig.api_keys[nextConfig.provider] ?? '');
-    setProvider(nextConfig.provider);
-    setModel(nextConfig.model);
+    setMode(nextConfig.mode ?? 'shared');
+    setRoles({
+      shared_default: shared,
+      chat_default: chat,
+      training_default: training,
+    });
+    setApiKey(nextConfig.api_keys[chat.provider] ?? '');
+    setProvider(chat.provider);
+    setModel(chat.model);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1800);
   }
@@ -148,6 +200,27 @@ function ModelConfigSection() {
   return (
     <SectionCard title={t('modelConfig')}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, opacity: loading ? 0.7 : 1 }}>
+        <Row label="模型作用域" desc="聊天与培养可以共用一套模型，也可以拆开配置。">
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              className={`btn ${mode === 'shared' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setMode('shared')}
+              style={{ fontSize: 12, padding: '4px 10px' }}
+              disabled={loading}
+            >
+              统一
+            </button>
+            <button
+              className={`btn ${mode === 'split' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setMode('split')}
+              style={{ fontSize: 12, padding: '4px 10px' }}
+              disabled={loading}
+            >
+              分开
+            </button>
+          </div>
+        </Row>
+
         <Row label={t('provider')}>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end', maxWidth: 320 }}>
             {(Object.keys(PROVIDER_LABELS) as Provider[]).map((item) => (
@@ -193,6 +266,41 @@ function ModelConfigSection() {
             ))}
           </select>
         </Row>
+
+        <RoleCard
+          title="聊天默认模型"
+          description="聊天页默认读取这套配置，用户仍可在输入框下临时切换。"
+          role={roles.chat_default}
+          disabled={loading}
+          onProviderChange={(nextProvider) => {
+            updateRole('chat_default', nextProvider);
+            setProvider(nextProvider);
+            setApiKey(keys[nextProvider] ?? '');
+            setModel(MODEL_OPTIONS[nextProvider][0]);
+          }}
+          onModelChange={(nextModel) => {
+            updateRole('chat_default', roles.chat_default.provider, nextModel);
+            setModel(nextModel);
+          }}
+        />
+
+        <RoleCard
+          title="培养默认模型"
+          description={mode === 'split' ? '培养链路读取这套配置，优先选择带多模态能力的模型。' : '当前与统一配置保持一致。'}
+          role={mode === 'split' ? roles.training_default : roles.shared_default}
+          disabled={loading || mode !== 'split'}
+          onProviderChange={(nextProvider) => updateRole('training_default', nextProvider)}
+          onModelChange={(nextModel) => updateRole('training_default', roles.training_default.provider, nextModel)}
+        />
+
+        <RoleCard
+          title="统一默认模型"
+          description="当作用域为“统一”时，聊天与培养都走这套配置。"
+          role={roles.shared_default}
+          disabled={loading || mode !== 'shared'}
+          onProviderChange={(nextProvider) => updateRole('shared_default', nextProvider)}
+          onModelChange={(nextModel) => updateRole('shared_default', roles.shared_default.provider, nextModel)}
+        />
 
         <Row label={t('capabilityStatus')} desc={t('capabilityProviderHint')}>
           <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -241,6 +349,53 @@ function ModelConfigSection() {
         </div>
       </div>
     </SectionCard>
+  );
+}
+
+function RoleCard({
+  title,
+  description,
+  role,
+  disabled,
+  onProviderChange,
+  onModelChange,
+}: {
+  title: string;
+  description: string;
+  role: { provider: Provider; model: string };
+  disabled?: boolean;
+  onProviderChange: (provider: Provider) => void;
+  onModelChange: (model: string) => void;
+}) {
+  return (
+    <div style={{ border: '1px solid rgb(var(--border))', borderRadius: 14, padding: 14, background: 'rgb(var(--bg-hover))' }}>
+      <div style={{ fontSize: 12.5, fontWeight: 600, color: 'rgb(var(--text-primary))' }}>{title}</div>
+      <div style={{ fontSize: 11.5, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>{description}</div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        <select
+          value={role.provider}
+          onChange={(e) => onProviderChange(e.target.value as Provider)}
+          className="input"
+          style={{ width: 140, fontSize: 12 }}
+          disabled={disabled}
+        >
+          {(Object.keys(PROVIDER_LABELS) as Provider[]).map((item) => (
+            <option key={item} value={item}>{PROVIDER_LABELS[item]}</option>
+          ))}
+        </select>
+        <select
+          value={role.model}
+          onChange={(e) => onModelChange(e.target.value)}
+          className="input"
+          style={{ width: 220, fontSize: 12 }}
+          disabled={disabled}
+        >
+          {(MODEL_OPTIONS[role.provider] ?? []).map((item) => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+      </div>
+    </div>
   );
 }
 

@@ -105,7 +105,7 @@ async function processImageAttachment(item: AttachmentRef): Promise<AttachmentPr
       const bytes = readFileSync(item.path);
       const mimeType = item.mime ?? inferMimeType(item.path, 'image/jpeg');
       const { text } = await generateText({
-        model: google('gemini-1.5-flash'),
+        model: google('gemini-1.5-flash') as any,
         messages: [
           {
             role: 'user',
@@ -247,7 +247,7 @@ function inferMimeType(path: string, fallback = 'application/octet-stream'): str
 }
 
 function getConfiguredSecret(settingKey: string, envKey: string): string {
-  const configured = String(settings.get(settingKey) ?? '').trim();
+  const configured = String(settings.get(settingKey as any) ?? '').trim();
   if (configured) return configured;
   return String(process.env[envKey] ?? '').trim();
 }

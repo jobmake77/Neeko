@@ -10,6 +10,7 @@ export interface ModelRuntimeOverride {
   provider?: ProviderName;
   model?: string;
 }
+export type ModelRuntimeRole = 'general' | 'chat' | 'training';
 
 const DEFAULT_MODELS: Record<ProviderName, string> = {
   claude: 'claude-sonnet-4-6',
@@ -23,30 +24,60 @@ export function getDefaultModelForProvider(provider: ProviderName): string {
   return DEFAULT_MODELS[provider];
 }
 
-export function resolvePreferredProviderName(): ProviderName | undefined {
-  const cfg = settings.getAll();
-  const preferred = String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim().toLowerCase();
+function sanitizeProviderName(value: string): ProviderName | undefined {
   if (
-    preferred === 'claude' ||
-    preferred === 'openai' ||
-    preferred === 'kimi' ||
-    preferred === 'gemini' ||
-    preferred === 'deepseek'
+    value === 'claude' ||
+    value === 'openai' ||
+    value === 'kimi' ||
+    value === 'gemini' ||
+    value === 'deepseek'
   ) {
-    return preferred;
+    return value;
   }
   return undefined;
 }
 
-function getProviderResolutionContext() {
+function getRolePreference(role: ModelRuntimeRole): { provider?: ProviderName; model?: string } {
+  const cfg = settings.getAll();
+  const mode = cfg.modelConfigMode ?? 'shared';
+  const sharedProvider = sanitizeProviderName(String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim().toLowerCase());
+  const sharedModel = String(cfg.defaultModel ?? '').trim() || undefined;
+  if (mode !== 'split') {
+    return { provider: sharedProvider, model: sharedModel };
+  }
+
+  if (role === 'chat') {
+    return {
+      provider: sanitizeProviderName(String(cfg.chatProvider || sharedProvider || '').trim().toLowerCase()),
+      model: String(cfg.chatModel || sharedModel || '').trim() || undefined,
+    };
+  }
+  if (role === 'training') {
+    return {
+      provider: sanitizeProviderName(String(cfg.trainingProvider || sharedProvider || '').trim().toLowerCase()),
+      model: String(cfg.trainingModel || sharedModel || '').trim() || undefined,
+    };
+  }
+  return { provider: sharedProvider, model: sharedModel };
+}
+
+export function resolvePreferredProviderName(role: ModelRuntimeRole = 'general'): ProviderName | undefined {
+  const cfg = settings.getAll();
+  const rolePreference = getRolePreference(role).provider;
+  if (rolePreference) return rolePreference;
+  return sanitizeProviderName(String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim().toLowerCase());
+}
+
+function getProviderResolutionContext(role: ModelRuntimeRole = 'general') {
   const cfg = settings.getAll();
   const anthropicKey = String(cfg.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '').trim();
   const openaiKey = String(cfg.openaiApiKey || process.env.OPENAI_API_KEY || '').trim();
   const kimiKey = String(cfg.kimiApiKey || process.env.KIMI_API_KEY || '').trim();
   const geminiKey = String(cfg.geminiApiKey || process.env.GEMINI_API_KEY || '').trim();
   const deepseekKey = String(cfg.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim();
-  const preferred = resolvePreferredProviderName();
-  const rawDefaultModel = String(cfg.defaultModel ?? '').trim();
+  const preferred = resolvePreferredProviderName(role);
+  const rolePreference = getRolePreference(role);
+  const rawDefaultModel = String(rolePreference.model || cfg.defaultModel || '').trim();
   const kimiModelFromEnv = String(process.env.NEEKO_KIMI_MODEL ?? process.env.KIMI_MODEL ?? '').trim();
   const isKimiCodeKey = /^sk-kimi-/i.test(kimiKey);
   const kimiModel = isKimiCodeKey
@@ -89,8 +120,8 @@ function resolveConfiguredModel(rawDefaultModel: string): Partial<Record<Provide
   return {};
 }
 
-export function resolveModelProviderName(): ProviderName {
-  const ctx = getProviderResolutionContext();
+export function resolveModelProviderName(role: ModelRuntimeRole = 'general'): ProviderName {
+  const ctx = getProviderResolutionContext(role);
 
   for (const provider of ctx.deduped) {
     if (provider === 'claude' && ctx.anthropicKey) return 'claude';
@@ -107,8 +138,8 @@ export function resolveModelProviderName(): ProviderName {
  * 返回当前可用的 LLM 模型实例。
  * 优先使用 activeProvider 对应的 key；若该 key 为空则按顺序 fallback 到第一个有值的 provider。
  */
-export function resolveModel(): LanguageModelV1 {
-  const ctx = getProviderResolutionContext();
+export function resolveModel(role: ModelRuntimeRole = 'general'): LanguageModelV1 {
+  const ctx = getProviderResolutionContext(role);
 
   for (const provider of ctx.deduped) {
     if (provider === 'claude' && ctx.anthropicKey) {
@@ -161,9 +192,9 @@ export function resolveModel(): LanguageModelV1 {
   );
 }
 
-export function resolveModelForOverride(input?: ModelRuntimeOverride): LanguageModelV1 {
+export function resolveModelForOverride(input?: ModelRuntimeOverride, role: ModelRuntimeRole = 'general'): LanguageModelV1 {
   if (!input?.provider) {
-    return resolveModel();
+    return resolveModel(role);
   }
 
   const provider = input.provider;

@@ -196,6 +196,19 @@ export interface CultivationSummary {
 export interface RuntimeModelConfig {
   provider: 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
   model: string;
+  mode?: 'shared' | 'split';
+  shared_default?: {
+    provider: 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
+    model: string;
+  };
+  chat_default?: {
+    provider: 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
+    model: string;
+  };
+  training_default?: {
+    provider: 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
+    model: string;
+  };
   api_keys: Partial<Record<'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek', string>>;
 }
 

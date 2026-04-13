@@ -96,6 +96,25 @@ export async function cmdWorkbenchServer(
         writeJson(res, 200, service.updateRuntimeModelConfig({
           provider: (getString(body.provider) as 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek' | undefined) ?? 'claude',
           model: getString(body.model) ?? 'claude-sonnet-4-6',
+          mode: (getString(body.mode) as 'shared' | 'split' | undefined) ?? 'shared',
+          shared_default: body.shared_default && typeof body.shared_default === 'object'
+            ? {
+                provider: (getString((body.shared_default as Record<string, unknown>).provider) as 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek' | undefined) ?? 'claude',
+                model: getString((body.shared_default as Record<string, unknown>).model) ?? 'claude-sonnet-4-6',
+              }
+            : undefined,
+          chat_default: body.chat_default && typeof body.chat_default === 'object'
+            ? {
+                provider: (getString((body.chat_default as Record<string, unknown>).provider) as 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek' | undefined) ?? 'claude',
+                model: getString((body.chat_default as Record<string, unknown>).model) ?? 'claude-sonnet-4-6',
+              }
+            : undefined,
+          training_default: body.training_default && typeof body.training_default === 'object'
+            ? {
+                provider: (getString((body.training_default as Record<string, unknown>).provider) as 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek' | undefined) ?? 'claude',
+                model: getString((body.training_default as Record<string, unknown>).model) ?? 'claude-sonnet-4-6',
+              }
+            : undefined,
           api_keys: {
             claude: getString((body.api_keys as Record<string, unknown> | undefined)?.claude),
             openai: getString((body.api_keys as Record<string, unknown> | undefined)?.openai),

@@ -9,6 +9,11 @@ interface NeekoConfig {
   geminiApiKey?: string;
   deepseekApiKey?: string;
   activeProvider?: string;
+  modelConfigMode?: 'shared' | 'split';
+  chatProvider?: string;
+  chatModel?: string;
+  trainingProvider?: string;
+  trainingModel?: string;
   ingestMode?: string;
   twitterApiKey?: string;
   qdrantUrl?: string;
@@ -23,7 +28,10 @@ const conf = new Conf<NeekoConfig>({
   projectName: 'neeko',
   defaults: {
     qdrantUrl: 'http://localhost:6333',
+    modelConfigMode: 'shared',
     defaultModel: 'claude-sonnet-4-6',
+    chatModel: 'claude-sonnet-4-6',
+    trainingModel: 'claude-sonnet-4-6',
     defaultTrainingProfile: 'full',
     defaultInputRoutingStrategy: 'legacy',
     neekoDataDir: join(homedir(), '.neeko'),

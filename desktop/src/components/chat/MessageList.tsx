@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chat';
 import { t } from '@/lib/i18n';
-import type { AttachmentRef } from '@/lib/types';
+import type { AttachmentRef, ConversationMessage } from '@/lib/types';
 import { Image as ImageIcon, Video, FileAudio, FileText, File, Sparkles, AlertCircle, Loader2 } from 'lucide-react';
 
 const HELIX_FRAMES = ['⣾','⣽','⣻','⢿','⡿','⣟','⣯','⣷'];
@@ -111,6 +111,11 @@ export function MessageList() {
               >
                 {msg.content}
               </div>
+              {!isUser && msg.orchestration ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, marginLeft: 2, flexWrap: 'wrap' }}>
+                  <ReplyModeBadge message={msg} />
+                </div>
+              ) : null}
               {msg.attachments && msg.attachments.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                   {msg.attachments.map((attachment) => (
@@ -151,6 +156,62 @@ export function MessageList() {
       <div ref={bottomRef} />
     </div>
   );
+}
+
+function ReplyModeBadge({ message }: { message: ConversationMessage }) {
+  const mode = message.orchestration?.mode ?? 'answer';
+  const tone = getReplyModeTone(mode);
+  return (
+    <span
+      title={tone.hint}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 8px',
+        borderRadius: 999,
+        border: `1px solid ${tone.border}`,
+        background: tone.background,
+        color: tone.color,
+        fontSize: 10.5,
+        fontWeight: 600,
+      }}
+    >
+      {tone.icon}
+      {tone.label}
+    </span>
+  );
+}
+
+function getReplyModeTone(mode: NonNullable<ConversationMessage['orchestration']>['mode']) {
+  if (mode === 'clarify') {
+    return {
+      label: t('replyModeClarify'),
+      hint: t('replyHintClarify'),
+      color: 'rgb(var(--warning))',
+      background: 'rgb(var(--warning) / 0.10)',
+      border: 'rgb(var(--warning) / 0.24)',
+      icon: <Sparkles size={10} />,
+    };
+  }
+  if (mode === 'refuse_internal') {
+    return {
+      label: t('replyModeProtected'),
+      hint: t('replyHintProtected'),
+      color: 'rgb(var(--destructive))',
+      background: 'rgb(var(--destructive) / 0.10)',
+      border: 'rgb(var(--destructive) / 0.22)',
+      icon: <AlertCircle size={10} />,
+    };
+  }
+  return {
+    label: t('replyModeDirect'),
+    hint: t('replyHintDirect'),
+    color: 'rgb(var(--text-tertiary))',
+    background: 'rgb(var(--bg-hover))',
+    border: 'rgb(var(--border-light))',
+    icon: <Sparkles size={10} />,
+  };
 }
 
 function formatReplyPhase(phase: ReturnType<typeof useChatStore.getState>['replyPhase']): string {

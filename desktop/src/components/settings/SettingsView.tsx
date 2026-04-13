@@ -35,6 +35,12 @@ const PROVIDER_LABELS: Record<Provider, string> = {
   deepseek: 'DeepSeek',
 };
 
+type CapabilityItem = {
+  key: string;
+  status: 'ready' | 'needs_key' | 'partial' | 'planned';
+  description: string;
+};
+
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="card" style={{ padding: 20 }}>
@@ -95,6 +101,50 @@ function ModelConfigSection() {
     window.setTimeout(() => setSaved(false), 1800);
   }
 
+  const capabilityItems = useMemo<CapabilityItem[]>(() => {
+    const normalizedKey = apiKey.trim();
+    const isKimiCodeKey = provider === 'kimi' && /^sk-kimi-/i.test(normalizedKey);
+    const hasKey = normalizedKey.length > 0;
+
+    const imageCapability = (() => {
+      if (provider === 'openai' && hasKey) {
+        return { key: 'capabilityImage', status: 'ready' as const, description: t('capabilityImageReadyDesc') };
+      }
+      if (provider === 'gemini' && hasKey) {
+        return { key: 'capabilityImage', status: 'ready' as const, description: t('capabilityImageReadyDesc') };
+      }
+      if (provider === 'kimi' && isKimiCodeKey) {
+        return { key: 'capabilityImage', status: 'partial' as const, description: t('capabilityImageKimiCodeDesc') };
+      }
+      if (!hasKey) {
+        return { key: 'capabilityImage', status: 'needs_key' as const, description: t('capabilityImageMissingDesc') };
+      }
+      return { key: 'capabilityImage', status: 'planned' as const, description: t('capabilityImagePlannedDesc') };
+    })();
+
+    const transcriptionCapability = (() => {
+      if (provider === 'openai' && hasKey) {
+        return { status: 'ready' as const, description: t('capabilityTranscriptionOpenaiDesc') };
+      }
+      if (provider === 'gemini' && hasKey) {
+        return { status: 'planned' as const, description: t('capabilityTranscriptionGeminiDesc') };
+      }
+      if (provider === 'kimi' && isKimiCodeKey) {
+        return { status: 'partial' as const, description: t('capabilityTranscriptionKimiCodeDesc') };
+      }
+      if (!hasKey) {
+        return { status: 'needs_key' as const, description: t('capabilityTranscriptionMissingDesc') };
+      }
+      return { status: 'planned' as const, description: t('capabilityTranscriptionMissingDesc') };
+    })();
+
+    return [
+      imageCapability,
+      { key: 'capabilityAudio', ...transcriptionCapability },
+      { key: 'capabilityVideo', ...transcriptionCapability },
+    ];
+  }, [apiKey, provider]);
+
   return (
     <SectionCard title={t('modelConfig')}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, opacity: loading ? 0.7 : 1 }}>
@@ -144,6 +194,46 @@ function ModelConfigSection() {
           </select>
         </Row>
 
+        <Row label={t('capabilityStatus')} desc={t('capabilityProviderHint')}>
+          <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {capabilityItems.map((item) => {
+              const tone = getCapabilityTone(item.status);
+              return (
+                <div
+                  key={item.key}
+                  style={{
+                    border: '1px solid rgb(var(--border))',
+                    borderRadius: 12,
+                    padding: '10px 12px',
+                    background: 'rgb(var(--bg-hover))',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: 'rgb(var(--text-primary))' }}>
+                      {t(item.key)}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: tone.color,
+                        background: tone.background,
+                        borderRadius: 999,
+                        padding: '2px 7px',
+                      }}
+                    >
+                      {tone.label}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11.5, lineHeight: 1.5, color: 'rgb(var(--text-secondary))', marginTop: 6 }}>
+                    {item.description}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Row>
+
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button className="btn btn-primary" onClick={() => void handleSave()} style={{ fontSize: 12 }} disabled={loading}>
             {saved ? t('saved') : t('save')}
@@ -152,6 +242,35 @@ function ModelConfigSection() {
       </div>
     </SectionCard>
   );
+}
+
+function getCapabilityTone(status: CapabilityItem['status']) {
+  if (status === 'ready') {
+    return {
+      label: t('capabilityReady'),
+      color: 'rgb(var(--success))',
+      background: 'rgb(var(--success) / 0.12)',
+    };
+  }
+  if (status === 'partial') {
+    return {
+      label: t('capabilityPartial'),
+      color: 'rgb(var(--warning))',
+      background: 'rgb(var(--warning) / 0.12)',
+    };
+  }
+  if (status === 'planned') {
+    return {
+      label: t('capabilityPlanned'),
+      color: 'rgb(var(--text-secondary))',
+      background: 'rgb(var(--bg-active))',
+    };
+  }
+  return {
+    label: t('capabilityNeedsKey'),
+    color: 'rgb(var(--destructive))',
+    background: 'rgb(var(--destructive) / 0.12)',
+  };
 }
 
 export function SettingsView() {

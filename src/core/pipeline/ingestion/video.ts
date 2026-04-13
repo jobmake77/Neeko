@@ -173,7 +173,6 @@ export class VideoAdapter extends BaseSourceAdapter {
       '--dump-single-json',
       '--no-warnings',
       '--skip-download',
-      '--no-call-home',
       ...(options.flatPlaylist ? ['--flat-playlist'] : []),
       target,
     ];
@@ -223,7 +222,6 @@ export class VideoAdapter extends BaseSourceAdapter {
     try {
       runYtDlp([
         '--no-warnings',
-        '--no-call-home',
         '-x',
         '--audio-format', 'mp3',
         '--output', join(tempDir, '%(id)s.%(ext)s'),

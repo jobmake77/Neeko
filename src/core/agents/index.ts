@@ -84,6 +84,10 @@ function computeRetryBackoffMs(attempt: number): number {
   return base + jitter;
 }
 
+function containsCjk(text: string): boolean {
+  return /[\u3400-\u9fff]/.test(text);
+}
+
 const runtimeFallbackMetrics = {
   trainerFallbacks: 0,
   personaFallbacks: 0,
@@ -334,11 +338,19 @@ export class PersonaAgent {
     const expertise = this.soul.knowledge_domains.expert[0] || this.soul.knowledge_domains.familiar[0] || 'the topic';
     const belief = this.soul.values.core_beliefs[0]?.belief || '';
     const reasoning = this.soul.thinking_patterns.problem_solving_approach || 'I break problems into first principles and practical tradeoffs.';
-    const memorySummary = memories.slice(0, 2).map((m) => m.summary).filter(Boolean).join(' ');
+    const chinese = containsCjk(query);
+    if (chinese) {
+      const sentences = [
+        `我会先把问题收回到最关键的约束上。`,
+        belief ? `对我来说，一个反复成立的原则是：${belief}。` : `我通常会按这样的方式处理：${reasoning}。`,
+        `放到这个问题里，我会先找出最重要的变量，然后把注意力压到最有复利的那一步。`,
+      ];
+      return sentences.join('');
+    }
     const sentences = [
       `My instinct on ${expertise} is to stay concrete and focus on what actually compounds.`,
       belief ? `A principle I keep coming back to is ${belief}.` : reasoning,
-      memorySummary || `For "${query}", I would start with the key constraint, choose the highest-leverage action, and then iterate quickly from feedback.`,
+      `For "${query}", I would start with the main constraint and then put energy into the highest-leverage next step.`,
     ];
     return sentences.join(' ');
   }

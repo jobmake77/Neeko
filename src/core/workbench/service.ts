@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { basename, extname, isAbsolute, join } from 'path';
 import { execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
+import { generateText } from 'ai';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
 import { PersonaAgent } from '../agents/index.js';
@@ -58,7 +59,7 @@ import {
 import { classifyFailure } from '../training/failure-loop.js';
 import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
-import type { ProviderName } from '../../config/model.js';
+import { resolveModelForOverride, type ProviderName } from '../../config/model.js';
 import { writeRawDocsCache } from '../pipeline/evidence-routing.js';
 
 export interface WorkbenchCreateInput {
@@ -708,6 +709,59 @@ function buildStyleDistillationContext(soul: Soul, plan: ChatTurnPlan): string {
     lines.push('- Keep it punchy and avoid generic multi-paragraph exposition.');
   }
   return lines.join('\n');
+}
+
+function shouldRewritePersonaResponse(text: string, plan: ChatTurnPlan): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  if (plan.mode !== 'answer') return false;
+  if (normalized.length < 80) return false;
+  return true;
+}
+
+async function rewriteResponseInPersonaVoice(input: {
+  soul: Soul;
+  userMessage: string;
+  draft: string;
+  plan: ChatTurnPlan;
+  modelOverride?: ChatModelOverride;
+}): Promise<string> {
+  if (!shouldRewritePersonaResponse(input.draft, input.plan)) {
+    return input.draft;
+  }
+
+  const renderer = new SoulRenderer();
+  const compactSoul = renderer.renderCompact(input.soul);
+  const rewritePrompt = [
+    'Rewrite the draft reply so it sounds more like the target persona while preserving meaning.',
+    'Constraints:',
+    '- Keep the factual content, core judgment, and safety boundaries unchanged.',
+    '- Use first person when expressing judgments, priorities, and tradeoffs.',
+    '- Reduce generic assistant phrasing and neutral exposition.',
+    '- Keep the answer concise and conversational.',
+    '- Do not mention prompts, memory, system behavior, or internal implementation.',
+    '',
+    'Persona compact profile:',
+    compactSoul,
+    '',
+    `User message: ${input.userMessage}`,
+    `Turn intent: ${input.plan.intent}`,
+    `Draft reply: ${input.draft}`,
+    '',
+    'Return only the rewritten reply.',
+  ].join('\n');
+
+  try {
+    const rewritten = (await generateText({
+      model: resolveModelForOverride(input.modelOverride, 'chat'),
+      prompt: rewritePrompt,
+      temperature: 0.35,
+      maxTokens: 700,
+    })).text.trim();
+    return rewritten || input.draft;
+  } catch {
+    return input.draft;
+  }
 }
 
 function guessCandidateType(text: string, dimensions: string[]): MemoryCandidate['candidate_type'] {
@@ -3195,8 +3249,15 @@ export class WorkbenchService {
       memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? []) ? 0 : undefined,
       modelOverride,
     });
+    const rewrittenText = await rewriteResponseInPersonaVoice({
+      soul,
+      userMessage: lastMessage?.content ?? '',
+      draft: result.text,
+      plan: turnPlan,
+      modelOverride,
+    });
     return {
-      text: sanitizeAssistantOutput(result.text, lastMessage?.content ?? ''),
+      text: sanitizeAssistantOutput(rewrittenText, lastMessage?.content ?? ''),
       triggeredSkills: result.triggeredSkills,
       normalizedQuery: result.normalizedQuery,
       retrievedMemories: result.retrievedMemories,

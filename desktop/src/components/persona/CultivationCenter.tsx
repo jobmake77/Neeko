@@ -150,6 +150,11 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
   const [pendingOps, setPendingOps] = useState<Record<string, 'deep_fetch' | 'incremental_sync' | undefined>>({});
 
+  const hasActiveSourceOp = cultivating.some((item) => {
+    const detail = details[item.slug];
+    return Boolean(pendingOps[item.slug]) || Boolean(detail?.source_summary?.current_operation && detail.source_summary.current_operation !== 'idle');
+  });
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -161,13 +166,13 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
 
   useEffect(() => {
     const poll = setInterval(() => {
-      if (cultivating.some((item) => (item.progress_percent ?? 0) < 100)) {
+      if (cultivating.some((item) => (item.progress_percent ?? 0) < 100) || hasActiveSourceOp) {
         void reload();
         if (expandedSlug) void loadDetail(expandedSlug);
       }
     }, 5000);
     return () => clearInterval(poll);
-  }, [cultivating, expandedSlug, loadDetail, reload]);
+  }, [cultivating, expandedSlug, hasActiveSourceOp, loadDetail, reload]);
 
   useEffect(() => {
     const autoSync = setInterval(() => {
@@ -183,8 +188,15 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
     setPendingOps((prev) => ({ ...prev, [slug]: 'incremental_sync' }));
     try {
       await api.checkPersonaUpdates(slug);
-      await reload();
-      await loadDetail(slug);
+      for (let i = 0; i < 24; i += 1) {
+        await reload();
+        const detail = await api.getCultivationDetail(slug).catch(() => null);
+        if (detail) {
+          await loadDetail(slug);
+          if (!detail.source_summary?.current_operation || detail.source_summary.current_operation === 'idle') break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      }
     } finally {
       setPendingOps((prev) => ({ ...prev, [slug]: undefined }));
     }
@@ -194,8 +206,15 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
     setPendingOps((prev) => ({ ...prev, [slug]: 'deep_fetch' }));
     try {
       await api.continueCultivation(slug);
-      await reload();
-      await loadDetail(slug);
+      for (let i = 0; i < 48; i += 1) {
+        await reload();
+        const detail = await api.getCultivationDetail(slug).catch(() => null);
+        if (detail) {
+          await loadDetail(slug);
+          if (!detail.source_summary?.current_operation || detail.source_summary.current_operation === 'idle') break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      }
     } finally {
       setPendingOps((prev) => ({ ...prev, [slug]: undefined }));
     }

@@ -162,7 +162,7 @@ export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
 export const WorkbenchRunSchema = z.object({
   id: z.string().uuid(),
-  type: z.enum(['create', 'train', 'experiment', 'export']),
+  type: z.enum(['create', 'train', 'experiment', 'export', 'source_sync']),
   persona_slug: z.string().optional(),
   status: z.enum(['queued', 'running', 'completed', 'failed']),
   recovery_state: z.enum(['idle', 'recovering', 'exhausted']).default('idle'),
@@ -243,6 +243,8 @@ export const CultivationSummarySchema = z.object({
     source_breakdown: z.record(z.string(), z.number().int().min(0)).default({}),
     document_count: z.number().int().min(0).default(0),
     recent_delta_count: z.number().int().min(0).default(0),
+    current_operation: z.enum(['idle', 'deep_fetch', 'incremental_sync', 'discovery']).optional(),
+    current_source_label: z.string().optional(),
     last_update_check_at: z.string().datetime().optional(),
     latest_update_result: z.string().optional(),
   }).default({ total_sources: 0, enabled_sources: 0, source_breakdown: {}, document_count: 0, recent_delta_count: 0 }),

@@ -88,7 +88,7 @@ export class AgentReachAdapter extends BaseSourceAdapter {
   private async fetchWebPage(url: string): Promise<RawDocument[]> {
     try {
       const { execSync } = await import('child_process');
-      const cmd = `agent-reach read --url "${url}" --format json`;
+      const cmd = `agent-reach read --json "${url}"`;
       const output = execSync(cmd, { timeout: 60_000 }).toString();
       const page = JSON.parse(output) as { content: string; title?: string; author?: string };
 

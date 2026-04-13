@@ -155,7 +155,7 @@ export interface ConversationBundle {
 
 export interface WorkbenchRun {
   id: string;
-  type?: string;
+  type?: 'create' | 'train' | 'experiment' | 'export' | 'source_sync';
   persona_slug?: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'done' | 'error';
   started_at?: string;

@@ -430,6 +430,36 @@ function describeSourceLabel(source: PersonaSource): string {
   return source.handle_or_url ?? source.local_path ?? source.platform ?? source.type;
 }
 
+function normalizeHostTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .split(/[^a-z0-9]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 3);
+}
+
+function buildIdentityTokens(personaName: string, query: string, href: string): string[] {
+  const tokens = new Set<string>();
+  const collect = (value: string) => {
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 3)
+      .forEach((item) => tokens.add(item));
+  };
+  collect(personaName);
+  collect(query);
+  normalizeHostTokens(href).forEach((item) => tokens.add(item));
+  return [...tokens];
+}
+
+function includesIdentityToken(text: string, tokens: string[]): boolean {
+  const lower = text.toLowerCase();
+  return tokens.some((token) => lower.includes(token));
+}
+
 function dedupeSourcesByRef(sources: PersonaSource[]): PersonaSource[] {
   const seen = new Set<string>();
   return sources.filter((item) => {
@@ -1609,23 +1639,38 @@ export class WorkbenchService {
   }
 
   async checkPersonaUpdates(slug: string): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
-    const activeRun = this.getActivePersonaRun(slug);
-    if (activeRun) {
-      return { imports: [], run: activeRun, summary: 'A cultivation job is already running for this persona.' };
-    }
-    const config = this.getPersonaConfig(slug);
-    const imports = await this.syncPersonaSources(slug, config, { includeLocal: false, forceRemote: false });
-    return this.finalizeSourceSync(slug, config, imports, 'Checked remote sources.');
+    return this.startSourceSyncRun(slug, 'incremental_sync');
   }
 
   async continueCultivationFromSources(slug: string): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
-    const activeRun = this.getActivePersonaRun(slug);
-    if (activeRun) {
-      return { imports: [], run: activeRun, summary: 'A cultivation job is already running for this persona.' };
-    }
+    return this.startSourceSyncRun(slug, 'deep_fetch');
+  }
+
+  async runSourceSyncForeground(
+    slug: string,
+    mode: 'incremental_sync' | 'deep_fetch'
+  ): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
     const config = this.getPersonaConfig(slug);
-    const imports = await this.syncPersonaSources(slug, config, { includeLocal: true, forceRemote: true });
-    return this.finalizeSourceSync(slug, config, imports, 'Continued cultivation from configured sources.');
+    this.store.savePersonaConfig({
+      ...config,
+      update_policy: {
+        ...config.update_policy,
+        current_operation: mode,
+        current_source_label: config.name,
+        latest_result: mode === 'deep_fetch' ? '正在深抓取来源…' : '正在增量拉取来源…',
+      },
+      updated_at: new Date().toISOString(),
+    });
+    const imports = await this.syncPersonaSources(slug, this.getPersonaConfig(slug), {
+      includeLocal: mode === 'deep_fetch',
+      forceRemote: mode === 'deep_fetch',
+    });
+    return this.finalizeSourceSync(
+      slug,
+      this.getPersonaConfig(slug),
+      imports,
+      mode === 'deep_fetch' ? 'Continued cultivation from configured sources.' : 'Checked remote sources.'
+    );
   }
 
   getRuntimeModelConfig(): RuntimeModelConfig {
@@ -1731,13 +1776,20 @@ export class WorkbenchService {
     socialHandles.forEach((handle) => {
       queries.add(handle);
       if (config.name.trim().length >= 4) queries.add(`${config.name} ${handle}`);
+      queries.add(`${config.name} official website`);
+      queries.add(`${config.name} personal website`);
       queries.add(`${handle} youtube`);
       queries.add(`${handle} podcast interview`);
+      queries.add(`${handle} guest podcast`);
+      queries.add(`${handle} blog`);
     });
     if (config.name.trim().length >= 4) {
       queries.add(`${config.name} official site`);
       queries.add(`${config.name} youtube`);
       queries.add(`${config.name} podcast interview`);
+      queries.add(`${config.name} guest podcast`);
+      queries.add(`${config.name} interview transcript`);
+      queries.add(`${config.name} blog`);
     }
     return [...queries].filter(Boolean).slice(0, 6);
   }
@@ -1756,11 +1808,13 @@ export class WorkbenchService {
     if (!response?.ok) return [];
     const html = await response.text();
     const matches = [...html.matchAll(/<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>/gsi)];
-    const candidates: DiscoveredSourceCandidate[] = [];
-    for (const match of matches.slice(0, 10)) {
+    const candidateList = await Promise.all(matches.slice(0, 6).map(async (match) => {
       const href = this.decodeSearchHref(match[1]);
       const title = this.stripHtml(match[2]);
-      const candidate = this.buildDiscoveredCandidate(slug, href, title, query, personaName);
+      return this.buildDiscoveredCandidate(slug, href, title, query, personaName);
+    }));
+    const candidates: DiscoveredSourceCandidate[] = [];
+    for (const candidate of candidateList) {
       if (!candidate) continue;
       if (candidates.some((item) => item.url_or_handle === candidate.url_or_handle)) continue;
       candidates.push(candidate);
@@ -1785,13 +1839,13 @@ export class WorkbenchService {
     return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
-  private buildDiscoveredCandidate(
+  private async buildDiscoveredCandidate(
     slug: string,
     href: string,
     title: string,
     query: string,
     personaName: string
-  ): DiscoveredSourceCandidate | null {
+  ): Promise<DiscoveredSourceCandidate | null> {
     if (!/^https?:\/\//i.test(href)) return null;
     const lowerHref = href.toLowerCase();
     const lowerTitle = title.toLowerCase();
@@ -1799,35 +1853,52 @@ export class WorkbenchService {
     const lowerQuery = query.toLowerCase();
     const nameToken = lowerName.replace(/\s+/g, '');
     const queryToken = lowerQuery.replace(/\s+/g, '');
+    const identityTokens = buildIdentityTokens(personaName, query, href);
     const hasIdentityMatch = (nameToken.length >= 4 && (lowerTitle.includes(lowerName) || lowerHref.includes(nameToken)))
-      || (queryToken.length >= 4 && (lowerTitle.includes(lowerQuery) || lowerHref.includes(queryToken)));
+      || (queryToken.length >= 4 && (lowerTitle.includes(lowerQuery) || lowerHref.includes(queryToken)))
+      || includesIdentityToken(`${lowerTitle} ${lowerHref}`, identityTokens);
     if (!hasIdentityMatch) return null;
-    if (/(duckduckgo\.com|x\.com|twitter\.com|wikipedia|facebook|instagram|news|medium\.com\/tag|linkedin\.com\/feed|reddit\.com\/r\/|t\.me\/|dockhunt\.com|24vids\.com|piclur\.com|folo\.is)/i.test(lowerHref)) return null;
+    if (/(duckduckgo\.com|x\.com|twitter\.com|wikipedia|facebook|instagram|linkedin\.com|reddit\.com\/r\/|t\.me\/|dockhunt\.com|24vids\.com|piclur\.com|folo\.is|news\.google|bing\.com\/news|yandex\.|rssing\.com|listennotes\.com|podtail\.com|player\.fm|goodpods\.com|financialexpress\.com|economictimes\.|businessinsider\.|newsweek\.com|msn\.com|yahoo\.com\/news)/i.test(lowerHref)) return null;
+    if (/(\/tag\/|\/tags\/|\/category\/|\/categories\/|\/author\/|\/search\/|\?s=|\?output=)/i.test(lowerHref)) return null;
 
     const host = new URL(href).hostname.replace(/^www\./, '');
+    const meta = /youtube\.com|youtu\.be/i.test(host) ? null : await this.fetchDiscoveryPageMeta(href);
+    const combinedText = [title, meta?.title, meta?.description, meta?.siteName, href]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    if (!includesIdentityToken(combinedText, identityTokens)) return null;
+    const podcastMarker = /\b(podcast|episode|show|guest|interview)\b/i;
     const podcastHost = /(spotify\.com|open\.spotify\.com|podcasts\.apple\.com|substack\.com|buzzsprout\.com|transistor\.fm|simplecast\.com|libsyn\.com|podbean\.com|anchor\.fm|castbox\.fm|overcast\.fm)/i.test(host);
     const likelyOfficialHost = host.includes(nameToken) || host.includes(queryToken);
-    const likelyBlogOrArticle = likelyOfficialHost || podcastHost || /(blog|podcast|interview|about)/i.test(lowerHref) || /(blog|podcast|访谈|interview|about)/i.test(lowerTitle);
+    const likelyOfficialPage = likelyOfficialHost || /(about|official|faq|bio|home)/i.test(lowerHref) || /\b(about|official|faq|bio)\b/i.test(combinedText);
+    const likelyPodcast = !likelyOfficialPage && (podcastHost || podcastMarker.test(lowerHref) || podcastMarker.test(combinedText) || /\b访谈\b/i.test(combinedText));
+    const likelyBlogOrArticle = likelyOfficialPage || likelyPodcast || /(blog|essay|notes|article|interview|about|faq)/i.test(lowerHref) || /\b(blog|essay|article|interview|about|faq)\b/i.test(combinedText) || /\b访谈\b/i.test(combinedText);
 
     let type: DiscoveredSourceCandidate['type'] | null = null;
     let platform = '';
-    let summary = title || href;
+    let summary = meta?.description?.slice(0, 120) || title || href;
     let confidence = 0.68;
     if (/youtube\.com\/(watch|\@|channel\/|c\/)|youtu\.be\//i.test(lowerHref)) {
       type = /watch|youtu\.be\//i.test(lowerHref) ? 'youtube_video' : 'youtube_channel';
       platform = 'youtube';
       confidence = type === 'youtube_channel' ? 0.92 : 0.88;
       summary = '发现到明显相关的 YouTube 来源';
-    } else if (/(podcast|episode|show|interview)/i.test(lowerHref) || /(podcast|访谈|interview)/i.test(lowerTitle)) {
-      type = /(interview|访谈)/i.test(lowerTitle) ? 'interview/article_page' : 'podcast_episode_page';
+    } else if (likelyOfficialPage) {
+      type = 'official_site';
+      platform = host;
+      confidence = 0.86;
+      summary = '发现到可能的官网或官方主页';
+    } else if (likelyPodcast) {
+      type = /(interview|访谈|guest)/i.test(combinedText) ? 'interview/article_page' : 'podcast_episode_page';
       platform = 'web';
-      confidence = 0.78;
-      summary = '发现到公开播客或访谈页面';
+      confidence = podcastHost ? 0.84 : 0.78;
+      summary = type === 'podcast_episode_page' ? '发现到公开播客页' : '发现到公开访谈页';
     } else {
       if (!likelyBlogOrArticle) return null;
-      type = /(about|official|官网)/i.test(lowerTitle) || likelyOfficialHost ? 'official_site' : 'blog/article';
+      type = 'blog/article';
       platform = host;
-      confidence = type === 'official_site' ? 0.8 : 0.74;
+      confidence = type === 'official_site' ? 0.86 : 0.74;
       summary = type === 'official_site' ? '发现到可能的官网或官方主页' : '发现到可补充的文章或博客页';
     }
 
@@ -1837,13 +1908,41 @@ export class WorkbenchService {
       type,
       platform,
       url_or_handle: href,
-      title: title || href,
+      title: meta?.title || title || href,
       summary,
       confidence,
       discovered_at: new Date().toISOString(),
       discovered_from: query,
       status: 'pending',
     };
+  }
+
+  private async fetchDiscoveryPageMeta(href: string): Promise<{ title?: string; description?: string; siteName?: string } | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch(href, {
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; NeekoWorkbench/1.0)',
+        },
+      }).catch(() => null);
+      if (!response?.ok) return null;
+      const html = await response.text();
+      const title = html.match(/<title[^>]*>(.*?)<\/title>/is)?.[1];
+      const description = html.match(/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']/i)?.[1];
+      const siteName = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)?.[1];
+      return {
+        title: title ? this.stripHtml(title) : undefined,
+        description: description ? this.stripHtml(description) : undefined,
+        siteName: siteName ? this.stripHtml(siteName) : undefined,
+      };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private mapDiscoveredCandidateToSource(candidate: DiscoveredSourceCandidate): PersonaSource {
@@ -2205,9 +2304,47 @@ export class WorkbenchService {
 
   private getActivePersonaRun(slug: string): WorkbenchRun | null {
     return this.listRuns(slug).find((run) =>
-      (run.type === 'create' || run.type === 'train') &&
+      (run.type === 'create' || run.type === 'train' || run.type === 'source_sync') &&
       (run.status === 'running' || run.status === 'queued')
     ) ?? null;
+  }
+
+  private startSourceSyncRun(
+    slug: string,
+    mode: 'incremental_sync' | 'deep_fetch'
+  ): { imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string } {
+    const activeRun = this.getActivePersonaRun(slug);
+    if (activeRun) {
+      return { imports: [], run: activeRun, summary: 'A cultivation job is already running for this persona.' };
+    }
+
+    const config = this.getPersonaConfig(slug);
+    const run = this.startCliRun(
+      'source_sync',
+      slug,
+      ['workbench-source-sync', slug, '--mode', mode],
+      undefined,
+      {
+        summaryLabel: mode === 'deep_fetch' ? 'deep source sync' : 'incremental source sync',
+      }
+    );
+
+    this.store.savePersonaConfig({
+      ...config,
+      update_policy: {
+        ...config.update_policy,
+        current_operation: mode,
+        current_source_label: config.name,
+        latest_result: mode === 'deep_fetch' ? '正在深抓取来源…' : '正在增量拉取来源…',
+      },
+      updated_at: new Date().toISOString(),
+    });
+
+    return {
+      imports: [],
+      run,
+      summary: mode === 'deep_fetch' ? 'Deep source fetch started.' : 'Incremental source sync started.',
+    };
   }
 
   private schedulePostCreateSourceSync(config: PersonaConfig, createRunId: string): void {

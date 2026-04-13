@@ -140,7 +140,7 @@ export class VideoAdapter extends BaseSourceAdapter {
   }
 
   private resolveRemoteEntries(target: string, options: FetchOptions): string[] {
-    const json = this.loadYtDlpJson(target, { flatPlaylist: true });
+    const json = this.loadYtDlpJson(target, { flatPlaylist: true, playlistLimit: options.limit ?? REMOTE_VIDEO_LIMIT });
     const since = options.since?.getTime();
 
     if (!Array.isArray(json.entries) || json.entries.length === 0) {
@@ -168,12 +168,13 @@ export class VideoAdapter extends BaseSourceAdapter {
     return null;
   }
 
-  private loadYtDlpJson(target: string, options: { flatPlaylist?: boolean } = {}): VideoJson {
+  private loadYtDlpJson(target: string, options: { flatPlaylist?: boolean; playlistLimit?: number } = {}): VideoJson {
     const args = [
       '--dump-single-json',
       '--no-warnings',
       '--skip-download',
       ...(options.flatPlaylist ? ['--flat-playlist'] : []),
+      ...(options.flatPlaylist && options.playlistLimit ? ['--playlist-end', String(options.playlistLimit)] : []),
       target,
     ];
     const output = runYtDlp(args, {
@@ -260,7 +261,10 @@ function runYtDlp(args: string[], options: { encoding?: BufferEncoding; timeout?
   const candidates: Array<{ command: string; prefix?: string[] }> = [
     ...(envBinary ? [{ command: envBinary }] : []),
     ...(home ? [{ command: join(home, 'bin', 'yt-dlp') }] : []),
+    ...(home ? [{ command: join(home, 'Library', 'Python', '3.9', 'bin', 'yt-dlp') }] : []),
+    ...(home ? [{ command: join(home, '.local', 'bin', 'yt-dlp') }] : []),
     { command: '/opt/homebrew/bin/yt-dlp' },
+    { command: '/usr/local/bin/yt-dlp' },
     { command: 'yt-dlp' },
     { command: 'python3.13', prefix: ['-m', 'yt_dlp'] },
     { command: 'python3.12', prefix: ['-m', 'yt_dlp'] },

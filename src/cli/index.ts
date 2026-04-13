@@ -12,6 +12,7 @@ import { cmdTrain } from './commands/train.js';
 import { cmdSkillsRefresh } from './commands/skills-refresh.js';
 import { cmdDualPipeline } from './commands/dual-pipeline.js';
 import { cmdWorkbenchServer } from './commands/workbench-server.js';
+import { cmdWorkbenchSourceSync } from './commands/workbench-source-sync.js';
 
 // Apply saved API keys to environment on startup
 const cfg = settings.getAll();
@@ -251,6 +252,14 @@ program
   .option('--port <n>', 'Port for the local server', '4310')
   .action(async (options: { port?: string }) => {
     await cmdWorkbenchServer(options, process.argv[1]);
+  });
+
+program
+  .command('workbench-source-sync <slug>')
+  .description('Run source sync for a persona in a separate process')
+  .option('--mode <mode>', 'Sync mode: incremental_sync | deep_fetch', 'deep_fetch')
+  .action(async (slug: string, options: { mode?: string }) => {
+    await cmdWorkbenchSourceSync(slug, options, process.argv[1]);
   });
 
 program.parseAsync(process.argv)

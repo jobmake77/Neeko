@@ -659,7 +659,55 @@ function sanitizeAssistantOutput(text: string, userMessage: string): string {
     .replace(/writeback/gi, 'background update')
     .replace(/training prep/gi, 'background preparation')
     .replace(/citation item/gi, 'reference');
-  return cleaned;
+  return cleaned
+    .replace(/^当然[,，]?/u, '')
+    .replace(/^可以说[,，]?/u, '')
+    .replace(/^总的来说[,，]?/u, '')
+    .trim();
+}
+
+function buildStyleDistillationContext(soul: Soul, plan: ChatTurnPlan): string {
+  const phrases = soul.language_style.frequent_phrases.slice(0, 3);
+  const beliefs = soul.values.core_beliefs
+    .slice(0, 3)
+    .map((item) => item.belief)
+    .filter(Boolean);
+  const behaviors = soul.behavioral_traits.signature_behaviors.slice(0, 2);
+  const frameworks = soul.thinking_patterns.decision_frameworks
+    .slice(0, 2)
+    .map((item) => item.value)
+    .filter(Boolean);
+  const reasoning = soul.thinking_patterns.reasoning_style
+    .slice(0, 2)
+    .map((item) => item.value)
+    .filter(Boolean);
+
+  const lines = [
+    'Voice distillation:',
+    '- Sound like the target person, not a generic assistant.',
+    '- Lead with a concrete position instead of a neutral overview.',
+    '- Prefer compact paragraphs over long structured essays unless the user asks for depth.',
+  ];
+
+  if (beliefs.length > 0) {
+    lines.push(`- Ground judgments in these beliefs when relevant: ${beliefs.join('; ')}.`);
+  }
+  if (frameworks.length > 0) {
+    lines.push(`- Reach conclusions using these decision frames when natural: ${frameworks.join('; ')}.`);
+  }
+  if (reasoning.length > 0) {
+    lines.push(`- Thinking style signals: ${reasoning.join('; ')}.`);
+  }
+  if (behaviors.length > 0) {
+    lines.push(`- Behavioral signals to preserve: ${behaviors.join('; ')}.`);
+  }
+  if (phrases.length > 0) {
+    lines.push(`- If it sounds natural, echo this language texture without quoting mechanically: ${phrases.join('; ')}.`);
+  }
+  if (plan.answer_style === 'concise') {
+    lines.push('- Keep it punchy and avoid generic multi-paragraph exposition.');
+  }
+  return lines.join('\n');
 }
 
 function guessCandidateType(text: string, dimensions: string[]): MemoryCandidate['candidate_type'] {
@@ -3139,10 +3187,11 @@ export class WorkbenchService {
     const attachmentPriorityContext = await buildAttachmentPriorityContext(lastMessage?.attachments ?? []);
     const conversationPolicyContext = buildConversationPolicyContext(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const turnPlanContext = buildTurnPlanPriorityContext(turnPlan);
+    const styleDistillationContext = buildStyleDistillationContext(soul, turnPlan);
     const userMessage = buildAttachmentUserMessage(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const history = messages.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'assistant' as const : 'user' as const, content: item.content }));
     const result = await agent.respondWithMeta(userMessage, history, {
-      priorityContext: [conversationPolicyContext, turnPlanContext, attachmentPriorityContext].filter(Boolean).join('\n\n') || undefined,
+      priorityContext: [conversationPolicyContext, turnPlanContext, styleDistillationContext, attachmentPriorityContext].filter(Boolean).join('\n\n') || undefined,
       memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? []) ? 0 : undefined,
       modelOverride,
     });

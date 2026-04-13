@@ -1,7 +1,17 @@
 # 架构设计文档
 
+更新时间：2026-04-13
+
+当前说明：
+
+1. 当前主产品形态已经切到 `桌面客户端（Tauri） + CLI + 本地 workbench-server`
+2. `web/` 目录仍作为历史原型与可复用样式参考存在，但不再作为新的主产品入口持续推进
+3. 下面这份架构文档重点描述核心能力层与训练/素材/聊天链路，阅读时应优先按当前桌面端心智理解系统边界
+
 相关实施文档：
 
+- [项目状态总览](/Users/a77/Desktop/Neeko/docs/project-status-overview.md)
+- [训练流程总览](/Users/a77/Desktop/Neeko/docs/training-runtime-overview.md)
 - [系统 V1 正式定义](/Users/a77/Desktop/Neeko/docs/system-v1.md)
 - [培养阶段 V1 阶段总结](/Users/a77/Desktop/Neeko/docs/training-phase-summary-v1.md)
 - [客户端与交流层 V1 方案](/Users/a77/Desktop/Neeko/docs/client-conversation-v1-plan.md)

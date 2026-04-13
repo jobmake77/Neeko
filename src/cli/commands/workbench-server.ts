@@ -160,6 +160,31 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const personaDiscoveredSourcesMatch = path.match(/^\/api\/personas\/([^/]+)\/discovered-sources$/);
+      if (req.method === 'GET' && personaDiscoveredSourcesMatch) {
+        writeJson(res, 200, service.getDiscoveredSources(decodeURIComponent(personaDiscoveredSourcesMatch[1])));
+        return;
+      }
+
+      const personaDiscoverSourcesMatch = path.match(/^\/api\/personas\/([^/]+)\/discover-sources$/);
+      if (req.method === 'POST' && personaDiscoverSourcesMatch) {
+        writeJson(res, 200, await service.discoverPersonaSources(decodeURIComponent(personaDiscoverSourcesMatch[1])));
+        return;
+      }
+
+      const discoveredSourceDecisionMatch = path.match(/^\/api\/personas\/([^/]+)\/discovered-sources\/([^/]+)\/(accept|reject)$/);
+      if (req.method === 'POST' && discoveredSourceDecisionMatch) {
+        const slug = decodeURIComponent(discoveredSourceDecisionMatch[1]);
+        const candidateId = decodeURIComponent(discoveredSourceDecisionMatch[2]);
+        const action = discoveredSourceDecisionMatch[3];
+        if (action === 'accept') {
+          writeJson(res, 200, service.acceptDiscoveredSource(slug, candidateId));
+        } else {
+          writeJson(res, 200, service.rejectDiscoveredSource(slug, candidateId));
+        }
+        return;
+      }
+
       const personaCheckUpdatesMatch = path.match(/^\/api\/personas\/([^/]+)\/check-updates$/);
       if (req.method === 'POST' && personaCheckUpdatesMatch) {
         writeJson(res, 200, await service.checkPersonaUpdates(decodeURIComponent(personaCheckUpdatesMatch[1])));
@@ -188,7 +213,7 @@ export async function cmdWorkbenchServer(
         const body = await readBody(req);
         writeJson(res, 200, await service.updatePersona(slug, {
           name: getString(body.name) ?? '',
-          source_type: (getString(body.source_type) as 'social' | 'chat_file' | 'video_file' | undefined) ?? undefined,
+          source_type: (getString(body.source_type) as 'social' | 'chat_file' | 'video_file' | 'article' | undefined) ?? undefined,
           source_target: getString(body.source_target),
           source_path: getString(body.source_path),
           target_manifest_path: getString(body.target_manifest_path),
@@ -302,7 +327,7 @@ export async function cmdWorkbenchServer(
           writeJson(res, 200, service.createPersonaFromConfig({
             persona_slug: getString(body.persona_slug),
             name: getString(body.name) ?? '',
-            source_type: sourceType as 'social' | 'chat_file' | 'video_file' | undefined,
+            source_type: sourceType as 'social' | 'chat_file' | 'video_file' | 'article' | undefined,
             source_target: getString(body.source_target),
             source_path: getString(body.source_path),
             target_manifest_path: getString(body.target_manifest_path),

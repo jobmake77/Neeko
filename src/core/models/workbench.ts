@@ -115,7 +115,7 @@ export const WorkbenchEvidenceImportSchema = z.object({
   id: z.string().uuid(),
   persona_slug: z.string(),
   conversation_id: z.string().uuid().optional(),
-  source_kind: z.enum(['chat', 'video']),
+  source_kind: z.enum(['chat', 'video', 'article']),
   source_platform: z.string().optional(),
   source_path: z.string(),
   target_manifest_path: z.string(),
@@ -185,17 +185,44 @@ export const WorkbenchRunReportSchema = z.object({
 });
 export type WorkbenchRunReport = z.infer<typeof WorkbenchRunReportSchema>;
 
+export const DiscoveredSourceCandidateSchema = z.object({
+  id: z.string(),
+  persona_slug: z.string(),
+  type: z.enum([
+    'official_site',
+    'blog/article',
+    'youtube_channel',
+    'youtube_video',
+    'podcast_episode_page',
+    'interview/article_page',
+  ]),
+  platform: z.string().optional(),
+  url_or_handle: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  confidence: z.number().min(0).max(1),
+  discovered_at: z.string().datetime(),
+  discovered_from: z.string().optional(),
+  status: z.enum(['pending', 'accepted', 'rejected']).default('pending'),
+});
+export type DiscoveredSourceCandidate = z.infer<typeof DiscoveredSourceCandidateSchema>;
+
 export const PersonaSourceSchema = z.object({
   id: z.string(),
-  type: z.enum(['social', 'chat_file', 'video_file']),
+  type: z.enum(['social', 'chat_file', 'video_file', 'article']),
   mode: z.enum(['handle', 'remote_url', 'channel_url', 'single_url', 'local_file']).default('handle'),
   platform: z.string().optional(),
   handle_or_url: z.string().optional(),
   local_path: z.string().optional(),
   manifest_path: z.string().optional(),
+  sync_strategy: z.enum(['deep_window', 'incremental']).default('deep_window'),
+  horizon_mode: z.enum(['recent_3y', 'deep_archive']).default('recent_3y'),
+  horizon_years: z.number().int().min(1).max(10).optional(),
+  batch_limit: z.number().int().min(10).max(500).optional(),
   enabled: z.boolean().default(true),
   last_synced_at: z.string().datetime().optional(),
   last_cursor: z.string().optional(),
+  last_seen_published_at: z.string().datetime().optional(),
   status: z.enum(['idle', 'syncing', 'ready', 'error']).default('idle'),
   summary: z.string().optional(),
 });
@@ -213,9 +240,12 @@ export const CultivationSummarySchema = z.object({
   source_summary: z.object({
     total_sources: z.number().int().min(0).default(0),
     enabled_sources: z.number().int().min(0).default(0),
+    source_breakdown: z.record(z.string(), z.number().int().min(0)).default({}),
+    document_count: z.number().int().min(0).default(0),
+    recent_delta_count: z.number().int().min(0).default(0),
     last_update_check_at: z.string().datetime().optional(),
     latest_update_result: z.string().optional(),
-  }).default({ total_sources: 0, enabled_sources: 0 }),
+  }).default({ total_sources: 0, enabled_sources: 0, source_breakdown: {}, document_count: 0, recent_delta_count: 0 }),
   last_update_check_at: z.string().datetime().optional(),
 });
 export type CultivationSummary = z.infer<typeof CultivationSummarySchema>;
@@ -237,7 +267,7 @@ export const PersonaConfigSchema = z.object({
   }),
   updated_at: z.string().datetime(),
   // Legacy single-source fields for migration.
-  source_type: z.enum(['social', 'chat_file', 'video_file']).optional(),
+  source_type: z.enum(['social', 'chat_file', 'video_file', 'article']).optional(),
   source_target: z.string().optional(),
   source_path: z.string().optional(),
   target_manifest_path: z.string().optional(),

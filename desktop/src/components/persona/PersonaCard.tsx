@@ -126,6 +126,11 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
           </div>
         </div>
       </div>
+
+      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+        <span>{persona.doc_count} 条素材</span>
+        <span>{persona.training_rounds} 轮</span>
+      </div>
     </div>
   );
 }

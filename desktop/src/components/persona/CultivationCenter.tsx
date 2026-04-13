@@ -82,7 +82,19 @@ function TrainingCard({
             <div>技能数: <b>{detail.skills.origin_skills.length + detail.skills.distilled_skills.length}</b></div>
             <div>素材来源: <b>{detail.source_summary?.enabled_sources ?? 0} / {detail.source_summary?.total_sources ?? 0}</b></div>
             <div>最近检查: <b>{detail.source_summary?.last_update_check_at ? new Date(detail.source_summary.last_update_check_at).toLocaleString() : '未检查'}</b></div>
+            <div>素材文档: <b>{detail.source_summary?.document_count ?? 0}</b></div>
+            <div>近 7 天增量: <b>{detail.source_summary?.recent_delta_count ?? 0}</b></div>
           </div>
+
+          {detail.source_summary?.source_breakdown && Object.keys(detail.source_summary.source_breakdown).length > 0 ? (
+            <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {Object.entries(detail.source_summary.source_breakdown).map(([key, value]) => (
+                <span key={key} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, background: 'rgb(var(--bg-hover))', border: '1px solid rgb(var(--border))' }}>
+                  {key} {value}
+                </span>
+              ))}
+            </div>
+          ) : null}
 
           {(detail.skills.origin_skills.length > 0 || detail.skills.distilled_skills.length > 0) && (
             <div style={{ marginTop: 12 }}>

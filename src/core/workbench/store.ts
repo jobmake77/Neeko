@@ -7,6 +7,8 @@ import {
   ConversationMessage,
   ConversationMessageSchema,
   ConversationSchema,
+  DiscoveredSourceCandidate,
+  DiscoveredSourceCandidateSchema,
   MemoryCandidate,
   MemoryCandidateSchema,
   PromotionHandoff,
@@ -80,6 +82,10 @@ export class WorkbenchStore {
 
   getPersonaConfigPath(slug: string): string {
     return join(this.getPersonaDir(slug), 'persona-config.json');
+  }
+
+  getDiscoveredSourcesPath(slug: string): string {
+    return join(this.getPersonaDir(slug), 'discovered-sources.json');
   }
 
   private getConversationDir(id: string): string {
@@ -379,6 +385,40 @@ export class WorkbenchStore {
 
   deletePersonaConfig(slug: string): boolean {
     const path = this.getPersonaConfigPath(slug);
+    if (!existsSync(path)) return false;
+    rmSync(path, { force: true });
+    return true;
+  }
+
+  saveDiscoveredSources(slug: string, candidates: DiscoveredSourceCandidate[]): DiscoveredSourceCandidate[] {
+    const parsed = candidates.map((item) => DiscoveredSourceCandidateSchema.parse(item));
+    writeJsonFile(this.getDiscoveredSourcesPath(slug), parsed);
+    return parsed;
+  }
+
+  listDiscoveredSources(slug: string): DiscoveredSourceCandidate[] {
+    const raw = readJsonFile<DiscoveredSourceCandidate[]>(this.getDiscoveredSourcesPath(slug), []);
+    return raw
+      .map((item) => DiscoveredSourceCandidateSchema.parse(item))
+      .sort((a, b) => b.discovered_at.localeCompare(a.discovered_at));
+  }
+
+  updateDiscoveredSource(
+    slug: string,
+    candidateId: string,
+    patch: Partial<DiscoveredSourceCandidate>
+  ): DiscoveredSourceCandidate | null {
+    const list = this.listDiscoveredSources(slug);
+    const index = list.findIndex((item) => item.id === candidateId);
+    if (index < 0) return null;
+    const updated = DiscoveredSourceCandidateSchema.parse({ ...list[index], ...patch });
+    list[index] = updated;
+    this.saveDiscoveredSources(slug, list);
+    return updated;
+  }
+
+  deleteDiscoveredSources(slug: string): boolean {
+    const path = this.getDiscoveredSourcesPath(slug);
     if (!existsSync(path)) return false;
     rmSync(path, { force: true });
     return true;

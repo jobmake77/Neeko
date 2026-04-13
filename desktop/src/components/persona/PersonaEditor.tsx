@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Plus, Trash2, X, FolderOpen, RefreshCw } from 'lucide-react';
 import { t } from '@/lib/i18n';
-import type { PersonaConfig, PersonaDetail, PersonaSource, PersonaSummary } from '@/lib/types';
+import type { DiscoveredSourceCandidate, PersonaConfig, PersonaDetail, PersonaSource, PersonaSummary } from '@/lib/types';
 import * as api from '@/lib/api';
 import { usePersonaStore } from '@/stores/persona';
 import { pickFiles } from '@/lib/tauri';
@@ -24,10 +24,14 @@ function makeSource(type: PersonaSource['type'] = 'social'): PersonaSource {
   return {
     id: crypto.randomUUID(),
     type,
-    mode: type === 'social' ? 'handle' : 'local_file',
+    mode: type === 'social' ? 'handle' : type === 'article' ? 'remote_url' : 'local_file',
     enabled: true,
     status: 'idle',
-    platform: type === 'social' ? 'twitter' : type === 'chat_file' ? 'wechat' : 'local',
+    platform: type === 'social' ? 'twitter' : type === 'chat_file' ? 'wechat' : type === 'article' ? 'web' : 'local',
+    sync_strategy: type === 'social' ? 'deep_window' : 'incremental',
+    horizon_mode: type === 'social' ? 'recent_3y' : 'deep_archive',
+    horizon_years: type === 'social' ? 3 : undefined,
+    batch_limit: type === 'social' ? 100 : undefined,
   };
 }
 
@@ -70,6 +74,7 @@ function SourceEditor({
             <option value="social">公开账号</option>
             <option value="chat_file">聊天文件</option>
             <option value="video_file">视频资料</option>
+            <option value="article">网页文章</option>
           </select>
           <select
             className="input"
@@ -80,7 +85,7 @@ function SourceEditor({
             {source.type === 'social' ? <option value="handle">账号</option> : null}
             {source.type === 'video_file' ? <option value="channel_url">频道链接</option> : null}
             {source.type === 'video_file' ? <option value="single_url">视频链接</option> : null}
-            {source.type !== 'social' ? <option value="local_file">本地文件</option> : null}
+            {source.type !== 'social' && source.type !== 'article' ? <option value="local_file">本地文件</option> : null}
             {source.type !== 'social' ? <option value="remote_url">远程链接</option> : null}
           </select>
         </div>
@@ -114,6 +119,18 @@ function SourceEditor({
               onChange={(e) => onChange({ ...source, platform: e.target.value })}
               placeholder="twitter / x"
             />
+            <select
+              className="input"
+              value={source.horizon_mode ?? 'recent_3y'}
+              onChange={(e) => onChange({
+                ...source,
+                horizon_mode: e.target.value as PersonaSource['horizon_mode'],
+                horizon_years: e.target.value === 'deep_archive' ? 8 : 3,
+              })}
+            >
+              <option value="recent_3y">近 3 年尽量全量</option>
+              <option value="deep_archive">更深档案 5-10 年</option>
+            </select>
           </>
         ) : (
           <>
@@ -142,9 +159,10 @@ function SourceEditor({
               className="input"
               value={source.platform ?? ''}
               onChange={(e) => onChange({ ...source, platform: e.target.value })}
-              placeholder={source.type === 'chat_file' ? 'wechat / feishu' : 'youtube / bilibili / local'}
+              placeholder={source.type === 'chat_file' ? 'wechat / feishu' : source.type === 'article' ? 'web / blog / podcast' : 'youtube / bilibili / local'}
             />
-            <div style={{ display: 'flex', gap: 8 }}>
+            {source.type !== 'article' ? (
+              <div style={{ display: 'flex', gap: 8 }}>
               <input
                 className="input"
                 value={source.manifest_path ?? ''}
@@ -154,7 +172,10 @@ function SourceEditor({
               <button className="btn btn-secondary" onClick={() => void pickLocalPath('manifest_path')}>
                 <FolderOpen size={14} />
               </button>
-            </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>网页来源会作为补充材料进入统一素材池，不需要 target manifest。</div>
+            )}
           </>
         )}
       </div>
@@ -174,6 +195,8 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
   const [name, setName] = useState('');
   const [sources, setSources] = useState<PersonaSource[]>([makeSource('social')]);
   const [policy, setPolicy] = useState<PersonaConfig['update_policy']>(DEFAULT_POLICY);
+  const [discovered, setDiscovered] = useState<DiscoveredSourceCandidate[]>([]);
+  const [discovering, setDiscovering] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -182,6 +205,7 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
       setName('');
       setSources([makeSource('social')]);
       setPolicy(DEFAULT_POLICY);
+      setDiscovered([]);
       return;
     }
     setLoading(true);
@@ -190,6 +214,7 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
         setName(detail.config.name ?? detail.persona.name);
         setSources(detail.config.sources.length > 0 ? detail.config.sources : [makeSource('social')]);
         setPolicy(detail.config.update_policy ?? DEFAULT_POLICY);
+        return api.getDiscoveredSources(persona.slug).then(setDiscovered).catch(() => setDiscovered([]));
       })
       .catch((nextError) => setError((nextError as Error).message))
       .finally(() => setLoading(false));
@@ -226,6 +251,46 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
       setError((nextError as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDiscover() {
+    if (!persona || discovering) return;
+    setDiscovering(true);
+    setError('');
+    try {
+      const next = await api.discoverSources(persona.slug);
+      setDiscovered(next);
+    } catch (nextError) {
+      setError((nextError as Error).message);
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
+  async function handleAcceptCandidate(candidateId: string) {
+    if (!persona) return;
+    try {
+      await api.acceptDiscoveredSource(persona.slug, candidateId);
+      const [detail, candidates] = await Promise.all([
+        api.getPersona(persona.slug),
+        api.getDiscoveredSources(persona.slug),
+      ]);
+      setSources(detail.config.sources.length > 0 ? detail.config.sources : [makeSource('social')]);
+      setDiscovered(candidates);
+      await reload();
+    } catch (nextError) {
+      setError((nextError as Error).message);
+    }
+  }
+
+  async function handleRejectCandidate(candidateId: string) {
+    if (!persona) return;
+    try {
+      await api.rejectDiscoveredSource(persona.slug, candidateId);
+      setDiscovered((prev) => prev.map((item) => item.id === candidateId ? { ...item, status: 'rejected' } : item));
+    } catch (nextError) {
+      setError((nextError as Error).message);
     }
   }
 
@@ -279,6 +344,7 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
                   <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('social')])}><Plus size={14} />账号</button>
                   <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('chat_file')])}><Plus size={14} />聊天</button>
                   <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('video_file')])}><Plus size={14} />视频</button>
+                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('article')])}><Plus size={14} />网页</button>
                 </div>
               </div>
 
@@ -312,6 +378,49 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
                   />
                 </div>
               </div>
+
+              {mode === 'edit' && persona ? (
+                <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>自动发现候选来源</div>
+                      <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>搜索官网、YouTube 和公开播客访谈页；确认后再进入素材池。</div>
+                    </div>
+                    <button className="btn btn-secondary" onClick={() => void handleDiscover()} disabled={discovering}>
+                      <RefreshCw size={14} /> {discovering ? '搜索中…' : '发现来源'}
+                    </button>
+                  </div>
+
+                  {discovered.length === 0 ? (
+                    <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>还没有候选来源。可先保存账号信息，再执行自动发现。</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {discovered.map((item) => (
+                        <div key={item.id} style={{ border: '1px solid rgb(var(--border-light))', borderRadius: 10, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>{item.title}</div>
+                            <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 4 }}>{item.summary}</div>
+                            <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>{item.url_or_handle}</div>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                            <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{Math.round(item.confidence * 100)}%</div>
+                            {item.status === 'pending' ? (
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <button className="btn btn-secondary" onClick={() => void handleRejectCandidate(item.id)}>忽略</button>
+                                <button className="btn btn-primary" onClick={() => void handleAcceptCandidate(item.id)}>加入素材池</button>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 12, color: item.status === 'accepted' ? '#16a34a' : 'rgb(var(--text-tertiary))' }}>
+                                {item.status === 'accepted' ? '已加入素材池' : '已忽略'}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : null}
 
               {loading ? <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}><RefreshCw size={14} style={{ verticalAlign: 'middle' }} /> 加载中…</div> : null}
               {error ? <div style={{ fontSize: 12, color: '#ef4444', background: 'rgb(239 68 68 / 0.08)', borderRadius: 8, padding: '10px 12px' }}>{error}</div> : null}

@@ -64,17 +64,36 @@ export interface CultivationDetail {
 
 export interface PersonaSource {
   id: string;
-  type: 'social' | 'chat_file' | 'video_file';
+  type: 'social' | 'chat_file' | 'video_file' | 'article';
   mode: 'handle' | 'remote_url' | 'channel_url' | 'single_url' | 'local_file';
   platform?: string;
   handle_or_url?: string;
   local_path?: string;
   manifest_path?: string;
+  sync_strategy?: 'deep_window' | 'incremental';
+  horizon_mode?: 'recent_3y' | 'deep_archive';
+  horizon_years?: number;
+  batch_limit?: number;
   enabled: boolean;
   last_synced_at?: string;
   last_cursor?: string;
+  last_seen_published_at?: string;
   status: 'idle' | 'syncing' | 'ready' | 'error';
   summary?: string;
+}
+
+export interface DiscoveredSourceCandidate {
+  id: string;
+  persona_slug: string;
+  type: 'official_site' | 'blog/article' | 'youtube_channel' | 'youtube_video' | 'podcast_episode_page' | 'interview/article_page';
+  platform?: string;
+  url_or_handle: string;
+  title: string;
+  summary: string;
+  confidence: number;
+  discovered_at: string;
+  discovered_from?: string;
+  status: 'pending' | 'accepted' | 'rejected';
 }
 
 export interface PersonaConfig {
@@ -161,6 +180,9 @@ export interface CultivationSummary {
   source_summary: {
     total_sources: number;
     enabled_sources: number;
+    source_breakdown?: Record<string, number>;
+    document_count?: number;
+    recent_delta_count?: number;
     last_update_check_at?: string;
     latest_update_result?: string;
   };

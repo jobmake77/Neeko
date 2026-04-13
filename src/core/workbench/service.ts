@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, extname, isAbsolute, join } from 'path';
-import { spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
@@ -34,6 +34,7 @@ import {
   ConversationMessage,
   CultivationSummary,
   CultivationDetail,
+  DiscoveredSourceCandidate,
   MemoryCandidate,
   PersonaConfig,
   PersonaDetail,
@@ -85,9 +86,14 @@ export interface PersonaConfigInput {
     handle_or_url?: string;
     local_path?: string;
     manifest_path?: string;
+    sync_strategy?: PersonaSource['sync_strategy'];
+    horizon_mode?: PersonaSource['horizon_mode'];
+    horizon_years?: number;
+    batch_limit?: number;
     enabled?: boolean;
     last_synced_at?: string;
     last_cursor?: string;
+    last_seen_published_at?: string;
     status?: PersonaSource['status'];
     summary?: string;
   }>;
@@ -248,9 +254,14 @@ function normalizePersonaSource(input: PersonaConfigInput['sources'] extends Arr
     handle_or_url: input.handle_or_url?.trim() || undefined,
     local_path: input.local_path?.trim() || undefined,
     manifest_path: input.manifest_path?.trim() || undefined,
+    sync_strategy: input.sync_strategy ?? 'deep_window',
+    horizon_mode: input.horizon_mode ?? (input.type === 'social' ? 'recent_3y' : 'deep_archive'),
+    horizon_years: Number.isFinite(input.horizon_years) ? Math.max(1, Math.min(10, Number(input.horizon_years))) : undefined,
+    batch_limit: Number.isFinite(input.batch_limit) ? Math.max(10, Math.min(500, Number(input.batch_limit))) : undefined,
     enabled: input.enabled !== false,
     last_synced_at: input.last_synced_at,
     last_cursor: input.last_cursor?.trim() || undefined,
+    last_seen_published_at: input.last_seen_published_at,
     status: input.status ?? 'idle',
     summary: input.summary?.trim() || undefined,
   };
@@ -274,6 +285,10 @@ function buildLegacySourceFromConfig(config: {
     handle_or_url: config.source_target?.trim() || undefined,
     local_path: config.source_path?.trim() || undefined,
     manifest_path: config.target_manifest_path?.trim() || undefined,
+    sync_strategy: 'deep_window',
+    horizon_mode: config.source_type === 'social' ? 'recent_3y' : 'deep_archive',
+    horizon_years: config.source_type === 'social' ? 3 : undefined,
+    batch_limit: config.source_type === 'social' ? 100 : undefined,
     enabled: true,
     status: 'idle',
   };
@@ -323,6 +338,99 @@ function summarizeSources(sources: PersonaSource[]): { total_sources: number; en
     enabled_sources: sources.filter((item) => item.enabled).length,
     source_types: Array.from(new Set(sources.map((item) => item.type))),
   };
+}
+
+function normalizeHandle(value: string): string {
+  return value.trim().replace(/^@/, '');
+}
+
+function inferHorizonYears(source: PersonaSource): number {
+  if (source.horizon_years && Number.isFinite(source.horizon_years)) return Math.max(1, Math.min(10, source.horizon_years));
+  return source.horizon_mode === 'deep_archive' ? 8 : 3;
+}
+
+function inferTwitterTargetCount(source: PersonaSource): number {
+  const years = inferHorizonYears(source);
+  return Math.max(1500, Math.min(12000, years * 1800));
+}
+
+function inferTwitterBatchLimit(source: PersonaSource): number {
+  return Math.max(60, Math.min(200, source.batch_limit ?? 100));
+}
+
+function toIsoDateOnly(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function mapTweetRowToRawDocument(handle: string, row: Record<string, any>): RawDocument | null {
+  const text = String(row.text ?? row.content ?? '').trim();
+  const id = String(row.id ?? '').trim();
+  if (!text || !id) return null;
+  const cleanHandle = normalizeHandle(handle);
+  const createdAt = typeof row.created_at === 'string' ? row.created_at : typeof row.date === 'string' ? row.date : undefined;
+  const url = typeof row.url === 'string' && row.url.trim()
+    ? row.url.trim()
+    : `https://x.com/${cleanHandle}/status/${id}`;
+  return {
+    id: crypto.randomUUID(),
+    fetched_at: new Date().toISOString(),
+    source_type: 'twitter',
+    source_url: url,
+    source_platform: 'twitter',
+    content: text,
+    author: String(row.author ?? cleanHandle).replace(/^@/, ''),
+    author_handle: `@${cleanHandle}`,
+    published_at: createdAt,
+    metadata: {
+      tweet_id: id,
+      likes: row.likes,
+      retweets: row.retweets,
+      replies: row.replies,
+      views: row.views,
+    },
+  };
+}
+
+function dedupeRawDocuments(docs: RawDocument[]): RawDocument[] {
+  const seen = new Set<string>();
+  return docs.filter((doc) => {
+    const key = JSON.stringify([doc.source_url, doc.published_at, doc.content.slice(0, 240)]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function extractLatestPublishedAt(docs: RawDocument[]): string | undefined {
+  return docs
+    .map((item) => item.published_at)
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => b.localeCompare(a))[0];
+}
+
+function buildSourceBreakdown(sources: PersonaSource[]): Record<string, number> {
+  return sources.reduce<Record<string, number>>((acc, item) => {
+    acc[item.type] = (acc[item.type] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+function computeSourceWeight(source: PersonaSource): number {
+  if (source.type === 'social') return 1;
+  if (source.type === 'chat_file') return 0.98;
+  if (source.type === 'video_file') return source.mode === 'channel_url' || source.mode === 'single_url' ? 0.9 : 0.95;
+  return 0.72;
+}
+
+function dedupeSourcesByRef(sources: PersonaSource[]): PersonaSource[] {
+  const seen = new Set<string>();
+  return sources.filter((item) => {
+    const ref = (item.handle_or_url ?? item.local_path ?? '').trim().toLowerCase();
+    const key = `${item.type}:${ref}`;
+    if (!ref || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function inferConversationTitle(content: string): string {
@@ -786,6 +894,10 @@ export class WorkbenchService {
         local_path: sourceType === 'social' ? undefined : primarySource,
         manifest_path: undefined,
         platform: sourceType === 'social' ? 'x' : undefined,
+        sync_strategy: 'deep_window',
+        horizon_mode: sourceType === 'social' ? 'recent_3y' : 'deep_archive',
+        horizon_years: sourceType === 'social' ? 3 : undefined,
+        batch_limit: sourceType === 'social' ? 100 : undefined,
         enabled: true,
         status: 'idle',
       }],
@@ -881,6 +993,7 @@ export class WorkbenchService {
 
     const config = this.store.getPersonaConfig(slug);
     this.store.deletePersonaConfig(slug);
+    this.store.deleteDiscoveredSources(slug);
 
     const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
     if (existsSync(personaPath)) {
@@ -899,6 +1012,66 @@ export class WorkbenchService {
 
   getPersonaSources(slug: string): PersonaSource[] {
     return this.getPersonaConfig(slug).sources;
+  }
+
+  getDiscoveredSources(slug: string): DiscoveredSourceCandidate[] {
+    this.getPersonaConfig(slug);
+    return this.store.listDiscoveredSources(slug);
+  }
+
+  async discoverPersonaSources(slug: string): Promise<DiscoveredSourceCandidate[]> {
+    const config = this.getPersonaConfig(slug);
+    const existingRefs = new Set(
+      config.sources
+        .map((item) => item.handle_or_url?.trim().toLowerCase())
+        .filter((item): item is string => Boolean(item))
+    );
+    const queries = this.buildDiscoveryQueries(config);
+    const candidates: DiscoveredSourceCandidate[] = [];
+    for (const query of queries) {
+      const results = await this.searchDiscoveryCandidates(slug, query, config.name);
+      for (const result of results) {
+        const normalized = result.url_or_handle.trim().toLowerCase();
+        if (existingRefs.has(normalized)) continue;
+        if (candidates.some((item) => item.url_or_handle.trim().toLowerCase() === normalized)) continue;
+        candidates.push(result);
+      }
+    }
+    this.store.saveDiscoveredSources(slug, candidates);
+    return candidates;
+  }
+
+  acceptDiscoveredSource(slug: string, candidateId: string): PersonaMutationResult {
+    const candidate = this.store.listDiscoveredSources(slug).find((item) => item.id === candidateId);
+    if (!candidate) throw new Error(`Discovered source "${candidateId}" not found.`);
+    const current = this.getPersonaConfig(slug);
+    const mapped = this.mapDiscoveredCandidateToSource(candidate);
+    const nextSources = dedupeSourcesByRef([...current.sources, mapped]);
+    const nextConfig: PersonaConfig = {
+      ...current,
+      sources: nextSources,
+      updated_at: new Date().toISOString(),
+    };
+    this.store.savePersonaConfig(nextConfig);
+    this.store.updateDiscoveredSource(slug, candidateId, { status: 'accepted' });
+    return {
+      persona: this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug) ?? {
+        slug,
+        name: nextConfig.name,
+        status: 'available',
+        doc_count: 0,
+        memory_node_count: 0,
+        training_rounds: 0,
+        updated_at: nextConfig.updated_at,
+      },
+      run: null,
+    };
+  }
+
+  rejectDiscoveredSource(slug: string, candidateId: string): DiscoveredSourceCandidate {
+    const updated = this.store.updateDiscoveredSource(slug, candidateId, { status: 'rejected' });
+    if (!updated) throw new Error(`Discovered source "${candidateId}" not found.`);
+    return updated;
   }
 
   async updatePersonaSources(
@@ -1520,6 +1693,223 @@ export class WorkbenchService {
     });
   }
 
+  private buildDiscoveryQueries(config: PersonaConfig): string[] {
+    const queries = new Set<string>();
+    const socialHandles = config.sources
+      .filter((item) => item.type === 'social' && item.handle_or_url)
+      .map((item) => normalizeHandle(item.handle_or_url!));
+    if (config.name.trim().length >= 4) queries.add(config.name);
+    socialHandles.forEach((handle) => {
+      queries.add(handle);
+      if (config.name.trim().length >= 4) queries.add(`${config.name} ${handle}`);
+      queries.add(`${handle} youtube`);
+      queries.add(`${handle} podcast interview`);
+    });
+    if (config.name.trim().length >= 4) {
+      queries.add(`${config.name} official site`);
+      queries.add(`${config.name} youtube`);
+      queries.add(`${config.name} podcast interview`);
+    }
+    return [...queries].filter(Boolean).slice(0, 6);
+  }
+
+  private async searchDiscoveryCandidates(
+    slug: string,
+    query: string,
+    personaName: string
+  ): Promise<DiscoveredSourceCandidate[]> {
+    const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; NeekoWorkbench/1.0)',
+      },
+    }).catch(() => null);
+    if (!response?.ok) return [];
+    const html = await response.text();
+    const matches = [...html.matchAll(/<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>/gsi)];
+    const candidates: DiscoveredSourceCandidate[] = [];
+    for (const match of matches.slice(0, 10)) {
+      const href = this.decodeSearchHref(match[1]);
+      const title = this.stripHtml(match[2]);
+      const candidate = this.buildDiscoveredCandidate(slug, href, title, query, personaName);
+      if (!candidate) continue;
+      if (candidates.some((item) => item.url_or_handle === candidate.url_or_handle)) continue;
+      candidates.push(candidate);
+    }
+    return candidates.slice(0, 8);
+  }
+
+  private decodeSearchHref(rawHref: string): string {
+    try {
+      const href = rawHref.replace(/&amp;/g, '&');
+      const normalizedHref = href.startsWith('//') ? `https:${href}` : href;
+      if (!normalizedHref.startsWith('http')) return normalizedHref;
+      const parsed = new URL(normalizedHref);
+      const uddg = parsed.searchParams.get('uddg');
+      return uddg ? decodeURIComponent(uddg) : normalizedHref;
+    } catch {
+      return rawHref;
+    }
+  }
+
+  private stripHtml(value: string): string {
+    return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  private buildDiscoveredCandidate(
+    slug: string,
+    href: string,
+    title: string,
+    query: string,
+    personaName: string
+  ): DiscoveredSourceCandidate | null {
+    if (!/^https?:\/\//i.test(href)) return null;
+    const lowerHref = href.toLowerCase();
+    const lowerTitle = title.toLowerCase();
+    const lowerName = personaName.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    const nameToken = lowerName.replace(/\s+/g, '');
+    const queryToken = lowerQuery.replace(/\s+/g, '');
+    const hasIdentityMatch = (nameToken.length >= 4 && (lowerTitle.includes(lowerName) || lowerHref.includes(nameToken)))
+      || (queryToken.length >= 4 && (lowerTitle.includes(lowerQuery) || lowerHref.includes(queryToken)));
+    if (!hasIdentityMatch) return null;
+    if (/(duckduckgo\.com|x\.com|twitter\.com|wikipedia|facebook|instagram|news|medium\.com\/tag|linkedin\.com\/feed|reddit\.com\/r\/|t\.me\/|dockhunt\.com|24vids\.com|piclur\.com|folo\.is)/i.test(lowerHref)) return null;
+
+    let type: DiscoveredSourceCandidate['type'] | null = null;
+    let platform = '';
+    let summary = title || href;
+    let confidence = 0.68;
+    if (/youtube\.com\/(watch|\@|channel\/|c\/)|youtu\.be\//i.test(lowerHref)) {
+      type = /watch|youtu\.be\//i.test(lowerHref) ? 'youtube_video' : 'youtube_channel';
+      platform = 'youtube';
+      confidence = type === 'youtube_channel' ? 0.92 : 0.88;
+      summary = '发现到明显相关的 YouTube 来源';
+    } else if (/(podcast|episode|show|interview)/i.test(lowerHref) || /(podcast|访谈|interview)/i.test(lowerTitle)) {
+      type = /(interview|访谈)/i.test(lowerTitle) ? 'interview/article_page' : 'podcast_episode_page';
+      platform = 'web';
+      confidence = 0.78;
+      summary = '发现到公开播客或访谈页面';
+    } else {
+      const host = new URL(href).hostname.replace(/^www\./, '');
+      type = /(about|official|官网)/i.test(lowerTitle) || host.includes(lowerName.replace(/\s+/g, '')) ? 'official_site' : 'blog/article';
+      platform = host;
+      confidence = type === 'official_site' ? 0.8 : 0.74;
+      summary = type === 'official_site' ? '发现到可能的官网或官方主页' : '发现到可补充的文章或博客页';
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      persona_slug: slug,
+      type,
+      platform,
+      url_or_handle: href,
+      title: title || href,
+      summary,
+      confidence,
+      discovered_at: new Date().toISOString(),
+      discovered_from: query,
+      status: 'pending',
+    };
+  }
+
+  private mapDiscoveredCandidateToSource(candidate: DiscoveredSourceCandidate): PersonaSource {
+    if (candidate.type === 'youtube_channel') {
+      return {
+        id: createSourceId(),
+        type: 'video_file',
+        mode: 'channel_url',
+        platform: 'youtube',
+        handle_or_url: candidate.url_or_handle,
+        enabled: true,
+        status: 'idle',
+        sync_strategy: 'deep_window',
+        horizon_mode: 'deep_archive',
+      };
+    }
+    if (candidate.type === 'youtube_video') {
+      return {
+        id: createSourceId(),
+        type: 'video_file',
+        mode: 'single_url',
+        platform: 'youtube',
+        handle_or_url: candidate.url_or_handle,
+        enabled: true,
+        status: 'idle',
+        sync_strategy: 'incremental',
+        horizon_mode: 'deep_archive',
+      };
+    }
+    return {
+      id: createSourceId(),
+      type: 'article',
+      mode: 'remote_url',
+      platform: candidate.platform || 'web',
+      handle_or_url: candidate.url_or_handle,
+      enabled: true,
+      status: 'idle',
+      sync_strategy: 'incremental',
+      horizon_mode: 'deep_archive',
+    };
+  }
+
+  private async fetchTwitterSourceDocuments(source: PersonaSource, forceRemote: boolean): Promise<RawDocument[]> {
+    const handle = source.handle_or_url?.trim();
+    if (!handle) return [];
+    if (!forceRemote && source.last_seen_published_at) {
+      const adapter = new AgentReachAdapter('twitter');
+      const since = new Date(source.last_seen_published_at);
+      since.setUTCDate(since.getUTCDate() - 1);
+      const fallback = await adapter.fetch(handle, {
+        limit: inferTwitterBatchLimit(source),
+        since,
+      });
+      return dedupeRawDocuments(fallback);
+    }
+    const outDir = join(settings.getDataDir(), 'source-sync', normalizeHandle(handle));
+    mkdirSync(outDir, { recursive: true });
+    const outPath = join(outDir, `${normalizeHandle(handle)}-${source.id}.json`);
+    const horizonYears = inferHorizonYears(source);
+    const start = new Date();
+    const earliest = new Date();
+    earliest.setUTCFullYear(earliest.getUTCFullYear() - horizonYears);
+    const target = inferTwitterTargetCount(source);
+    const scriptPath = join(this.repoRoot, 'scripts', 'fetch-twitter-corpus.mjs');
+    try {
+      execFileSync(process.execPath, [
+        scriptPath,
+        normalizeHandle(handle),
+        outPath,
+        String(target),
+        toIsoDateOnly(start),
+        toIsoDateOnly(earliest),
+        '14',
+        '1',
+      ], {
+        cwd: this.repoRoot,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 12 * 60 * 1000,
+        env: {
+          ...process.env,
+          NEEKO_TWITTER_MAX_QUERIES_PER_RUN: forceRemote ? '0' : '18',
+          NEEKO_TWITTER_QUERY_TIMEOUT_MS: '120000',
+        },
+      });
+      const rows = JSON.parse(readFileSync(outPath, 'utf-8')) as Array<Record<string, any>>;
+      const docs = rows
+        .map((row) => mapTweetRowToRawDocument(handle, row))
+        .filter((item): item is RawDocument => Boolean(item));
+      return dedupeRawDocuments(docs);
+    } catch (error) {
+      console.warn(`[WorkbenchService] twitter deep fetch failed for ${handle}: ${String(error).slice(0, 240)}`);
+      const adapter = new AgentReachAdapter('twitter');
+      const fallback = await adapter.fetch(handle, {
+        limit: inferTwitterBatchLimit(source),
+        since: source.last_synced_at ? new Date(source.last_synced_at) : undefined,
+      });
+      return dedupeRawDocuments(fallback);
+    }
+  }
+
   private async syncPersonaSources(
     slug: string,
     config: PersonaConfig,
@@ -1585,16 +1975,14 @@ export class WorkbenchService {
     let docs: RawDocument[] = [];
     let sourcePlatform = source.platform ?? source.type;
     if (source.type === 'social' && source.handle_or_url) {
-      const adapter = new AgentReachAdapter('twitter');
-      const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
-      docs = await adapter.fetch(source.handle_or_url, { limit: 100, since });
+      docs = await this.fetchTwitterSourceDocuments(source, forceRemote);
       sourcePlatform = source.platform ?? 'twitter';
     } else if (source.type === 'video_file' && source.handle_or_url) {
       const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
       const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
       docs = await adapter.fetch(source.handle_or_url, { limit: 12, since });
       sourcePlatform = source.platform ?? docs[0]?.source_platform ?? 'video_remote';
-    } else if (source.handle_or_url) {
+    } else if ((source.type === 'article' || source.mode === 'remote_url') && source.handle_or_url) {
       const adapter = new AgentReachAdapter('article');
       docs = await adapter.fetch(source.handle_or_url, { limit: 1 });
       sourcePlatform = source.platform ?? 'web';
@@ -1608,6 +1996,20 @@ export class WorkbenchService {
       });
       return null;
     }
+
+    const sourceWeight = computeSourceWeight(source);
+    const ingestionBatchId = crypto.randomUUID();
+    docs = docs.map((item) => ({
+      ...item,
+      metadata: {
+        ...(item.metadata ?? {}),
+        source_id: source.id,
+        source_weight: sourceWeight,
+        discovered_from: source.summary,
+        ingestion_batch_id: ingestionBatchId,
+        source_mode: source.mode,
+      },
+    }));
 
     const cursor = createHash('sha1')
       .update(JSON.stringify(docs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
@@ -1638,7 +2040,7 @@ export class WorkbenchService {
     const imported = this.store.saveEvidenceImport({
       id: importId,
       persona_slug: slug,
-      source_kind: source.type === 'social' ? 'chat' : 'video',
+      source_kind: source.type === 'social' ? 'chat' : source.type === 'article' ? 'article' : 'video',
       source_platform: sourcePlatform,
       source_path: source.handle_or_url ?? source.local_path ?? '',
       target_manifest_path: source.manifest_path ?? '',
@@ -1657,6 +2059,7 @@ export class WorkbenchService {
     this.touchSourceSyncState(slug, config, source.id, {
       last_synced_at: now.toISOString(),
       last_cursor: cursor,
+      last_seen_published_at: extractLatestPublishedAt(docs),
       status: 'ready',
       summary: imported.summary,
     });
@@ -1669,13 +2072,14 @@ export class WorkbenchService {
     sourceId: string,
     patch: Partial<PersonaSource>
   ): void {
+    const latestConfig = this.store.getPersonaConfig(slug) ?? config;
     const nextConfig: PersonaConfig = {
-      ...config,
-      sources: config.sources.map((item) => item.id === sourceId ? { ...item, ...patch } : item),
+      ...latestConfig,
+      sources: latestConfig.sources.map((item) => item.id === sourceId ? { ...item, ...patch } : item),
       update_policy: {
-        ...config.update_policy,
+        ...latestConfig.update_policy,
         last_checked_at: new Date().toISOString(),
-        latest_result: patch.summary ?? config.update_policy.latest_result,
+        latest_result: patch.summary ?? latestConfig.update_policy.latest_result,
       },
       updated_at: new Date().toISOString(),
     };
@@ -1789,7 +2193,9 @@ export class WorkbenchService {
     const prepId = crypto.randomUUID();
     const prepDir = join(this.store.getTrainingPrepDir(), prepId);
     mkdirSync(prepDir, { recursive: true });
-    const docs = imports.flatMap((item) => readJsonFile<RawDocument[]>(item.artifacts.documents_path, []));
+    const docs = dedupeRawDocuments(
+      imports.flatMap((item) => readJsonFile<RawDocument[]>(item.artifacts.documents_path, []))
+    ).sort((a, b) => (b.published_at ?? '').localeCompare(a.published_at ?? ''));
     const now = new Date().toISOString();
     const prepBatch = buildStandaloneEvidenceBatch(docs, { sourceLabel: 'workbench_source_pool' });
     const batchArtifacts = writeEvidenceArtifacts(prepDir, prepBatch);
@@ -1973,7 +2379,7 @@ export class WorkbenchService {
       if ((source.type === 'chat_file' || source.type === 'video_file') && source.mode === 'local_file' && !source.local_path?.trim()) {
         throw new Error(`${source.type} local source requires local_path`);
       }
-      if ((source.type === 'chat_file' || source.type === 'video_file') && source.mode !== 'local_file' && !source.handle_or_url?.trim()) {
+      if ((source.type === 'chat_file' || source.type === 'video_file' || source.type === 'article') && source.mode !== 'local_file' && !source.handle_or_url?.trim()) {
         throw new Error(`${source.type} remote source requires handle_or_url`);
       }
       if (source.type === 'chat_file' && !source.manifest_path?.trim()) {
@@ -2022,6 +2428,11 @@ export class WorkbenchService {
         target: primarySource.handle_or_url,
       };
     }
+    if (primarySource.type === 'article') {
+      return {
+        target: primarySource.handle_or_url,
+      };
+    }
     return {
       target: primarySource.mode === 'local_file' ? primarySource.local_path : primarySource.handle_or_url,
       targetManifest: primarySource.manifest_path,
@@ -2034,11 +2445,12 @@ export class WorkbenchService {
   private readPersonaConfigSummary(slug: string): PersonaSummary | null {
     const config = this.store.getPersonaConfig(slug);
     if (!config) return null;
+    const evidenceImports = this.store.listEvidenceImports(slug);
     return {
       slug: config.persona_slug,
       name: config.name,
       status: existsSync(join(settings.getPersonaDir(slug), 'persona.json')) ? 'available' : 'creating',
-      doc_count: 0,
+      doc_count: evidenceImports.reduce((sum, item) => sum + item.item_count, 0),
       memory_node_count: 0,
       training_rounds: 0,
       updated_at: config.updated_at,
@@ -2048,6 +2460,7 @@ export class WorkbenchService {
   private buildCultivationSummary(slug: string, persona: PersonaSummary): CultivationSummary {
     const config = this.getPersonaConfig(slug);
     const skills = this.readSkillSummary(slug);
+    const evidenceImports = this.store.listEvidenceImports(slug);
     return {
       status: persona.status,
       progress_percent: persona.progress_percent ?? 0,
@@ -2060,6 +2473,11 @@ export class WorkbenchService {
       source_summary: {
         total_sources: config.sources.length,
         enabled_sources: config.sources.filter((item) => item.enabled).length,
+        source_breakdown: buildSourceBreakdown(config.sources),
+        document_count: evidenceImports.reduce((sum, item) => sum + item.item_count, 0),
+        recent_delta_count: evidenceImports
+          .filter((item) => Date.now() - new Date(item.updated_at).getTime() < 7 * 24 * 60 * 60 * 1000)
+          .reduce((sum, item) => sum + item.item_count, 0),
         last_update_check_at: config.update_policy.last_checked_at,
         latest_update_result: config.update_policy.latest_result,
       },
@@ -2514,6 +2932,8 @@ export class WorkbenchService {
     }
     const skills = this.readSkillSummary(slug);
     const config = this.getPersonaConfig(slug);
+    const evidenceImports = this.store.listEvidenceImports(slug);
+    const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
     return {
       persona,
       skills,
@@ -2525,7 +2945,7 @@ export class WorkbenchService {
         stages: this.buildStages(persona.current_stage ?? 'created'),
       },
       assets: {
-        evidence_imports: this.store.listEvidenceImports(slug).map((item) => ({
+        evidence_imports: evidenceImports.map((item) => ({
           ...item,
           artifacts: {
             ...item.artifacts,
@@ -2538,7 +2958,7 @@ export class WorkbenchService {
           source_path: basename(item.source_path || ''),
           target_manifest_path: basename(item.target_manifest_path || ''),
         })),
-        training_preps: this.store.listTrainingPrepArtifacts(slug).map((item) => ({
+        training_preps: trainingPreps.map((item) => ({
           ...item,
           evidence_index_path: '',
           documents_path: '',
@@ -2547,6 +2967,11 @@ export class WorkbenchService {
       source_summary: {
         total_sources: config.sources.length,
         enabled_sources: config.sources.filter((item) => item.enabled).length,
+        source_breakdown: buildSourceBreakdown(config.sources),
+        document_count: evidenceImports.reduce((sum, item) => sum + item.item_count, 0),
+        recent_delta_count: evidenceImports
+          .filter((item) => Date.now() - new Date(item.updated_at).getTime() < 7 * 24 * 60 * 60 * 1000)
+          .reduce((sum, item) => sum + item.item_count, 0),
         last_update_check_at: config.update_policy.last_checked_at,
         latest_update_result: config.update_policy.latest_result,
       } as any,

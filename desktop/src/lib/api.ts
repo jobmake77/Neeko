@@ -6,6 +6,7 @@ import type {
   PersonaConfig,
   PersonaSource,
   CultivationDetail,
+  DiscoveredSourceCandidate,
   PersonaSkillSummary,
   Conversation,
   ConversationBundle,
@@ -103,6 +104,28 @@ export async function getCultivationDetail(slug: string): Promise<CultivationDet
 
 export async function getPersonaSources(slug: string): Promise<PersonaSource[]> {
   return request<PersonaSource[]>(`/api/personas/${slug}/sources`);
+}
+
+export async function getDiscoveredSources(slug: string): Promise<DiscoveredSourceCandidate[]> {
+  return request<DiscoveredSourceCandidate[]>(`/api/personas/${slug}/discovered-sources`);
+}
+
+export async function discoverSources(slug: string): Promise<DiscoveredSourceCandidate[]> {
+  return request<DiscoveredSourceCandidate[]>(`/api/personas/${slug}/discover-sources`, {
+    method: 'POST',
+  });
+}
+
+export async function acceptDiscoveredSource(slug: string, candidateId: string): Promise<PersonaMutationResult> {
+  return request<PersonaMutationResult>(`/api/personas/${slug}/discovered-sources/${candidateId}/accept`, {
+    method: 'POST',
+  });
+}
+
+export async function rejectDiscoveredSource(slug: string, candidateId: string): Promise<DiscoveredSourceCandidate> {
+  return request<DiscoveredSourceCandidate>(`/api/personas/${slug}/discovered-sources/${candidateId}/reject`, {
+    method: 'POST',
+  });
 }
 
 export async function updatePersonaSources(

@@ -97,6 +97,7 @@ export function ChatInput() {
               fontSize: 12, color: 'rgb(var(--accent))',
             }}>
               <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+              <span style={{ fontSize: 10, opacity: 0.8 }}>{formatAttachmentType(file.type)}</span>
               <button
                 onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'inherit' }}
@@ -219,4 +220,12 @@ function inferAttachmentMime(path: string, type: AttachmentRef['type']): string 
     return 'text/plain';
   }
   return undefined;
+}
+
+function formatAttachmentType(type: AttachmentRef['type']): string {
+  if (type === 'image') return '图片';
+  if (type === 'video') return '视频';
+  if (type === 'audio') return '音频';
+  if (type === 'text') return '文本';
+  return '文件';
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chat';
 import { t } from '@/lib/i18n';
+import type { AttachmentRef } from '@/lib/types';
 
 const HELIX_FRAMES = ['⣾','⣽','⣻','⢿','⡿','⣟','⣯','⣷'];
 
@@ -112,19 +113,7 @@ export function MessageList() {
               {msg.attachments && msg.attachments.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                   {msg.attachments.map((attachment) => (
-                    <span
-                      key={attachment.id}
-                      style={{
-                        fontSize: 11,
-                        color: 'rgb(var(--text-secondary))',
-                        border: '1px solid rgb(var(--border))',
-                        background: 'rgb(var(--bg-hover))',
-                        borderRadius: 999,
-                        padding: '3px 8px',
-                      }}
-                    >
-                      {attachment.name}
-                    </span>
+                    <AttachmentBadge key={attachment.id} attachment={attachment} />
                   ))}
                 </div>
               )}
@@ -158,4 +147,56 @@ export function MessageList() {
       <div ref={bottomRef} />
     </div>
   );
+}
+
+function AttachmentBadge({ attachment }: { attachment: AttachmentRef }) {
+  const status = attachment.processing_status ?? 'pending';
+  const color = status === 'ready'
+    ? 'rgb(34 197 94)'
+    : status === 'unsupported'
+      ? 'rgb(245 158 11)'
+      : status === 'error'
+        ? 'rgb(239 68 68)'
+        : 'rgb(var(--text-tertiary))';
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        border: '1px solid rgb(var(--border))',
+        background: 'rgb(var(--bg-hover))',
+        borderRadius: 12,
+        padding: '6px 9px',
+        minWidth: 140,
+        maxWidth: 280,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <span style={{ fontSize: 11, color: 'rgb(var(--text-secondary))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {attachment.name}
+        </span>
+        <span style={{ fontSize: 10, color, flexShrink: 0 }}>
+          {formatAttachmentStatus(status)}
+        </span>
+      </div>
+      {attachment.processing_summary ? (
+        <div style={{ fontSize: 11, lineHeight: 1.45, color: 'rgb(var(--text-tertiary))' }}>
+          {attachment.processing_summary}
+        </div>
+      ) : attachment.processing_error ? (
+        <div style={{ fontSize: 11, lineHeight: 1.45, color }}>
+          {attachment.processing_error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatAttachmentStatus(status: NonNullable<AttachmentRef['processing_status']>): string {
+  if (status === 'ready') return t('attachmentReady');
+  if (status === 'unsupported') return t('attachmentUnsupported');
+  if (status === 'error') return t('attachmentError');
+  return t('attachmentPending');
 }

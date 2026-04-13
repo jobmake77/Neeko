@@ -42,6 +42,11 @@ export const AttachmentRefSchema = z.object({
   path: z.string(),
   mime: z.string().optional(),
   size: z.number().int().min(0).optional(),
+  processing_status: z.enum(['pending', 'ready', 'unsupported', 'error']).optional(),
+  processing_summary: z.string().optional(),
+  processing_provider: z.string().optional(),
+  processing_error: z.string().optional(),
+  processing_capability: z.enum(['text_extract', 'image_understanding', 'transcription']).optional(),
 });
 export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
 

@@ -3,7 +3,6 @@ import { basename, extname, isAbsolute, join } from 'path';
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import yaml from 'js-yaml';
-import OpenAI from 'openai';
 import { settings } from '../../config/settings.js';
 import { PersonaAgent } from '../agents/index.js';
 import { MemoryRetriever } from '../memory/retriever.js';
@@ -25,6 +24,7 @@ import {
 } from '../pipeline/evidence-layer.js';
 import { VideoAdapter } from '../pipeline/ingestion/video.js';
 import { AgentReachAdapter } from '../pipeline/ingestion/agentreach.js';
+import { enrichAttachment } from '../media/attachment-processing.js';
 import {
   AttachmentRef,
   CitationItem,
@@ -450,96 +450,18 @@ function readPreviewFromPath(path?: string, maxChars = 900): string | undefined 
 }
 
 async function buildAttachmentContext(attachments: AttachmentRef[]): Promise<string> {
-  const chunks: string[] = [];
-  for (const item of attachments) {
-    const chunk = await buildSingleAttachmentContext(item);
-    if (chunk) chunks.push(chunk);
-  }
-  return chunks.join('\n\n');
-}
-
-async function buildSingleAttachmentContext(item: AttachmentRef): Promise<string> {
-  const header = `[attachment:${item.type}] ${item.name} @ ${item.path}`;
-  if (!item.path || !existsSync(item.path) || !statSync(item.path).isFile()) return header;
-
-  if (item.type === 'text' || item.type === 'file') {
-    const preview = readPreviewFromPath(item.path, 2200);
-    return preview ? `${header}\n${preview}` : header;
-  }
-
-  if (item.type === 'image') {
-    const summary = await summarizeImageAttachment(item);
-    return summary ? `${header}\n${summary}` : header;
-  }
-
-  if (item.type === 'audio' || item.type === 'video') {
-    const transcript = await transcribeMediaAttachment(item);
-    return transcript ? `${header}\n${transcript}` : header;
-  }
-
-  return header;
-}
-
-async function summarizeImageAttachment(item: AttachmentRef): Promise<string | undefined> {
-  const apiKey = String(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY ?? '').trim();
-  if (!apiKey) return undefined;
-  try {
-    const client = new OpenAI({ apiKey });
-    const mimeType = item.mime ?? inferMimeType(item.path, 'image/jpeg');
-    const base64 = readFileSync(item.path).toString('base64');
-    const result = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      max_tokens: 220,
-      messages: [
-        {
-          role: 'system',
-          content: 'You summarize user-provided images into concise factual context for another model. Focus on visible subjects, text, scene, and notable details.',
-        },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: 'Describe this image in 5 short factual bullet-style clauses, without speculation.' },
-            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
-          ],
-        },
-      ],
-    });
-    return result.choices[0]?.message?.content?.trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function transcribeMediaAttachment(item: AttachmentRef): Promise<string | undefined> {
-  const apiKey = String(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY ?? '').trim();
-  if (!apiKey) return undefined;
-  try {
-    const adapter = new VideoAdapter(apiKey);
-    const docs = await adapter.fetch(item.path);
-    const transcript = docs.map((doc) => doc.content.trim()).filter(Boolean).join(' ');
-    if (!transcript) return undefined;
-    return transcript.length <= 2200 ? transcript : `${transcript.slice(0, 2200).trimEnd()}...`;
-  } catch {
-    return undefined;
-  }
-}
-
-function inferMimeType(path: string, fallback = 'application/octet-stream'): string {
-  const lower = extname(path).toLowerCase();
-  if (['.png'].includes(lower)) return 'image/png';
-  if (['.jpg', '.jpeg'].includes(lower)) return 'image/jpeg';
-  if (['.webp'].includes(lower)) return 'image/webp';
-  if (['.gif'].includes(lower)) return 'image/gif';
-  if (['.mp4'].includes(lower)) return 'video/mp4';
-  if (['.mov'].includes(lower)) return 'video/quicktime';
-  if (['.webm'].includes(lower)) return 'video/webm';
-  if (['.mp3'].includes(lower)) return 'audio/mpeg';
-  if (['.wav'].includes(lower)) return 'audio/wav';
-  if (['.m4a'].includes(lower)) return 'audio/mp4';
-  if (['.ogg'].includes(lower)) return 'audio/ogg';
-  if (['.txt', '.md'].includes(lower)) return 'text/plain';
-  if (['.json'].includes(lower)) return 'application/json';
-  return fallback;
+  return attachments
+    .map((item) => {
+      const header = `[attachment:${item.type}] ${item.name}${item.processing_provider ? ` via ${item.processing_provider}` : ''}`;
+      if (item.processing_status === 'ready' && item.processing_summary) {
+        return `${header}\n${item.processing_summary}`;
+      }
+      if ((item.processing_status === 'unsupported' || item.processing_status === 'error') && item.processing_error) {
+        return `${header}\n${item.processing_error}`;
+      }
+      return `${header}\n${item.path}`;
+    })
+    .join('\n\n');
 }
 
 function renderTrainingPrepMarkdown(prep: TrainingPrepArtifact): string {
@@ -1098,6 +1020,7 @@ export class WorkbenchService {
 
     const { persona, soul } = this.loadPersonaAssets(conversation.persona_slug);
     const history = this.store.listMessages(conversationId);
+    const processedAttachments = await Promise.all(attachments.map((item) => enrichAttachment(item)));
     const userMessage: ConversationMessage = {
       id: crypto.randomUUID(),
       conversation_id: conversationId,
@@ -1108,7 +1031,7 @@ export class WorkbenchService {
       persona_dimensions: [],
       citation_items: [],
       writeback_candidate_ids: [],
-      attachments,
+      attachments: processedAttachments,
     };
     const nextHistory = [...history, userMessage];
     this.store.appendMessage(userMessage);

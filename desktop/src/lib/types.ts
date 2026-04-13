@@ -110,6 +110,11 @@ export interface AttachmentRef {
   path: string;
   mime?: string;
   size?: number;
+  processing_status?: 'pending' | 'ready' | 'unsupported' | 'error';
+  processing_summary?: string;
+  processing_provider?: string;
+  processing_error?: string;
+  processing_capability?: 'text_extract' | 'image_understanding' | 'transcription';
 }
 
 export interface ConversationMessage {

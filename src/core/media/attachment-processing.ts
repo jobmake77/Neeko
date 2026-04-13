@@ -18,6 +18,14 @@ export type AttachmentProcessingResult = {
   capability?: AttachmentCapability;
 };
 
+type GeminiFileResource = {
+  name?: string;
+  uri?: string;
+  mimeType?: string;
+  state?: string | { name?: string };
+  error?: { message?: string };
+};
+
 export async function enrichAttachment(item: AttachmentRef): Promise<AttachmentRef> {
   const result = await processAttachment(item);
   return {
@@ -58,7 +66,7 @@ export async function processAttachment(item: AttachmentRef): Promise<Attachment
 }
 
 async function processImageAttachment(item: AttachmentRef): Promise<AttachmentProcessingResult> {
-  const openaiKey = String(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY ?? '').trim();
+  const openaiKey = getConfiguredSecret('openaiApiKey', 'OPENAI_API_KEY');
   if (openaiKey) {
     try {
       const client = new OpenAI({ apiKey: openaiKey });
@@ -90,7 +98,7 @@ async function processImageAttachment(item: AttachmentRef): Promise<AttachmentPr
     }
   }
 
-  const geminiKey = String(settings.get('geminiApiKey') ?? process.env.GEMINI_API_KEY ?? '').trim();
+  const geminiKey = getConfiguredSecret('geminiApiKey', 'GEMINI_API_KEY');
   if (geminiKey) {
     try {
       process.env.GOOGLE_GENERATIVE_AI_API_KEY = geminiKey;
@@ -117,7 +125,7 @@ async function processImageAttachment(item: AttachmentRef): Promise<AttachmentPr
     }
   }
 
-  const kimiKey = String(settings.get('kimiApiKey') ?? process.env.KIMI_API_KEY ?? '').trim();
+  const kimiKey = getConfiguredSecret('kimiApiKey', 'KIMI_API_KEY');
   if (kimiKey) {
     return {
       status: 'unsupported',
@@ -137,7 +145,10 @@ async function processImageAttachment(item: AttachmentRef): Promise<AttachmentPr
 }
 
 async function processMediaAttachment(item: AttachmentRef): Promise<AttachmentProcessingResult> {
-  const openaiKey = String(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY ?? '').trim();
+  let openaiFallbackError: string | undefined;
+  let geminiFallbackError: string | undefined;
+
+  const openaiKey = getConfiguredSecret('openaiApiKey', 'OPENAI_API_KEY');
   if (openaiKey) {
     try {
       const adapter = new VideoAdapter(openaiKey);
@@ -154,28 +165,37 @@ async function processMediaAttachment(item: AttachmentRef): Promise<AttachmentPr
     } catch (error) {
       const message = String(error instanceof Error ? error.message : error);
       if (/404|not found/i.test(message)) {
-        return {
-          status: 'unsupported',
-          provider: 'openai',
-          capability: 'transcription',
-          error: '当前 OpenAI 兼容后端未提供 transcription 接口。',
-        };
+        openaiFallbackError = '当前 OpenAI 兼容后端未提供 transcription 接口。';
       }
     }
   }
 
-  const geminiKey = String(settings.get('geminiApiKey') ?? process.env.GEMINI_API_KEY ?? '').trim();
+  const geminiKey = getConfiguredSecret('geminiApiKey', 'GEMINI_API_KEY');
   if (geminiKey) {
-    return {
-      status: 'unsupported',
-      provider: 'gemini',
-      capability: 'transcription',
-      error: 'Gemini 转写接入位已预留，尚未完成文件上传链路。',
-    };
+    try {
+      const summary = await summarizeMediaWithGemini(item, geminiKey);
+      if (summary) {
+        return {
+          status: 'ready',
+          summary,
+          provider: 'gemini',
+          capability: 'transcription',
+        };
+      }
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error);
+      geminiFallbackError = message || 'Gemini 音视频处理失败。';
+      return {
+        status: 'error',
+        provider: 'gemini',
+        capability: 'transcription',
+        error: geminiFallbackError,
+      };
+    }
   }
 
-  const kimiKey = String(settings.get('kimiApiKey') ?? process.env.KIMI_API_KEY ?? '').trim();
-  if (kimiKey) {
+  const kimiKey = getConfiguredSecret('kimiApiKey', 'KIMI_API_KEY');
+  if (kimiKey && !geminiFallbackError) {
     return {
       status: 'unsupported',
       provider: 'kimi',
@@ -187,9 +207,10 @@ async function processMediaAttachment(item: AttachmentRef): Promise<AttachmentPr
   }
 
   return {
-    status: 'unsupported',
+    status: geminiFallbackError ? 'error' : 'unsupported',
+    provider: geminiFallbackError ? 'gemini' : (openaiFallbackError ? 'openai' : undefined),
     capability: 'transcription',
-    error: '未配置可用的音视频转写 provider。',
+    error: geminiFallbackError ?? openaiFallbackError ?? '未配置可用的音视频转写 provider。',
   };
 }
 
@@ -223,4 +244,212 @@ function inferMimeType(path: string, fallback = 'application/octet-stream'): str
   if (['.m4a'].includes(lower)) return 'audio/mp4';
   if (['.ogg'].includes(lower)) return 'audio/ogg';
   return fallback;
+}
+
+function getConfiguredSecret(settingKey: string, envKey: string): string {
+  const configured = String(settings.get(settingKey) ?? '').trim();
+  if (configured) return configured;
+  return String(process.env[envKey] ?? '').trim();
+}
+
+async function summarizeMediaWithGemini(item: AttachmentRef, apiKey: string): Promise<string> {
+  return retryGeminiMediaOperation(async () => {
+    const mimeType = item.mime ?? inferMimeType(item.path, item.type === 'audio' ? 'audio/mpeg' : 'video/mp4');
+    const file = await uploadGeminiFile(item.path, mimeType, apiKey);
+    if (!file.name || !file.uri) {
+      throw new Error('Gemini 未返回可用的文件引用。');
+    }
+
+    try {
+      const activeFile = await waitForGeminiFileActive(file.name, apiKey);
+      if (!activeFile.uri) {
+        throw new Error('Gemini 文件处理完成后缺少可用 URI。');
+      }
+      const prompt = item.type === 'audio'
+        ? '请用中文整理这段音频的可读转写。先给出尽量忠实的转写内容，再用两三句话总结重点。如果内容无法完全辨认，请明确标注不确定片段。'
+        : '请用中文整理这个视频的可读转写，并简要说明关键画面或事件。先给出尽量忠实的转写内容，再补充 2-3 句视频重点。';
+
+      const text = await generateGeminiMediaSummary(activeFile.uri, activeFile.mimeType ?? mimeType, prompt, apiKey);
+      return truncateText(text, 2200);
+    } finally {
+      await deleteGeminiFile(file.name, apiKey).catch(() => undefined);
+    }
+  });
+}
+
+async function uploadGeminiFile(path: string, mimeType: string, apiKey: string): Promise<GeminiFileResource> {
+  const bytes = readFileSync(path);
+  const startResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers: {
+      'X-Goog-Upload-Protocol': 'resumable',
+      'X-Goog-Upload-Command': 'start',
+      'X-Goog-Upload-Header-Content-Length': String(bytes.byteLength),
+      'X-Goog-Upload-Header-Content-Type': mimeType,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      file: {
+        display_name: path.split(/[\\/]/).pop() ?? 'media',
+      },
+    }),
+  });
+
+  if (!startResponse.ok) {
+    const payload = await startResponse.json().catch(() => ({}));
+    const message = extractGeminiErrorMessage(payload) ?? `Gemini upload start ${startResponse.status}`;
+    throw new Error(message);
+  }
+
+  const uploadUrl = startResponse.headers.get('x-goog-upload-url');
+  if (!uploadUrl) {
+    throw new Error('Gemini 未返回上传地址。');
+  }
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Length': String(bytes.byteLength),
+      'X-Goog-Upload-Offset': '0',
+      'X-Goog-Upload-Command': 'upload, finalize',
+    },
+    body: bytes,
+  });
+  const payload = await uploadResponse.json().catch(() => ({}));
+  if (!uploadResponse.ok) {
+    const message = extractGeminiErrorMessage(payload) ?? `Gemini upload finalize ${uploadResponse.status}`;
+    throw new Error(message);
+  }
+
+  return normalizeGeminiFile(payload);
+}
+
+async function waitForGeminiFileActive(name: string, apiKey: string): Promise<GeminiFileResource> {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${name}?key=${encodeURIComponent(apiKey)}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = extractGeminiErrorMessage(payload) ?? `Gemini file get ${response.status}`;
+      throw new Error(message);
+    }
+
+    const file = normalizeGeminiFile(payload);
+    const state = normalizeGeminiState(file.state);
+    if (state === 'ACTIVE') return file;
+    if (state === 'FAILED') {
+      throw new Error(file.error?.message ?? 'Gemini 文件处理失败。');
+    }
+    await sleep(2500);
+  }
+  throw new Error('Gemini 文件处理超时，请稍后重试。');
+}
+
+async function deleteGeminiFile(name: string | undefined, apiKey: string): Promise<void> {
+  if (!name) return;
+  await fetch(`https://generativelanguage.googleapis.com/v1beta/${name}?key=${encodeURIComponent(apiKey)}`, {
+    method: 'DELETE',
+  }).catch(() => undefined);
+}
+
+function normalizeGeminiFile(payload: unknown): GeminiFileResource {
+  const root = (payload && typeof payload === 'object' && 'file' in payload)
+    ? (payload as { file?: GeminiFileResource }).file
+    : payload as GeminiFileResource | undefined;
+  return root ?? {};
+}
+
+function normalizeGeminiState(state: GeminiFileResource['state']): string {
+  if (typeof state === 'string') return state.toUpperCase();
+  if (state && typeof state === 'object' && typeof state.name === 'string') return state.name.toUpperCase();
+  return '';
+}
+
+function extractGeminiText(payload: any): string {
+  return (payload?.candidates ?? [])
+    .flatMap((candidate: any) => candidate?.content?.parts ?? [])
+    .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function extractGeminiErrorMessage(payload: any): string | undefined {
+  return payload?.error?.message
+    ?? payload?.error?.status
+    ?? payload?.message;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryGeminiMediaOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const delays = [0, 2000, 5000];
+  let lastError: unknown;
+  for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    if (delays[attempt] > 0) {
+      await sleep(delays[attempt]);
+    }
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      const message = String(error instanceof Error ? error.message : error).toLowerCase();
+      if (!/high demand|rate limit|resource exhausted|429|503|overloaded|unavailable/.test(message)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Gemini 音视频处理失败。');
+}
+
+async function generateGeminiMediaSummary(fileUri: string, mimeType: string, prompt: string, apiKey: string): Promise<string> {
+  const models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  let lastError: unknown;
+
+  for (const model of models) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: prompt },
+                {
+                  file_data: {
+                    mime_type: mimeType,
+                    file_uri: fileUri,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = extractGeminiErrorMessage(payload) ?? `Gemini generateContent ${response.status}`;
+        throw new Error(message);
+      }
+
+      const text = extractGeminiText(payload).trim();
+      if (!text) {
+        throw new Error('Gemini 未返回可读的音视频内容。');
+      }
+      return text;
+    } catch (error) {
+      lastError = error;
+      const message = String(error instanceof Error ? error.message : error).toLowerCase();
+      if (!/high demand|rate limit|resource exhausted|429|503|overloaded|unavailable/.test(message)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Gemini 媒体生成失败。');
 }

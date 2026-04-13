@@ -150,7 +150,7 @@ const ZH: Record<string, string> = {
   capabilityImagePlannedDesc: '当前服务商的图片理解接入尚未完成',
   capabilityTranscriptionOpenaiDesc: '音频和视频会优先走转写链路',
   capabilityTranscriptionMissingDesc: '需要配置可用的转写服务后才能处理音频和视频',
-  capabilityTranscriptionGeminiDesc: 'Gemini 文件转写链路已预留，当前版本尚未接通',
+  capabilityTranscriptionGeminiDesc: '可使用 Gemini 处理本地音频和视频内容',
   capabilityTranscriptionKimiCodeDesc: '当前 Kimi Code key 不支持这条音视频转写链路',
   capabilityProviderHint: '当前聊天与培养共用这套默认模型配置',
 
@@ -322,7 +322,7 @@ const EN: Record<string, string> = {
   capabilityImagePlannedDesc: 'Image understanding is not wired for this provider yet',
   capabilityTranscriptionOpenaiDesc: 'Audio and video will use the transcription pipeline',
   capabilityTranscriptionMissingDesc: 'Configure a transcription-capable backend to process audio and video',
-  capabilityTranscriptionGeminiDesc: 'Gemini file transcription is reserved but not wired yet',
+  capabilityTranscriptionGeminiDesc: 'Can use Gemini to process local audio and video',
   capabilityTranscriptionKimiCodeDesc: 'Current Kimi Code key does not support this audio/video transcription path',
   capabilityProviderHint: 'Chat and cultivation use this default model configuration',
 

@@ -122,13 +122,13 @@ function ModelConfigSection() {
       return { key: 'capabilityImage', status: 'planned' as const, description: t('capabilityImagePlannedDesc') };
     })();
 
-    const transcriptionCapability = (() => {
-      if (provider === 'openai' && hasKey) {
-        return { status: 'ready' as const, description: t('capabilityTranscriptionOpenaiDesc') };
-      }
-      if (provider === 'gemini' && hasKey) {
-        return { status: 'planned' as const, description: t('capabilityTranscriptionGeminiDesc') };
-      }
+      const transcriptionCapability = (() => {
+        if (provider === 'openai' && hasKey) {
+          return { status: 'ready' as const, description: t('capabilityTranscriptionOpenaiDesc') };
+        }
+        if (provider === 'gemini' && hasKey) {
+          return { status: 'ready' as const, description: t('capabilityTranscriptionGeminiDesc') };
+        }
       if (provider === 'kimi' && isKimiCodeKey) {
         return { status: 'partial' as const, description: t('capabilityTranscriptionKimiCodeDesc') };
       }

@@ -13,6 +13,7 @@ import { Soul, SoulSchema } from '../models/soul.js';
 import { EvidenceItem } from '../models/evidence.js';
 import { loadSkillLibrary } from '../skills/library.js';
 import { RawDocument } from '../models/memory.js';
+import { SoulRenderer } from '../soul/renderer.js';
 import {
   buildChatEvidenceBatchFromFile,
   buildStandaloneEvidenceBatch,
@@ -449,19 +450,112 @@ function readPreviewFromPath(path?: string, maxChars = 900): string | undefined 
   }
 }
 
-async function buildAttachmentContext(attachments: AttachmentRef[]): Promise<string> {
-  return attachments
+async function buildAttachmentPriorityContext(attachments: AttachmentRef[]): Promise<string> {
+  if (!attachments.length) return '';
+
+  const readyItems = attachments
+    .filter((item) => item.processing_status === 'ready' && item.processing_summary)
     .map((item) => {
-      const header = `[attachment:${item.type}] ${item.name}${item.processing_provider ? ` via ${item.processing_provider}` : ''}`;
-      if (item.processing_status === 'ready' && item.processing_summary) {
-        return `${header}\n${item.processing_summary}`;
-      }
-      if ((item.processing_status === 'unsupported' || item.processing_status === 'error') && item.processing_error) {
-        return `${header}\n${item.processing_error}`;
-      }
-      return `${header}\n${item.path}`;
-    })
-    .join('\n\n');
+      const provider = item.processing_provider ? ` via ${item.processing_provider}` : '';
+      return `- [${item.type}] ${item.name}${provider}\n${item.processing_summary}`;
+    });
+
+  const blockedItems = attachments
+    .filter((item) => item.processing_status === 'error' || item.processing_status === 'unsupported')
+    .map((item) => `- [${item.type}] ${item.name}: ${item.processing_error ?? '附件当前不可用。'}`);
+
+  const sections: string[] = [
+    'Current-turn attachment context has higher priority than retrieved memories.',
+    'If the user asks about attached files, answer from the attachment facts first, then keep the persona tone and style.',
+  ];
+
+  if (readyItems.length > 0) {
+    sections.push('Attachment facts:\n' + readyItems.join('\n\n'));
+  }
+  if (blockedItems.length > 0) {
+    sections.push('Attachment processing issues:\n' + blockedItems.join('\n'));
+  }
+
+  return sections.join('\n\n');
+}
+
+function buildAttachmentUserMessage(message: string, attachments: AttachmentRef[]): string {
+  const readyItems = attachments
+    .filter((item) => item.processing_status === 'ready' && item.processing_summary)
+    .map((item) => `- [${item.type}] ${item.name}\n${item.processing_summary}`);
+
+  if (readyItems.length === 0) return message;
+
+  return [
+    'You must answer the user from the attached-file facts first.',
+    'Only after grounding the reply in the attachments should you preserve persona tone and wording style.',
+    '',
+    'Attached-file facts:',
+    readyItems.join('\n\n'),
+    '',
+    `User request: ${message}`,
+  ].join('\n');
+}
+
+function hasReadyAttachmentFacts(attachments: AttachmentRef[]): boolean {
+  return attachments.some((item) => item.processing_status === 'ready' && item.processing_summary);
+}
+
+function getConfiguredSecret(settingKey: 'geminiApiKey'): string {
+  const configured = String(settings.get(settingKey) ?? '').trim();
+  if (configured) return configured;
+  return String(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? '').trim();
+}
+
+async function generateGeminiAttachmentReply(
+  soul: Soul,
+  message: string,
+  attachments: AttachmentRef[],
+  history: ConversationMessage[],
+): Promise<string | null> {
+  const geminiKey = getConfiguredSecret('geminiApiKey');
+  if (!geminiKey) return null;
+
+  const renderer = new SoulRenderer();
+  const attachmentPriorityContext = await buildAttachmentPriorityContext(attachments);
+  const recentHistory = history
+    .slice(-4)
+    .map((item) => `${item.role === 'assistant' ? 'Assistant' : 'User'}: ${item.content}`)
+    .join('\n');
+
+  const prompt = [
+    renderer.renderCompact(soul),
+    attachmentPriorityContext,
+    'Respond in the persona voice, but ground the answer in the attachment facts first.',
+    recentHistory ? `Recent conversation:\n${recentHistory}` : '',
+    `User request: ${message}`,
+  ].filter(Boolean).join('\n\n');
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [{ text: prompt }],
+        },
+      ],
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return null;
+  }
+  const text = (payload?.candidates ?? [])
+    .flatMap((candidate: any) => candidate?.content?.parts ?? [])
+    .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  return text || null;
 }
 
 function renderTrainingPrepMarkdown(prep: TrainingPrepArtifact): string {
@@ -2032,6 +2126,22 @@ export class WorkbenchService {
     soul: Soul,
     messages: ConversationMessage[]
   ): Promise<PersonaResponseMeta> {
+    const lastMessage = messages[messages.length - 1];
+    const readyAttachments = lastMessage?.attachments ?? [];
+    const activeProvider = String(settings.get('activeProvider') ?? '').trim().toLowerCase();
+    if (activeProvider === 'gemini' && hasReadyAttachmentFacts(readyAttachments)) {
+      const directReply = await generateGeminiAttachmentReply(soul, lastMessage?.content ?? '', readyAttachments, messages.slice(0, -1));
+      if (directReply) {
+        return {
+          text: directReply,
+          triggeredSkills: [],
+          normalizedQuery: lastMessage?.content ?? '',
+          retrievedMemories: [],
+          personaDimensions: [],
+        };
+      }
+    }
+
     const store = this.createMemoryStore();
     try {
       await store.ensureCollection(persona.memory_collection);
@@ -2041,11 +2151,13 @@ export class WorkbenchService {
     const retriever = new MemoryRetriever(store);
     const skillLibrary = loadSkillLibrary(settings.getPersonaDir(persona.slug), persona.slug);
     const agent = new PersonaAgent(soul, retriever, persona.memory_collection, skillLibrary);
-    const lastMessage = messages[messages.length - 1];
-    const attachmentContext = await buildAttachmentContext(lastMessage?.attachments ?? []);
-    const userMessage = `${lastMessage?.content ?? ''}${attachmentContext ? `\n\nAttached context:\n${attachmentContext}` : ''}`;
+    const attachmentPriorityContext = await buildAttachmentPriorityContext(lastMessage?.attachments ?? []);
+    const userMessage = buildAttachmentUserMessage(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const history = messages.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'assistant' as const : 'user' as const, content: item.content }));
-    const result = await agent.respondWithMeta(userMessage, history);
+    const result = await agent.respondWithMeta(userMessage, history, {
+      priorityContext: attachmentPriorityContext || undefined,
+      memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? []) ? 0 : undefined,
+    });
     return {
       text: result.text,
       triggeredSkills: result.triggeredSkills,

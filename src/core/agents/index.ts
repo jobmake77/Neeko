@@ -124,6 +124,7 @@ export class PersonaAgent {
       compactPrompt?: boolean;
       memoryLimit?: number;
       memoryMaxChars?: number;
+      priorityContext?: string;
     } = {}
   ): Promise<string> {
     const result = await this.respondWithMeta(userMessage, conversationHistory, options);
@@ -140,6 +141,7 @@ export class PersonaAgent {
       compactPrompt?: boolean;
       memoryLimit?: number;
       memoryMaxChars?: number;
+      priorityContext?: string;
     } = {}
   ): Promise<{
     text: string;
@@ -150,17 +152,21 @@ export class PersonaAgent {
   }> {
     const skillSelection = selectTriggeredSkillsForQuery(this.skillLibrary, userMessage, 2);
     const query = skillSelection.cleanQuery;
+    const memoryLimit = options.memoryLimit ?? 8;
 
     // RAG: retrieve relevant memories
-    const memories = await this.retriever.retrieve(this.collection, query, {
-      limit: options.memoryLimit ?? 8,
-      minConfidence: 0.35,
-    });
+    const memories = memoryLimit <= 0
+      ? []
+      : await this.retriever.retrieve(this.collection, query, {
+          limit: memoryLimit,
+          minConfidence: 0.35,
+        });
 
     const memoryContext = this.retriever.formatContext(memories, options.memoryMaxChars ?? 3000);
     const skillContext = skillSelection.context;
     const soulPrompt = options.compactPrompt ? this.renderer.renderCompact(this.soul) : this.renderer.render(this.soul);
     const systemPrompt = soulPrompt +
+      (options.priorityContext ? `\n\n${options.priorityContext}` : '') +
       (memoryContext ? `\n\n${memoryContext}` : '') +
       (skillContext ? `\n\n${skillContext}` : '');
 

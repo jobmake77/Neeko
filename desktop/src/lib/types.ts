@@ -173,6 +173,11 @@ export interface RuntimeModelConfig {
   api_keys: Partial<Record<'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek', string>>;
 }
 
+export interface ChatModelOverride {
+  provider: RuntimeModelConfig['provider'];
+  model: string;
+}
+
 export interface RuntimeSettingsPayload {
   default_training_profile?: string;
   default_input_routing_strategy?: string;

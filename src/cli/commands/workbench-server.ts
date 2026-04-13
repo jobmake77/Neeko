@@ -381,7 +381,13 @@ export async function cmdWorkbenchServer(
         const bundle = await service.sendMessage(
           decodeURIComponent(conversationMessageMatch[1]),
           message,
-          attachments
+          attachments,
+          body.model_override && typeof body.model_override === 'object'
+            ? {
+                provider: getString((body.model_override as Record<string, unknown>).provider) as any,
+                model: getString((body.model_override as Record<string, unknown>).model),
+              }
+            : undefined,
         );
         writeJson(res, 200, bundle);
         return;

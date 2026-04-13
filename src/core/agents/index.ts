@@ -1,7 +1,7 @@
 import { generateText, generateObject } from 'ai';
 import { z } from 'zod';
 import { Soul } from '../models/soul.js';
-import { resolveModel } from '../../config/model.js';
+import { resolveModel, resolveModelForOverride, type ModelRuntimeOverride, type ProviderName } from '../../config/model.js';
 import { settings } from '../../config/settings.js';
 import { SoulRenderer } from '../soul/renderer.js';
 import { MemoryRetriever } from '../memory/retriever.js';
@@ -123,6 +123,7 @@ async function generateTextWithGeminiDirect(options: {
   systemPrompt: string;
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
   userMessage: string;
+  model?: string;
 }): Promise<string> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
@@ -140,7 +141,10 @@ async function generateTextWithGeminiDirect(options: {
     },
   ];
 
-  const models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  const requestedModel = String(options.model || '').trim();
+  const models = requestedModel
+    ? [requestedModel, ...(requestedModel === 'gemini-2.5-flash' ? ['gemini-2.5-flash-lite'] : [])]
+    : ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
   let lastError: unknown;
   for (const model of models) {
     try {
@@ -184,8 +188,6 @@ async function generateTextWithGeminiDirect(options: {
 
 export class PersonaAgent {
   private renderer = new SoulRenderer();
-  // Use cheaper model for persona conversations
-  private model = resolveModel();
 
   constructor(
     private readonly soul: Soul,
@@ -205,6 +207,7 @@ export class PersonaAgent {
       memoryLimit?: number;
       memoryMaxChars?: number;
       priorityContext?: string;
+      modelOverride?: ModelRuntimeOverride;
     } = {}
   ): Promise<string> {
     const result = await this.respondWithMeta(userMessage, conversationHistory, options);
@@ -222,6 +225,7 @@ export class PersonaAgent {
       memoryLimit?: number;
       memoryMaxChars?: number;
       priorityContext?: string;
+      modelOverride?: ModelRuntimeOverride;
     } = {}
   ): Promise<{
     text: string;
@@ -251,19 +255,21 @@ export class PersonaAgent {
       (skillContext ? `\n\n${skillContext}` : '');
 
     try {
-      const text = getActiveProviderName() === 'gemini'
+      const effectiveProvider = (options.modelOverride?.provider ?? getActiveProviderName()) as ProviderName | string;
+      const text = effectiveProvider === 'gemini'
         ? await withRetry(
             () => generateTextWithGeminiDirect({
               systemPrompt,
               conversationHistory,
               userMessage: query,
+              model: options.modelOverride?.model,
             }),
             { label: 'persona respond gemini', timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
           )
         : (await withRetry(
             () =>
               generateText({
-                model: this.model,
+                model: resolveModelForOverride(options.modelOverride),
                 system: systemPrompt,
                 messages: [
                   ...conversationHistory,

@@ -6,6 +6,10 @@ import { settings } from './settings.js';
 import type { LanguageModelV1 } from 'ai';
 
 export type ProviderName = 'claude' | 'openai' | 'kimi' | 'gemini' | 'deepseek';
+export interface ModelRuntimeOverride {
+  provider?: ProviderName;
+  model?: string;
+}
 
 const DEFAULT_MODELS: Record<ProviderName, string> = {
   claude: 'claude-sonnet-4-6',
@@ -14,6 +18,10 @@ const DEFAULT_MODELS: Record<ProviderName, string> = {
   gemini: 'gemini-1.5-flash',
   deepseek: 'deepseek-chat',
 };
+
+export function getDefaultModelForProvider(provider: ProviderName): string {
+  return DEFAULT_MODELS[provider];
+}
 
 export function resolvePreferredProviderName(): ProviderName | undefined {
   const cfg = settings.getAll();
@@ -151,4 +159,60 @@ export function resolveModel(): LanguageModelV1 {
   throw new Error(
     '未配置任何 LLM API Key。请先在设置页填写至少一个模型的 API Key。'
   );
+}
+
+export function resolveModelForOverride(input?: ModelRuntimeOverride): LanguageModelV1 {
+  if (!input?.provider) {
+    return resolveModel();
+  }
+
+  const provider = input.provider;
+  const model = String(input.model || '').trim() || DEFAULT_MODELS[provider];
+  const cfg = settings.getAll();
+
+  if (provider === 'claude') {
+    const key = String(cfg.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '').trim();
+    if (!key) throw new Error('Claude API key is missing.');
+    process.env.ANTHROPIC_API_KEY = key;
+    return anthropic(model) as unknown as LanguageModelV1;
+  }
+
+  if (provider === 'openai') {
+    const key = String(cfg.openaiApiKey || process.env.OPENAI_API_KEY || '').trim();
+    if (!key) throw new Error('OpenAI API key is missing.');
+    process.env.OPENAI_API_KEY = key;
+    return openai(model) as unknown as LanguageModelV1;
+  }
+
+  if (provider === 'kimi') {
+    const key = String(cfg.kimiApiKey || process.env.KIMI_API_KEY || '').trim();
+    if (!key) throw new Error('Kimi API key is missing.');
+    if (/^sk-kimi-/i.test(key)) {
+      const kimiCoding = createAnthropic({
+        baseURL: 'https://api.kimi.com/coding/v1',
+        apiKey: key,
+      });
+      return kimiCoding(model as any) as unknown as LanguageModelV1;
+    }
+    const kimiOpenAI = createOpenAI({
+      baseURL: 'https://api.moonshot.cn/v1',
+      apiKey: key,
+    });
+    return kimiOpenAI(model) as unknown as LanguageModelV1;
+  }
+
+  if (provider === 'gemini') {
+    const key = String(cfg.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || '').trim();
+    if (!key) throw new Error('Gemini API key is missing.');
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = key;
+    return google(model) as unknown as LanguageModelV1;
+  }
+
+  const key = String(cfg.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim();
+  if (!key) throw new Error('DeepSeek API key is missing.');
+  const deepseek = createOpenAI({
+    baseURL: 'https://api.deepseek.com/v1',
+    apiKey: key,
+  });
+  return deepseek(model) as unknown as LanguageModelV1;
 }

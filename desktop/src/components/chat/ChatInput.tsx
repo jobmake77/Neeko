@@ -3,8 +3,25 @@ import { Send, Paperclip, X, Image as ImageIcon, Video, FileAudio, FileText, Fil
 import { useChatStore } from '@/stores/chat';
 import { useAppStore } from '@/stores/app';
 import { t } from '@/lib/i18n';
-import type { AttachmentRef } from '@/lib/types';
+import type { AttachmentRef, ChatModelOverride, RuntimeModelConfig } from '@/lib/types';
 import { pickFiles } from '@/lib/tauri';
+import { getRuntimeModelConfig } from '@/lib/api';
+
+const MODEL_OPTIONS: Record<RuntimeModelConfig['provider'], string[]> = {
+  claude: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  openai: ['gpt-4o', 'gpt-4o-mini', 'o3'],
+  kimi: ['kimi-for-coding', 'moonshot-v1-128k', 'moonshot-v1-32k', 'moonshot-v1-8k'],
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+};
+
+const PROVIDER_LABELS: Record<RuntimeModelConfig['provider'], string> = {
+  claude: 'Claude',
+  openai: 'OpenAI',
+  kimi: 'Kimi',
+  gemini: 'Gemini',
+  deepseek: 'DeepSeek',
+};
 
 export function ChatInput() {
   const { sending, sendMessage } = useChatStore();
@@ -12,12 +29,33 @@ export function ChatInput() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const valueRef = useRef('');
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
+  const [availableProviders, setAvailableProviders] = useState<RuntimeModelConfig['provider'][]>([]);
+  const [chatModel, setChatModel] = useState<ChatModelOverride | null>(null);
 
   // Auto-focus when chat view is active
   useEffect(() => {
     if (view === 'chat') {
       textareaRef.current?.focus();
     }
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== 'chat') return;
+    void getRuntimeModelConfig().then((config) => {
+      const providers = (Object.entries(config.api_keys) as Array<[RuntimeModelConfig['provider'], string | undefined]>)
+        .filter(([, key]) => Boolean(String(key ?? '').trim()))
+        .map(([provider]) => provider);
+      setAvailableProviders(providers);
+
+      const savedProvider = localStorage.getItem('neeko.chat.provider') as RuntimeModelConfig['provider'] | null;
+      const savedModel = localStorage.getItem('neeko.chat.model');
+      const provider = savedProvider && providers.includes(savedProvider) ? savedProvider : (providers[0] ?? config.provider);
+      const modelOptions = MODEL_OPTIONS[provider] ?? [];
+      const model = savedModel && modelOptions.includes(savedModel) ? savedModel : (provider === config.provider ? config.model : modelOptions[0]);
+      if (provider && model) {
+        setChatModel({ provider, model });
+      }
+    }).catch(() => undefined);
   }, [view]);
 
   const resize = () => {
@@ -46,9 +84,9 @@ export function ChatInput() {
     valueRef.current = '';
     const currentAttachments = [...attachments];
     setAttachments([]);
-    await sendMessage(val, currentAttachments);
+    await sendMessage(val, currentAttachments, chatModel ?? undefined);
     textareaRef.current?.focus();
-  }, [attachments, sending, sendMessage]);
+  }, [attachments, chatModel, sending, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -73,6 +111,22 @@ export function ChatInput() {
         };
       }),
     ]);
+  }
+
+  function handleProviderChange(provider: RuntimeModelConfig['provider']) {
+    const model = MODEL_OPTIONS[provider][0];
+    const next = { provider, model };
+    setChatModel(next);
+    localStorage.setItem('neeko.chat.provider', provider);
+    localStorage.setItem('neeko.chat.model', model);
+  }
+
+  function handleModelChange(model: string) {
+    if (!chatModel) return;
+    const next = { ...chatModel, model };
+    setChatModel(next);
+    localStorage.setItem('neeko.chat.provider', next.provider);
+    localStorage.setItem('neeko.chat.model', next.model);
   }
 
   return (
@@ -199,13 +253,68 @@ export function ChatInput() {
       </div>
       <div
         style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          marginTop: 8,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', flexShrink: 0 }}>
+            {t('modelForThisChat')}
+          </span>
+          {availableProviders.length > 0 && chatModel ? (
+            <>
+              <select
+                className="input"
+                value={chatModel.provider}
+                onChange={(e) => handleProviderChange(e.target.value as RuntimeModelConfig['provider'])}
+                style={{ width: 108, fontSize: 12, padding: '5px 8px' }}
+              >
+                {availableProviders.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {PROVIDER_LABELS[provider]}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="input"
+                value={chatModel.model}
+                onChange={(e) => handleModelChange(e.target.value)}
+                style={{ width: 168, fontSize: 12, padding: '5px 8px' }}
+              >
+                {(MODEL_OPTIONS[chatModel.provider] ?? []).map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </>
+          ) : (
+            <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{t('noChatModel')}</span>
+          )}
+        </div>
+        <div
+          style={{
+            textAlign: 'right',
+            fontSize: 11,
+            color: 'rgb(var(--text-tertiary))',
+            flexShrink: 0,
+          }}
+        >
+          {t('sendHint')}
+        </div>
+      </div>
+      <div
+        style={{
           textAlign: 'center',
           fontSize: 11,
           color: 'rgb(var(--text-tertiary))',
-          marginTop: 6,
+          marginTop: 4,
         }}
       >
-        {t('sendHint')}
+        {t('chatModel')}
       </div>
     </div>
   );

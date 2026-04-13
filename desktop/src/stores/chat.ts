@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AttachmentRef, Conversation, ConversationMessage } from '@/lib/types';
+import type { AttachmentRef, ChatModelOverride, Conversation, ConversationMessage } from '@/lib/types';
 import * as api from '@/lib/api';
 
 interface ChatState {
@@ -17,7 +17,7 @@ interface ChatState {
   createThread: (title?: string) => Promise<void>;
   deleteThread: (id: string) => Promise<void>;
   renameThread: (id: string, title: string) => Promise<void>;
-  sendMessage: (content: string, attachments?: AttachmentRef[]) => Promise<void>;
+  sendMessage: (content: string, attachments?: AttachmentRef[], modelOverride?: ChatModelOverride) => Promise<void>;
   appendOptimistic: (msg: ConversationMessage) => void;
 }
 
@@ -89,7 +89,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
-  sendMessage: async (content, attachments = []) => {
+  sendMessage: async (content, attachments = [], modelOverride) => {
     const { threadId, personaSlug } = get();
     if (!personaSlug) return;
 
@@ -113,7 +113,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ messages: [...s.messages, optimisticUser], sending: true }));
 
     try {
-      const { message, reply } = await api.sendMessage(tid, content, attachments);
+      const { message, reply } = await api.sendMessage(tid, content, attachments, modelOverride);
       set((s) => ({
         messages: [
           ...s.messages.filter((m) => m.id !== optimisticUser.id),

@@ -54,6 +54,7 @@ import {
 import { classifyFailure } from '../training/failure-loop.js';
 import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
+import type { ProviderName } from '../../config/model.js';
 
 export interface WorkbenchCreateInput {
   target?: string;
@@ -66,6 +67,11 @@ export interface WorkbenchCreateInput {
   trainingSeedMode?: string;
   kimiStabilityMode?: string;
   slug?: string;
+}
+
+export interface ChatModelOverride {
+  provider?: ProviderName;
+  model?: string;
 }
 
 export interface PersonaConfigInput {
@@ -512,6 +518,7 @@ async function generateGeminiAttachmentReply(
   message: string,
   attachments: AttachmentRef[],
   history: ConversationMessage[],
+  model?: string,
 ): Promise<string | null> {
   const geminiKey = getConfiguredSecret('geminiApiKey');
   if (!geminiKey) return null;
@@ -531,7 +538,8 @@ async function generateGeminiAttachmentReply(
     `User request: ${message}`,
   ].filter(Boolean).join('\n\n');
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`, {
+  const targetModel = String(model || '').trim() || 'gemini-2.5-flash';
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${encodeURIComponent(geminiKey)}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1108,7 +1116,12 @@ export class WorkbenchService {
     });
   }
 
-  async sendMessage(conversationId: string, message: string, attachments: AttachmentRef[] = []): Promise<ConversationBundle> {
+  async sendMessage(
+    conversationId: string,
+    message: string,
+    attachments: AttachmentRef[] = [],
+    modelOverride?: ChatModelOverride,
+  ): Promise<ConversationBundle> {
     const conversation = this.store.getConversation(conversationId);
     if (!conversation) throw new Error(`Conversation "${conversationId}" not found.`);
 
@@ -1134,7 +1147,7 @@ export class WorkbenchService {
       conversation.title = inferConversationTitle(message);
     }
 
-    const response = await this.generateReply(persona, soul, nextHistory);
+    const response = await this.generateReply(persona, soul, nextHistory, modelOverride);
     const citations = response.retrievedMemories.map((item) => this.toCitation(item));
     const assistantMessageId = crypto.randomUUID();
     const candidates = this.buildMemoryCandidates(
@@ -2124,13 +2137,20 @@ export class WorkbenchService {
   private async generateReply(
     persona: Persona,
     soul: Soul,
-    messages: ConversationMessage[]
+    messages: ConversationMessage[],
+    modelOverride?: ChatModelOverride,
   ): Promise<PersonaResponseMeta> {
     const lastMessage = messages[messages.length - 1];
     const readyAttachments = lastMessage?.attachments ?? [];
-    const activeProvider = String(settings.get('activeProvider') ?? '').trim().toLowerCase();
+    const activeProvider = String(modelOverride?.provider ?? settings.get('activeProvider') ?? '').trim().toLowerCase();
     if (activeProvider === 'gemini' && hasReadyAttachmentFacts(readyAttachments)) {
-      const directReply = await generateGeminiAttachmentReply(soul, lastMessage?.content ?? '', readyAttachments, messages.slice(0, -1));
+      const directReply = await generateGeminiAttachmentReply(
+        soul,
+        lastMessage?.content ?? '',
+        readyAttachments,
+        messages.slice(0, -1),
+        modelOverride?.model,
+      );
       if (directReply) {
         return {
           text: directReply,
@@ -2157,6 +2177,7 @@ export class WorkbenchService {
     const result = await agent.respondWithMeta(userMessage, history, {
       priorityContext: attachmentPriorityContext || undefined,
       memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? []) ? 0 : undefined,
+      modelOverride,
     });
     return {
       text: result.text,

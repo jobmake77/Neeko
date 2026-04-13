@@ -14,6 +14,7 @@ import type {
   HealthStatus,
   RuntimeModelConfig,
   RuntimeSettingsPayload,
+  ChatModelOverride,
 } from './types';
 
 let _baseUrl = localStorage.getItem('neeko.apiBaseUrl') || 'http://127.0.0.1:4310';
@@ -176,10 +177,11 @@ export async function sendMessage(
   conversationId: string,
   content: string,
   attachments: AttachmentRef[] = [],
+  modelOverride?: ChatModelOverride,
 ): Promise<{ message: ConversationMessage; reply: ConversationMessage }> {
   const bundle = await request<ConversationBundle>(`/api/conversations/${conversationId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ message: content, attachments }),
+    body: JSON.stringify({ message: content, attachments, model_override: modelOverride }),
   });
   const msgs = bundle.messages;
   const userMsg = [...msgs].reverse().find((m) => m.role === 'user');

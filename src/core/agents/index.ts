@@ -61,6 +61,10 @@ async function withRetry<T>(
 function shouldRetryProviderError(error: unknown): boolean {
   const message = String(error ?? '').toLowerCase();
   return (
+    message.includes('quota exceeded') ||
+    message.includes('quota') ||
+    message.includes('resource exhausted') ||
+    message.includes('high demand') ||
     message.includes('timeout') ||
     message.includes('timed out') ||
     message.includes('connection error') ||

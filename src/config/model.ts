@@ -104,11 +104,19 @@ export function resolvePreferredProviderName(role: ModelRuntimeRole = 'general')
 
 function getProviderResolutionContext(role: ModelRuntimeRole = 'general') {
   const cfg = settings.getAll();
-  const anthropicKey = String(cfg.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '').trim();
-  const openaiKey = String(cfg.openaiApiKey || process.env.OPENAI_API_KEY || '').trim();
-  const kimiKey = String(cfg.kimiApiKey || process.env.KIMI_API_KEY || '').trim();
-  const geminiKey = String(cfg.geminiApiKey || process.env.GEMINI_API_KEY || '').trim();
-  const deepseekKey = String(cfg.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim();
+  const configuredKeys = {
+    anthropic: String(cfg.anthropicApiKey || '').trim(),
+    openai: String(cfg.openaiApiKey || '').trim(),
+    kimi: String(cfg.kimiApiKey || '').trim(),
+    gemini: String(cfg.geminiApiKey || '').trim(),
+    deepseek: String(cfg.deepseekApiKey || '').trim(),
+  };
+  const hasExplicitConfiguredKey = Object.values(configuredKeys).some(Boolean);
+  const anthropicKey = configuredKeys.anthropic || (!hasExplicitConfiguredKey ? String(process.env.ANTHROPIC_API_KEY || '').trim() : '');
+  const openaiKey = configuredKeys.openai || (!hasExplicitConfiguredKey ? String(process.env.OPENAI_API_KEY || '').trim() : '');
+  const kimiKey = configuredKeys.kimi || (!hasExplicitConfiguredKey ? String(process.env.KIMI_API_KEY || '').trim() : '');
+  const geminiKey = configuredKeys.gemini || (!hasExplicitConfiguredKey ? String(process.env.GEMINI_API_KEY || '').trim() : '');
+  const deepseekKey = configuredKeys.deepseek || (!hasExplicitConfiguredKey ? String(process.env.DEEPSEEK_API_KEY || '').trim() : '');
   const preferred = resolvePreferredProviderName(role);
   const rolePreference = getRolePreference(role);
   const rawDefaultModel = String(rolePreference.model || cfg.defaultModel || '').trim();

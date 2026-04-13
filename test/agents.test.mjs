@@ -34,6 +34,8 @@ test('stabilizeCoverageScore limits single-round swings', () => {
 test('shouldRetryProviderError identifies transient provider failures', () => {
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error('503 Service Unavailable')), true);
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error('rate limit exceeded')), true);
+  assert.equal(__agentsTestables.shouldRetryProviderError(new Error('Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests')), true);
+  assert.equal(__agentsTestables.shouldRetryProviderError(new Error('resource exhausted while generating transcript')), true);
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error('schema mismatch')), false);
 });
 

@@ -104,7 +104,7 @@ function SourceEditor({
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {source.type === 'social' ? (
           <>
             <input
@@ -135,12 +135,13 @@ function SourceEditor({
         ) : (
           <>
             {source.mode === 'local_file' ? (
-              <div style={{ display: 'flex', gap: 8, gridColumn: '1 / span 2' }}>
+              <div style={{ display: 'flex', gap: 8, gridColumn: '1 / -1', flexWrap: 'wrap' }}>
                 <input
                   className="input"
                   value={source.local_path ?? ''}
                   onChange={(e) => onChange({ ...source, local_path: e.target.value })}
                   placeholder="选择真实本地路径"
+                  style={{ minWidth: 0, flex: '1 1 280px' }}
                 />
                 <button className="btn btn-secondary" onClick={() => void pickLocalPath('local_path')}>
                   <FolderOpen size={14} /> 选择
@@ -152,7 +153,7 @@ function SourceEditor({
                 value={source.handle_or_url ?? ''}
                 onChange={(e) => onChange({ ...source, handle_or_url: e.target.value })}
                 placeholder={source.mode === 'channel_url' ? '频道链接' : source.mode === 'single_url' ? '视频链接' : '远程链接'}
-                style={{ gridColumn: '1 / span 2' }}
+                style={{ gridColumn: '1 / -1' }}
               />
             )}
             <input
@@ -168,6 +169,7 @@ function SourceEditor({
                 value={source.manifest_path ?? ''}
                 onChange={(e) => onChange({ ...source, manifest_path: e.target.value })}
                 placeholder="target manifest 路径"
+                style={{ minWidth: 0, flex: '1 1 220px' }}
               />
               <button className="btn btn-secondary" onClick={() => void pickLocalPath('manifest_path')}>
                 <FolderOpen size={14} />
@@ -305,132 +307,141 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
             onClick={onClose}
             style={{ position: 'fixed', inset: 0, background: 'rgb(0 0 0 / 0.46)', zIndex: 200 }}
           />
-          <motion.div
-            initial={{ opacity: 0, y: 12, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 12, scale: 0.98 }}
+          <div
             style={{
               position: 'fixed',
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: 860,
-              maxWidth: 'calc(100vw - 48px)',
-              maxHeight: '84vh',
-              overflow: 'hidden',
-              background: 'rgb(var(--bg-card))',
-              border: '1px solid rgb(var(--border))',
-              borderRadius: 14,
-              boxShadow: '0 24px 60px rgb(0 0 0 / 0.24)',
               zIndex: 201,
               display: 'flex',
-              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              inset: 0,
+              padding: 24,
+              pointerEvents: 'none',
             }}
           >
-            <div style={{ padding: '18px 20px', borderBottom: '1px solid rgb(var(--border-light))', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontSize: 16, fontWeight: 700 }}>{mode === 'create' ? '新建人格' : '编辑人格'}</div>
-                <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>统一素材池；保存后后台继续同步与培养。</div>
-              </div>
-              <button className="btn btn-icon" onClick={onClose}><X size={16} /></button>
-            </div>
-
-            <div style={{ padding: 20, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={t('personaName')} />
-
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>素材池</div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('social')])}><Plus size={14} />账号</button>
-                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('chat_file')])}><Plus size={14} />聊天</button>
-                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('video_file')])}><Plus size={14} />视频</button>
-                  <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('article')])}><Plus size={14} />网页</button>
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              style={{
+                width: 860,
+                maxWidth: 'min(860px, calc(100vw - 48px))',
+                maxHeight: 'min(880px, calc(100vh - 48px))',
+                overflow: 'hidden',
+                background: 'rgb(var(--bg-card))',
+                border: '1px solid rgb(var(--border))',
+                borderRadius: 14,
+                boxShadow: '0 24px 60px rgb(0 0 0 / 0.24)',
+                display: 'flex',
+                flexDirection: 'column',
+                pointerEvents: 'auto',
+              }}
+            >
+              <div style={{ padding: '18px 20px', borderBottom: '1px solid rgb(var(--border-light))', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 16, fontWeight: 700 }}>{mode === 'create' ? '新建人格' : '编辑人格'}</div>
+                  <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>统一素材池；保存后后台继续同步与培养。</div>
                 </div>
+                <button className="btn btn-icon" onClick={onClose}><X size={16} /></button>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {sources.map((source, index) => (
-                  <SourceEditor
-                    key={source.id}
-                    source={source}
-                    onChange={(next) => setSources((prev) => prev.map((item, i) => i === index ? next : item))}
-                    onRemove={() => setSources((prev) => prev.filter((item) => item.id !== source.id))}
-                  />
-                ))}
-              </div>
+              <div style={{ padding: 20, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={t('personaName')} />
 
-              <div className="card" style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>自动检查更新</div>
-                  <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>远程来源按固定周期检查新增内容，发现增量后继续培养。</div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input type="checkbox" checked={policy.auto_check_remote} onChange={(e) => setPolicy({ ...policy, auto_check_remote: e.target.checked })} /> 自动
-                  </label>
-                  <input
-                    className="input"
-                    type="number"
-                    min={5}
-                    value={policy.check_interval_minutes}
-                    onChange={(e) => setPolicy({ ...policy, check_interval_minutes: Number(e.target.value || 60) })}
-                    style={{ width: 96 }}
-                  />
-                </div>
-              </div>
-
-              {mode === 'edit' && persona ? (
-                <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>自动发现候选来源</div>
-                      <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>搜索官网、YouTube 和公开播客访谈页；确认后再进入素材池。</div>
-                    </div>
-                    <button className="btn btn-secondary" onClick={() => void handleDiscover()} disabled={discovering}>
-                      <RefreshCw size={14} /> {discovering ? '搜索中…' : '发现来源'}
-                    </button>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, paddingTop: 6 }}>素材池</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('social')])}><Plus size={14} />账号</button>
+                    <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('chat_file')])}><Plus size={14} />聊天</button>
+                    <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('video_file')])}><Plus size={14} />视频</button>
+                    <button className="btn btn-secondary" onClick={() => setSources((prev) => [...prev, makeSource('article')])}><Plus size={14} />网页</button>
                   </div>
-
-                  {discovered.length === 0 ? (
-                    <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>还没有候选来源。可先保存账号信息，再执行自动发现。</div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {discovered.map((item) => (
-                        <div key={item.id} style={{ border: '1px solid rgb(var(--border-light))', borderRadius: 10, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 600 }}>{item.title}</div>
-                            <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 4 }}>{item.summary}</div>
-                            <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>{item.url_or_handle}</div>
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                            <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{Math.round(item.confidence * 100)}%</div>
-                            {item.status === 'pending' ? (
-                              <div style={{ display: 'flex', gap: 6 }}>
-                                <button className="btn btn-secondary" onClick={() => void handleRejectCandidate(item.id)}>忽略</button>
-                                <button className="btn btn-primary" onClick={() => void handleAcceptCandidate(item.id)}>加入素材池</button>
-                              </div>
-                            ) : (
-                              <div style={{ fontSize: 12, color: item.status === 'accepted' ? '#16a34a' : 'rgb(var(--text-tertiary))' }}>
-                                {item.status === 'accepted' ? '已加入素材池' : '已忽略'}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
-              ) : null}
 
-              {loading ? <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}><RefreshCw size={14} style={{ verticalAlign: 'middle' }} /> 加载中…</div> : null}
-              {error ? <div style={{ fontSize: 12, color: '#ef4444', background: 'rgb(239 68 68 / 0.08)', borderRadius: 8, padding: '10px 12px' }}>{error}</div> : null}
-            </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {sources.map((source, index) => (
+                    <SourceEditor
+                      key={source.id}
+                      source={source}
+                      onChange={(next) => setSources((prev) => prev.map((item, i) => i === index ? next : item))}
+                      onRemove={() => setSources((prev) => prev.filter((item) => item.id !== source.id))}
+                    />
+                  ))}
+                </div>
 
-            <div style={{ padding: '16px 20px', borderTop: '1px solid rgb(var(--border-light))', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button className="btn btn-secondary" onClick={onClose}>取消</button>
-              <button className="btn btn-primary" onClick={() => void handleSave()} disabled={!canSave || saving}>{saving ? '保存中…' : mode === 'create' ? '创建人格' : '保存修改'}</button>
-            </div>
-          </motion.div>
+                <div className="card" style={{ padding: 16, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 220, flex: '1 1 320px' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>自动检查更新</div>
+                    <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>远程来源按固定周期检查新增内容，发现增量后继续培养。</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input type="checkbox" checked={policy.auto_check_remote} onChange={(e) => setPolicy({ ...policy, auto_check_remote: e.target.checked })} /> 自动
+                    </label>
+                    <input
+                      className="input"
+                      type="number"
+                      min={5}
+                      value={policy.check_interval_minutes}
+                      onChange={(e) => setPolicy({ ...policy, check_interval_minutes: Number(e.target.value || 60) })}
+                      style={{ width: 96 }}
+                    />
+                  </div>
+                </div>
+
+                {mode === 'edit' && persona ? (
+                  <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                      <div style={{ minWidth: 220, flex: '1 1 320px' }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>自动发现候选来源</div>
+                        <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>搜索官网、YouTube 和公开播客访谈页；确认后再进入素材池。</div>
+                      </div>
+                      <button className="btn btn-secondary" onClick={() => void handleDiscover()} disabled={discovering}>
+                        <RefreshCw size={14} /> {discovering ? '搜索中…' : '发现来源'}
+                      </button>
+                    </div>
+
+                    {discovered.length === 0 ? (
+                      <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>还没有候选来源。可先保存账号信息，再执行自动发现。</div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {discovered.map((item) => (
+                          <div key={item.id} style={{ border: '1px solid rgb(var(--border-light))', borderRadius: 10, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                            <div style={{ minWidth: 0, flex: '1 1 320px' }}>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>{item.title}</div>
+                              <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 4 }}>{item.summary}</div>
+                              <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 4, wordBreak: 'break-all' }}>{item.url_or_handle}</div>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, flex: '0 0 auto' }}>
+                              <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{Math.round(item.confidence * 100)}%</div>
+                              {item.status === 'pending' ? (
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                  <button className="btn btn-secondary" onClick={() => void handleRejectCandidate(item.id)}>忽略</button>
+                                  <button className="btn btn-primary" onClick={() => void handleAcceptCandidate(item.id)}>加入素材池</button>
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: 12, color: item.status === 'accepted' ? '#16a34a' : 'rgb(var(--text-tertiary))' }}>
+                                  {item.status === 'accepted' ? '已加入素材池' : '已忽略'}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {loading ? <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}><RefreshCw size={14} style={{ verticalAlign: 'middle' }} /> 加载中…</div> : null}
+                {error ? <div style={{ fontSize: 12, color: '#ef4444', background: 'rgb(239 68 68 / 0.08)', borderRadius: 8, padding: '10px 12px' }}>{error}</div> : null}
+              </div>
+
+              <div style={{ padding: '16px 20px', borderTop: '1px solid rgb(var(--border-light))', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-secondary" onClick={onClose}>取消</button>
+                <button className="btn btn-primary" onClick={() => void handleSave()} disabled={!canSave || saving}>{saving ? '保存中…' : mode === 'create' ? '创建人格' : '保存修改'}</button>
+              </div>
+            </motion.div>
+          </div>
         </>
       ) : null}
     </AnimatePresence>

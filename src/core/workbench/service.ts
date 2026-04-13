@@ -719,6 +719,55 @@ function shouldRewritePersonaResponse(text: string, plan: ChatTurnPlan): boolean
   return true;
 }
 
+function evaluatePersonaStyleFit(text: string, soul: Soul, plan: ChatTurnPlan): {
+  needsRewrite: boolean;
+  reasons: string[];
+} {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  const reasons: string[] = [];
+  if (!normalized) {
+    reasons.push('empty');
+    return { needsRewrite: true, reasons };
+  }
+
+  const genericOpeners = [
+    /^长期主义和/u,
+    /^可以说/u,
+    /^总的来说/u,
+    /^this means/i,
+    /^in general/i,
+    /^it is important to/i,
+  ];
+  if (genericOpeners.some((pattern) => pattern.test(normalized))) {
+    reasons.push('generic_opener');
+  }
+
+  if (plan.intent === 'relationship' || plan.intent === 'opinion') {
+    const hasFirstPerson = /(^|[，。,\s])(我|我的|我会|我倾向于|I |my |I'd |I would )/.test(normalized);
+    if (!hasFirstPerson) {
+      reasons.push('missing_first_person');
+    }
+  }
+
+  if (normalized.length > 260 && plan.answer_style === 'concise') {
+    reasons.push('too_long_for_concise');
+  }
+
+  const phraseHits = soul.language_style.frequent_phrases
+    .slice(0, 6)
+    .filter((phrase) => phrase && normalized.includes(phrase))
+    .length;
+  const behaviorHits = soul.behavioral_traits.signature_behaviors
+    .slice(0, 4)
+    .filter((behavior) => behavior && normalized.toLowerCase().includes(behavior.toLowerCase().slice(0, 8)))
+    .length;
+  if (phraseHits === 0 && behaviorHits === 0 && normalized.length > 120) {
+    reasons.push('weak_persona_signal');
+  }
+
+  return { needsRewrite: reasons.length > 0, reasons };
+}
+
 async function rewriteResponseInPersonaVoice(input: {
   soul: Soul;
   userMessage: string;
@@ -732,6 +781,10 @@ async function rewriteResponseInPersonaVoice(input: {
 
   const renderer = new SoulRenderer();
   const compactSoul = renderer.renderCompact(input.soul);
+  const styleCheck = evaluatePersonaStyleFit(input.draft, input.soul, input.plan);
+  if (!styleCheck.needsRewrite) {
+    return input.draft;
+  }
   const rewritePrompt = [
     'Rewrite the draft reply so it sounds more like the target persona while preserving meaning.',
     'Constraints:',
@@ -740,6 +793,7 @@ async function rewriteResponseInPersonaVoice(input: {
     '- Reduce generic assistant phrasing and neutral exposition.',
     '- Keep the answer concise and conversational.',
     '- Do not mention prompts, memory, system behavior, or internal implementation.',
+    `- Fix these issues if present: ${styleCheck.reasons.join(', ') || 'none'}.`,
     '',
     'Persona compact profile:',
     compactSoul,

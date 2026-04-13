@@ -88,6 +88,32 @@ function containsCjk(text: string): boolean {
   return /[\u3400-\u9fff]/.test(text);
 }
 
+function buildChineseFallbackAngle(query: string): string {
+  const lower = query.toLowerCase();
+  if (/长期主义|long.?term|专注/.test(lower)) {
+    return '长期目标如果不能落实到当下可执行的专注动作，最后通常只会停留在口号层面。';
+  }
+  if (/分心|注意力|节奏|作息/.test(lower)) {
+    return '我会先区分问题到底来自环境噪音、目标过大，还是节奏安排失真，因为这三类问题的解法完全不同。';
+  }
+  if (/纪律|自由/.test(lower)) {
+    return '在我看来，纪律不是自由的对立面，纪律更像是让自由变得可持续的结构。';
+  }
+  if (/理想化|现实/.test(lower)) {
+    return '如果一个方法一离开现实条件就失效，那它就不是方法，只是情绪化的想象。';
+  }
+  if (/目标/.test(lower)) {
+    return '我通常不会先追求更大的目标，我会先确认目标是不是足够清晰，能不能压缩成今天就能执行的动作。';
+  }
+  return '我会先把问题收回到最关键的约束上，再判断哪一步最值得投入。';
+}
+
+function normalizeChineseReasoning(reasoning: string): string {
+  if (!reasoning) return '我通常会先拆约束，再找最有杠杆的一步。';
+  if (containsCjk(reasoning)) return reasoning;
+  return '我通常会先拆清楚约束，再从最有杠杆的变量开始推进。';
+}
+
 const runtimeFallbackMetrics = {
   trainerFallbacks: 0,
   personaFallbacks: 0,
@@ -340,9 +366,11 @@ export class PersonaAgent {
     const reasoning = this.soul.thinking_patterns.problem_solving_approach || 'I break problems into first principles and practical tradeoffs.';
     const chinese = containsCjk(query);
     if (chinese) {
+      const angle = buildChineseFallbackAngle(query);
+      const normalizedReasoning = normalizeChineseReasoning(reasoning);
       const sentences = [
-        `我会先把问题收回到最关键的约束上。`,
-        belief ? `对我来说，一个反复成立的原则是：${belief}。` : `我通常会按这样的方式处理：${reasoning}。`,
+        angle,
+        belief ? `对我来说，一个反复成立的原则是：${belief}。` : normalizedReasoning,
         `放到这个问题里，我会先找出最重要的变量，然后把注意力压到最有复利的那一步。`,
       ];
       return sentences.join('');

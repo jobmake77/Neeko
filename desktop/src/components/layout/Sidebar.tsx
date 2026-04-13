@@ -48,7 +48,7 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
   const { threads, threadId, selectThread, createThread, deleteThread } = useChatStore();
   const [hoveredThread, setHoveredThread] = useState<string | null>(null);
 
-  const width = sidebarOpen ? (propWidth ?? 240) : 48;
+  const width = sidebarOpen ? (propWidth ?? 232) : 56;
 
   function cycleTheme() {
     const idx = THEME_CYCLE.indexOf(theme);
@@ -78,7 +78,7 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: sidebarOpen ? 'flex-end' : 'center',
-          padding: sidebarOpen ? '0 8px' : '0',
+          padding: sidebarOpen ? '0 10px' : '0',
           flexShrink: 0,
         }}
       >
@@ -92,7 +92,7 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
       </div>
 
       {/* Navigation */}
-      <nav style={{ padding: '4px 8px', display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 }}>
+      <nav style={{ padding: '8px 8px 6px', display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
         {NAV_ITEMS.map((item) => (
           <button
             key={item.id}
@@ -101,7 +101,8 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
             style={{
               justifyContent: sidebarOpen ? 'flex-start' : 'center',
               gap: sidebarOpen ? 10 : 0,
-              padding: sidebarOpen ? '0 10px' : '0',
+              minHeight: 38,
+              padding: sidebarOpen ? '0 12px' : '0',
               overflow: 'hidden',
               whiteSpace: 'nowrap',
             }}
@@ -117,16 +118,16 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
       </nav>
 
       {/* Divider */}
-      <div style={{ height: 1, background: 'rgb(var(--border-light))', margin: '4px 8px', flexShrink: 0 }} />
+      <div style={{ height: 1, background: 'rgb(var(--border-light))', margin: '6px 10px', flexShrink: 0 }} />
 
       {/* Thread list — only when view === 'chat' and sidebar is open */}
       {view === 'chat' && sidebarOpen && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
           {/* New thread button */}
-          <div style={{ padding: '8px 8px 4px 8px', flexShrink: 0 }}>
+          <div style={{ padding: '8px 8px 6px 8px', flexShrink: 0 }}>
             <button
               className="btn btn-ghost"
-              style={{ width: '100%', justifyContent: 'flex-start', gap: 8, fontSize: 14 }}
+              style={{ width: '100%', justifyContent: 'flex-start', gap: 8, fontSize: 13.5, minHeight: 36 }}
               onClick={() => createThread()}
             >
               <Plus size={15} />
@@ -137,7 +138,7 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
           {/* Section label */}
           <div
             style={{
-              padding: '4px 14px',
+              padding: '6px 14px 4px',
               fontSize: 12,
               fontWeight: 600,
               color: 'rgb(var(--text-tertiary))',
@@ -150,7 +151,7 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
           </div>
 
           {/* Thread items */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '2px 8px 8px 8px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '2px 8px 10px 8px' }}>
             {threads.length === 0 ? (
               <div
                 style={{
@@ -170,6 +171,7 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
                   style={{
                     position: 'relative',
                     justifyContent: 'space-between',
+                    minHeight: 36,
                     cursor: 'pointer',
                   }}
                   onClick={() => selectThread(thread.id)}
@@ -215,7 +217,7 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
 
       {/* Collapsed new-thread icon button */}
       {view === 'chat' && !sidebarOpen && (
-        <div style={{ padding: '4px 8px', flexShrink: 0 }}>
+        <div style={{ padding: '6px 8px', flexShrink: 0 }}>
           <button
             className="btn btn-icon"
             style={{ width: '100%' }}
@@ -228,12 +230,12 @@ export function Sidebar({ width: propWidth, dragging }: SidebarProps) {
       )}
 
       {/* Spacer */}
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: 1, minHeight: 12 }} />
 
       {/* Bottom controls: locale + theme */}
       <div
         style={{
-          padding: '8px',
+          padding: '10px 8px',
           flexShrink: 0,
           borderTop: '1px solid rgb(var(--border-light))',
           display: 'flex',

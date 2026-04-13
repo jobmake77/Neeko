@@ -16,13 +16,13 @@ function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void 
     { id: 'cultivation', label: () => t('cultivationCenter') },
   ];
   return (
-    <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid rgb(var(--border-light))', marginBottom: 20 }}>
+    <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid rgb(var(--border-light))', marginBottom: 24 }}>
       {tabs.map((tab) => (
         <button
           key={tab.id}
           onClick={() => onChange(tab.id)}
           style={{
-            padding: '10px 18px', fontSize: 13.5, fontWeight: 500, background: 'none', border: 'none',
+            padding: '12px 18px', fontSize: 13.5, fontWeight: 600, background: 'none', border: 'none',
             borderBottom: active === tab.id ? '2px solid rgb(var(--accent))' : '2px solid transparent',
             color: active === tab.id ? 'rgb(var(--accent))' : 'rgb(var(--text-secondary))',
             cursor: 'pointer', transition: 'all 0.15s', marginBottom: -1,
@@ -76,19 +76,21 @@ export function PersonaView() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* 顶部区域（标题 + 操作） */}
-      <div style={{ padding: '20px 24px 0', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-          <h1 style={{ fontSize: 18, fontWeight: 700, color: 'rgb(var(--text-primary))', margin: 0 }}>
-            {t('personas')}
-          </h1>
-          {activeTab === 'personas' && (
-            <button className="btn btn-primary" onClick={handleCreate} style={{ gap: 6 }}>
-              <Plus size={14} />
-              {t('newPersona')}
-            </button>
-          )}
+      <div style={{ padding: '28px 28px 0', flexShrink: 0 }}>
+        <div style={{ maxWidth: 1180, margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 18, flexWrap: 'wrap' }}>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: 'rgb(var(--text-primary))', margin: 0 }}>
+              {t('personas')}
+            </h1>
+            {activeTab === 'personas' && (
+              <button className="btn btn-primary" onClick={handleCreate} style={{ gap: 6, minHeight: 40, padding: '0 16px' }}>
+                <Plus size={14} />
+                {t('newPersona')}
+              </button>
+            )}
+          </div>
+          <TabBar active={activeTab} onChange={setActiveTab} />
         </div>
-        <TabBar active={activeTab} onChange={setActiveTab} />
       </div>
 
       {/* 内容区域 */}
@@ -96,7 +98,8 @@ export function PersonaView() {
         {activeTab === 'cultivation' ? (
           <CultivationCenter onDelete={(p) => setDeleteTarget(p)} />
         ) : (
-          <div style={{ padding: '0 24px 24px' }}>
+          <div style={{ padding: '0 28px 28px' }}>
+            <div style={{ maxWidth: 1180, margin: '0 auto' }}>
             {loading ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: 'rgb(var(--text-tertiary))' }}>
                 {t('loading')}
@@ -113,12 +116,13 @@ export function PersonaView() {
                 </button>
               </div>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(272px, 1fr))', gap: 18, alignItems: 'start' }}>
                 {personas.map((p) => (
                   <PersonaCard key={p.slug} persona={p} onEdit={() => handleEdit(p)} onDelete={() => setDeleteTarget(p)} />
                 ))}
               </div>
             )}
+            </div>
           </div>
         )}
       </div>

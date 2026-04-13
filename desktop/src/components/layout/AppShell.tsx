@@ -7,9 +7,9 @@ const ChatView = lazy(() => import('../chat/ChatView').then(m => ({ default: m.C
 const PersonaView = lazy(() => import('../persona/PersonaView').then(m => ({ default: m.PersonaView })));
 const SettingsView = lazy(() => import('../settings/SettingsView').then(m => ({ default: m.SettingsView })));
 
-const MIN_SIDEBAR_W = 160;
-const MAX_SIDEBAR_W = 400;
-const DEFAULT_SIDEBAR_W = 240;
+const MIN_SIDEBAR_W = 208;
+const MAX_SIDEBAR_W = 360;
+const DEFAULT_SIDEBAR_W = 232;
 
 function Fallback() {
   return (

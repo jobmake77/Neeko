@@ -56,12 +56,13 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        padding: 20,
+        padding: 18,
         display: 'flex',
         flexDirection: 'column',
-        gap: 14,
+        gap: 12,
         position: 'relative',
         cursor: 'pointer',
+        minHeight: 152,
       }}
     >
       {/* 操作按钮 */}
@@ -99,12 +100,12 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <div
           style={{
-            width: 40,
-            height: 40,
-            borderRadius: 10,
+            width: 42,
+            height: 42,
+            borderRadius: 12,
             background: 'rgb(var(--accent))',
             color: 'rgb(var(--accent-fg))',
-            fontSize: 17,
+            fontSize: 18,
             fontWeight: 700,
             display: 'flex',
             alignItems: 'center',
@@ -115,7 +116,7 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
           {initial}
         </div>
         <div style={{ minWidth: 0, paddingRight: 40 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'rgb(var(--text-primary))', marginBottom: 2 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'rgb(var(--text-primary))', marginBottom: 2, lineHeight: 1.3 }}>
             {persona.name}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -127,7 +128,7 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+      <div style={{ display: 'flex', gap: 12, fontSize: 11.5, color: 'rgb(var(--text-tertiary))', marginTop: 'auto' }}>
         <span>{persona.doc_count} 条素材</span>
         <span>{persona.training_rounds} 轮</span>
       </div>

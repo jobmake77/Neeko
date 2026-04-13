@@ -1,19 +1,10 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { Send, Paperclip, X, Image as ImageIcon, Video, FileAudio, FileText, File } from 'lucide-react';
-import { useChatStore } from '@/stores/chat';
+import React, { useRef, useEffect, useCallback } from 'react';
+import { Send, Paperclip, X, Image as ImageIcon, Video, FileAudio, FileText, File, ChevronDown } from 'lucide-react';
+import { CHAT_MODEL_OPTIONS, useChatStore } from '@/stores/chat';
 import { useAppStore } from '@/stores/app';
 import { t } from '@/lib/i18n';
-import type { AttachmentRef, ChatModelOverride, RuntimeModelConfig } from '@/lib/types';
+import type { AttachmentRef, RuntimeModelConfig } from '@/lib/types';
 import { pickFiles } from '@/lib/tauri';
-import { getRuntimeModelConfig } from '@/lib/api';
-
-const MODEL_OPTIONS: Record<RuntimeModelConfig['provider'], string[]> = {
-  claude: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  openai: ['gpt-4o', 'gpt-4o-mini', 'o3'],
-  kimi: ['kimi-for-coding', 'moonshot-v1-128k', 'moonshot-v1-32k', 'moonshot-v1-8k'],
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
-};
 
 const PROVIDER_LABELS: Record<RuntimeModelConfig['provider'], string> = {
   claude: 'Claude',
@@ -23,14 +14,32 @@ const PROVIDER_LABELS: Record<RuntimeModelConfig['provider'], string> = {
   deepseek: 'DeepSeek',
 };
 
+const PROVIDER_SHORT_LABELS: Record<RuntimeModelConfig['provider'], string> = {
+  claude: 'Claude',
+  openai: 'OpenAI',
+  kimi: 'Kimi',
+  gemini: 'Gemini',
+  deepseek: 'DeepSeek',
+};
+
 export function ChatInput() {
-  const { sending, sendMessage } = useChatStore();
+  const {
+    sending,
+    draft,
+    composerAttachments,
+    availableProviders,
+    chatModel,
+    hydrateComposer,
+    setDraft,
+    addAttachmentsFromPaths,
+    removeAttachment,
+    setChatProvider,
+    setChatModel,
+    submitComposer,
+  } = useChatStore();
   const { view } = useAppStore();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const valueRef = useRef('');
-  const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
-  const [availableProviders, setAvailableProviders] = useState<RuntimeModelConfig['provider'][]>([]);
-  const [chatModel, setChatModel] = useState<ChatModelOverride | null>(null);
+  const valueRef = useRef(draft);
 
   // Auto-focus when chat view is active
   useEffect(() => {
@@ -41,22 +50,16 @@ export function ChatInput() {
 
   useEffect(() => {
     if (view !== 'chat') return;
-    void getRuntimeModelConfig().then((config) => {
-      const providers = (Object.entries(config.api_keys) as Array<[RuntimeModelConfig['provider'], string | undefined]>)
-        .filter(([, key]) => Boolean(String(key ?? '').trim()))
-        .map(([provider]) => provider);
-      setAvailableProviders(providers);
+    void hydrateComposer();
+  }, [hydrateComposer, view]);
 
-      const savedProvider = localStorage.getItem('neeko.chat.provider') as RuntimeModelConfig['provider'] | null;
-      const savedModel = localStorage.getItem('neeko.chat.model');
-      const provider = savedProvider && providers.includes(savedProvider) ? savedProvider : (providers[0] ?? config.provider);
-      const modelOptions = MODEL_OPTIONS[provider] ?? [];
-      const model = savedModel && modelOptions.includes(savedModel) ? savedModel : (provider === config.provider ? config.model : modelOptions[0]);
-      if (provider && model) {
-        setChatModel({ provider, model });
-      }
-    }).catch(() => undefined);
-  }, [view]);
+  useEffect(() => {
+    valueRef.current = draft;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.value = draft;
+    resize();
+  }, [draft]);
 
   const resize = () => {
     const el = textareaRef.current;
@@ -70,6 +73,7 @@ export function ChatInput() {
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     valueRef.current = e.target.value;
+    setDraft(e.target.value);
     resize();
   };
 
@@ -82,11 +86,9 @@ export function ChatInput() {
       el.style.height = 'auto';
     }
     valueRef.current = '';
-    const currentAttachments = [...attachments];
-    setAttachments([]);
-    await sendMessage(val, currentAttachments, chatModel ?? undefined);
+    await submitComposer();
     textareaRef.current?.focus();
-  }, [attachments, chatModel, sending, sendMessage]);
+  }, [sending, submitComposer]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -98,35 +100,7 @@ export function ChatInput() {
   async function handlePickFiles() {
     const paths = await pickFiles({ multiple: true });
     if (paths.length === 0) return;
-    setAttachments((prev) => [
-      ...prev,
-      ...paths.map((path) => {
-        const type = inferAttachmentType(path);
-        return {
-          id: crypto.randomUUID(),
-          type,
-          name: path.split(/[\\/]/).pop() || path,
-          path,
-          mime: inferAttachmentMime(path, type),
-        };
-      }),
-    ]);
-  }
-
-  function handleProviderChange(provider: RuntimeModelConfig['provider']) {
-    const model = MODEL_OPTIONS[provider][0];
-    const next = { provider, model };
-    setChatModel(next);
-    localStorage.setItem('neeko.chat.provider', provider);
-    localStorage.setItem('neeko.chat.model', model);
-  }
-
-  function handleModelChange(model: string) {
-    if (!chatModel) return;
-    const next = { ...chatModel, model };
-    setChatModel(next);
-    localStorage.setItem('neeko.chat.provider', next.provider);
-    localStorage.setItem('neeko.chat.model', next.model);
+    addAttachmentsFromPaths(paths);
   }
 
   return (
@@ -140,10 +114,10 @@ export function ChatInput() {
       }}
     >
       {/* Attachment chips */}
-      {attachments.length > 0 && (
+      {composerAttachments.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-          {attachments.map((file, i) => (
-            <div key={i} style={{
+          {composerAttachments.map((file) => (
+            <div key={file.id} style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
@@ -178,7 +152,7 @@ export function ChatInput() {
                 </span>
               </div>
               <button
-                onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                onClick={() => removeAttachment(file.id)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'rgb(var(--text-tertiary))', flexShrink: 0 }}
               >
                 <X size={12} />
@@ -193,10 +167,11 @@ export function ChatInput() {
           display: 'flex',
           alignItems: 'flex-end',
           gap: 8,
-          background: 'rgb(var(--bg-app))',
+          background: 'rgb(var(--bg-card))',
           border: '1px solid rgb(var(--border))',
-          borderRadius: 12,
-          padding: '8px',
+          borderRadius: 22,
+          padding: '12px 14px 10px',
+          minHeight: 132,
         }}
       >
         {/* Attachment button */}
@@ -205,7 +180,13 @@ export function ChatInput() {
           onClick={() => void handlePickFiles()}
           disabled={sending}
           title="添加附件"
-          style={{ width: 30, height: 30, flexShrink: 0, color: 'rgb(var(--text-tertiary))' }}
+          style={{
+            width: 28,
+            height: 28,
+            flexShrink: 0,
+            color: 'rgb(var(--text-tertiary))',
+            marginBottom: 2,
+          }}
         >
           <Paperclip size={15} />
         </button>
@@ -230,6 +211,7 @@ export function ChatInput() {
             maxHeight: 132,
             overflowY: 'auto',
             textAlign: 'left',
+            marginTop: 2,
           }}
         />
         <button
@@ -238,14 +220,15 @@ export function ChatInput() {
           onClick={submit}
           title={t('sendHint')}
           style={{
-            width: 34,
-            height: 34,
+            width: 32,
+            height: 32,
             padding: 0,
             flexShrink: 0,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            borderRadius: 8,
+            borderRadius: 999,
+            marginBottom: 2,
           }}
         >
           <Send size={15} />
@@ -256,40 +239,43 @@ export function ChatInput() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 8,
-          marginTop: 8,
+          gap: 10,
+          marginTop: -42,
+          padding: '0 48px 8px 44px',
+          pointerEvents: 'none',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', flexShrink: 0 }}>
-            {t('modelForThisChat')}
-          </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, pointerEvents: 'auto' }}>
           {availableProviders.length > 0 && chatModel ? (
             <>
-              <select
-                className="input"
-                value={chatModel.provider}
-                onChange={(e) => handleProviderChange(e.target.value as RuntimeModelConfig['provider'])}
-                style={{ width: 108, fontSize: 12, padding: '5px 8px' }}
-              >
-                {availableProviders.map((provider) => (
-                  <option key={provider} value={provider}>
-                    {PROVIDER_LABELS[provider]}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="input"
-                value={chatModel.model}
-                onChange={(e) => handleModelChange(e.target.value)}
-                style={{ width: 168, fontSize: 12, padding: '5px 8px' }}
-              >
-                {(MODEL_OPTIONS[chatModel.provider] ?? []).map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
+              <div style={{ position: 'relative' }}>
+                <select
+                  value={chatModel.model}
+                  onChange={(e) => setChatModel(e.target.value)}
+                  style={compactSelectStyle(148)}
+                >
+                  {(CHAT_MODEL_OPTIONS[chatModel.provider] ?? []).map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={12} style={compactChevronStyle} />
+              </div>
+              <div style={{ position: 'relative' }}>
+                <select
+                  value={chatModel.provider}
+                  onChange={(e) => setChatProvider(e.target.value as RuntimeModelConfig['provider'])}
+                  style={compactSelectStyle(86)}
+                >
+                  {availableProviders.map((provider) => (
+                    <option key={provider} value={provider}>
+                      {PROVIDER_SHORT_LABELS[provider]}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={12} style={compactChevronStyle} />
+              </div>
             </>
           ) : (
             <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{t('noChatModel')}</span>
@@ -301,59 +287,41 @@ export function ChatInput() {
             fontSize: 11,
             color: 'rgb(var(--text-tertiary))',
             flexShrink: 0,
+            pointerEvents: 'none',
           }}
         >
           {t('sendHint')}
         </div>
       </div>
-      <div
-        style={{
-          textAlign: 'center',
-          fontSize: 11,
-          color: 'rgb(var(--text-tertiary))',
-          marginTop: 4,
-        }}
-      >
-        {t('chatModel')}
-      </div>
     </div>
   );
 }
 
-function inferAttachmentType(path: string): AttachmentRef['type'] {
-  const lower = path.toLowerCase();
-  if (/\.(png|jpg|jpeg|gif|webp|heic)$/.test(lower)) return 'image';
-  if (/\.(mp4|mov|mkv|webm)$/.test(lower)) return 'video';
-  if (/\.(mp3|wav|m4a|ogg|flac)$/.test(lower)) return 'audio';
-  if (/\.(txt|md|json|csv|html|yaml|yml)$/.test(lower)) return 'text';
-  return 'file';
-}
+const compactChevronStyle: React.CSSProperties = {
+  position: 'absolute',
+  right: 10,
+  top: '50%',
+  transform: 'translateY(-50%)',
+  color: 'rgb(var(--text-tertiary))',
+  pointerEvents: 'none',
+};
 
-function inferAttachmentMime(path: string, type: AttachmentRef['type']): string | undefined {
-  const lower = path.toLowerCase();
-  if (type === 'image') {
-    if (lower.endsWith('.png')) return 'image/png';
-    if (lower.endsWith('.webp')) return 'image/webp';
-    if (lower.endsWith('.gif')) return 'image/gif';
-    return 'image/jpeg';
-  }
-  if (type === 'video') {
-    if (lower.endsWith('.mov')) return 'video/quicktime';
-    if (lower.endsWith('.webm')) return 'video/webm';
-    return 'video/mp4';
-  }
-  if (type === 'audio') {
-    if (lower.endsWith('.wav')) return 'audio/wav';
-    if (lower.endsWith('.ogg')) return 'audio/ogg';
-    if (lower.endsWith('.m4a')) return 'audio/mp4';
-    return 'audio/mpeg';
-  }
-  if (type === 'text') {
-    if (lower.endsWith('.json')) return 'application/json';
-    if (lower.endsWith('.csv')) return 'text/csv';
-    return 'text/plain';
-  }
-  return undefined;
+function compactSelectStyle(width: number): React.CSSProperties {
+  return {
+    width,
+    height: 28,
+    padding: '0 28px 0 11px',
+    border: '1px solid rgb(var(--border-light))',
+    borderRadius: 10,
+    background: 'rgb(var(--bg-hover))',
+    color: 'rgb(var(--text-secondary))',
+    fontSize: 11.5,
+    fontWeight: 500,
+    appearance: 'none',
+    outline: 'none',
+    boxShadow: 'none',
+    lineHeight: 1,
+  };
 }
 
 function formatAttachmentType(type: AttachmentRef['type']): string {

@@ -50,6 +50,17 @@ export const AttachmentRefSchema = z.object({
 });
 export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
 
+export const ConversationOrchestrationSchema = z.object({
+  mode: z.enum(['answer', 'clarify', 'refuse_internal']).default('answer'),
+  intent: z.enum(['greeting', 'factual', 'opinion', 'creative', 'relationship', 'meta', 'unknown']).default('unknown'),
+  reason: z.string().optional(),
+  persona_stability: z.enum(['strict', 'balanced']).default('balanced'),
+  answer_style: z.enum(['concise', 'normal']).default('normal'),
+  followup_question: z.string().optional(),
+  disclosure_protected: z.boolean().default(false),
+});
+export type ConversationOrchestration = z.infer<typeof ConversationOrchestrationSchema>;
+
 export const ConversationMessageSchema = z.object({
   id: z.string().uuid(),
   conversation_id: z.string().uuid(),
@@ -61,6 +72,7 @@ export const ConversationMessageSchema = z.object({
   citation_items: z.array(CitationItemSchema).default([]),
   writeback_candidate_ids: z.array(z.string()).default([]),
   attachments: z.array(AttachmentRefSchema).default([]),
+  orchestration: ConversationOrchestrationSchema.optional(),
 });
 export type ConversationMessage = z.infer<typeof ConversationMessageSchema>;
 

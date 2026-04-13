@@ -138,6 +138,16 @@ export interface AttachmentRef {
   processing_capability?: 'text_extract' | 'image_understanding' | 'transcription';
 }
 
+export interface ConversationOrchestration {
+  mode: 'answer' | 'clarify' | 'refuse_internal';
+  intent: 'greeting' | 'factual' | 'opinion' | 'creative' | 'relationship' | 'meta' | 'unknown';
+  reason?: string;
+  persona_stability: 'strict' | 'balanced';
+  answer_style: 'concise' | 'normal';
+  followup_question?: string;
+  disclosure_protected: boolean;
+}
+
 export interface ConversationMessage {
   id: string;
   conversation_id: string;
@@ -145,6 +155,7 @@ export interface ConversationMessage {
   content: string;
   created_at: string;
   attachments?: AttachmentRef[];
+  orchestration?: ConversationOrchestration;
 }
 
 export interface ConversationBundle {

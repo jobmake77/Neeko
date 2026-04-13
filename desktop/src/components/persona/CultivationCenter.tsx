@@ -33,6 +33,7 @@ function TrainingCard({
   onReload,
   onCheckUpdates,
   onContinue,
+  pendingOperation,
 }: {
   persona: PersonaSummary;
   detail?: CultivationDetail;
@@ -42,9 +43,21 @@ function TrainingCard({
   onReload: () => void;
   onCheckUpdates: () => Promise<void>;
   onContinue: () => Promise<void>;
+  pendingOperation?: 'deep_fetch' | 'incremental_sync';
 }) {
   const meta = statusMeta(persona.current_stage ?? persona.status);
   const progress = persona.progress_percent ?? 0;
+  const operationLabel = pendingOperation === 'deep_fetch'
+    ? '深抓取中'
+    : pendingOperation === 'incremental_sync'
+      ? '增量拉取中'
+      : detail?.source_summary?.current_operation === 'deep_fetch'
+        ? '深抓取中'
+        : detail?.source_summary?.current_operation === 'incremental_sync'
+          ? '增量拉取中'
+          : detail?.source_summary?.current_operation === 'discovery'
+            ? '发现来源中'
+            : null;
 
   return (
     <div className="card" style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12, position: 'relative' }}>
@@ -96,6 +109,12 @@ function TrainingCard({
             </div>
           ) : null}
 
+          {operationLabel ? (
+            <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--accent))' }}>
+              当前任务：<b>{operationLabel}</b>{detail?.source_summary?.current_source_label ? ` · ${detail.source_summary.current_source_label}` : ''}
+            </div>
+          ) : null}
+
           {(detail.skills.origin_skills.length > 0 || detail.skills.distilled_skills.length > 0) && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{t('skillsTitle')}</div>
@@ -112,8 +131,12 @@ function TrainingCard({
           </div>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <button className="btn btn-secondary" onClick={() => void onCheckUpdates()} style={{ fontSize: 12 }}>检查更新</button>
-            <button className="btn btn-primary" onClick={() => void onContinue()} style={{ fontSize: 12 }}>继续培养</button>
+            <button className="btn btn-secondary" onClick={() => void onCheckUpdates()} style={{ fontSize: 12 }} disabled={Boolean(pendingOperation)}>
+              {pendingOperation === 'incremental_sync' ? '增量拉取中…' : '检查更新'}
+            </button>
+            <button className="btn btn-primary" onClick={() => void onContinue()} style={{ fontSize: 12 }} disabled={Boolean(pendingOperation)}>
+              {pendingOperation === 'deep_fetch' ? '深抓取中…' : '继续培养'}
+            </button>
             {(persona.current_stage ?? persona.status) === 'error' ? <button className="btn btn-ghost" onClick={onReload} style={{ fontSize: 12 }}>{t('retry')}</button> : null}
           </div>
         </div>
@@ -125,6 +148,7 @@ function TrainingCard({
 export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) => void }) {
   const { cultivating, load, reload, details, loadDetail } = useCultivationStore();
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
+  const [pendingOps, setPendingOps] = useState<Record<string, 'deep_fetch' | 'incremental_sync' | undefined>>({});
 
   useEffect(() => {
     void load();
@@ -156,15 +180,25 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
   }, [cultivating]);
 
   async function handleCheckUpdates(slug: string) {
-    await api.checkPersonaUpdates(slug);
-    await reload();
-    await loadDetail(slug);
+    setPendingOps((prev) => ({ ...prev, [slug]: 'incremental_sync' }));
+    try {
+      await api.checkPersonaUpdates(slug);
+      await reload();
+      await loadDetail(slug);
+    } finally {
+      setPendingOps((prev) => ({ ...prev, [slug]: undefined }));
+    }
   }
 
   async function handleContinue(slug: string) {
-    await api.continueCultivation(slug);
-    await reload();
-    await loadDetail(slug);
+    setPendingOps((prev) => ({ ...prev, [slug]: 'deep_fetch' }));
+    try {
+      await api.continueCultivation(slug);
+      await reload();
+      await loadDetail(slug);
+    } finally {
+      setPendingOps((prev) => ({ ...prev, [slug]: undefined }));
+    }
   }
 
   if (cultivating.length === 0) {
@@ -189,6 +223,7 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
             persona={persona}
             detail={details[persona.slug]}
             expanded={expandedSlug === persona.slug}
+            pendingOperation={pendingOps[persona.slug]}
             onExpand={() => setExpandedSlug((current) => current === persona.slug ? null : persona.slug)}
             onDelete={() => onDelete(persona)}
             onReload={() => void reload()}

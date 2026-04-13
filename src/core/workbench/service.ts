@@ -306,6 +306,8 @@ function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { 
         auto_check_remote: input.update_policy?.auto_check_remote ?? true,
         check_interval_minutes: input.update_policy?.check_interval_minutes ?? 60,
         strategy: 'incremental',
+        current_operation: input.update_policy?.current_operation,
+        current_source_label: input.update_policy?.current_source_label,
         last_checked_at: input.update_policy?.last_checked_at,
         latest_result: input.update_policy?.latest_result,
       },
@@ -326,6 +328,8 @@ function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { 
       auto_check_remote: input.update_policy?.auto_check_remote ?? true,
       check_interval_minutes: input.update_policy?.check_interval_minutes ?? 60,
       strategy: 'incremental',
+      current_operation: input.update_policy?.current_operation,
+      current_source_label: input.update_policy?.current_source_label,
       last_checked_at: input.update_policy?.last_checked_at,
       latest_result: input.update_policy?.latest_result,
     },
@@ -420,6 +424,10 @@ function computeSourceWeight(source: PersonaSource): number {
   if (source.type === 'chat_file') return 0.98;
   if (source.type === 'video_file') return source.mode === 'channel_url' || source.mode === 'single_url' ? 0.9 : 0.95;
   return 0.72;
+}
+
+function describeSourceLabel(source: PersonaSource): string {
+  return source.handle_or_url ?? source.local_path ?? source.platform ?? source.type;
 }
 
 function dedupeSourcesByRef(sources: PersonaSource[]): PersonaSource[] {
@@ -1021,6 +1029,16 @@ export class WorkbenchService {
 
   async discoverPersonaSources(slug: string): Promise<DiscoveredSourceCandidate[]> {
     const config = this.getPersonaConfig(slug);
+    this.store.savePersonaConfig({
+      ...config,
+      update_policy: {
+        ...config.update_policy,
+        current_operation: 'discovery',
+        current_source_label: config.name,
+        latest_result: '正在发现候选来源…',
+      },
+      updated_at: new Date().toISOString(),
+    });
     const existingRefs = new Set(
       config.sources
         .map((item) => item.handle_or_url?.trim().toLowerCase())
@@ -1038,6 +1056,17 @@ export class WorkbenchService {
       }
     }
     this.store.saveDiscoveredSources(slug, candidates);
+    this.store.savePersonaConfig({
+      ...this.getPersonaConfig(slug),
+      update_policy: {
+        ...this.getPersonaConfig(slug).update_policy,
+        current_operation: 'idle',
+        current_source_label: undefined,
+        last_checked_at: new Date().toISOString(),
+        latest_result: candidates.length > 0 ? `发现 ${candidates.length} 个候选来源。` : '没有发现高置信候选来源。',
+      },
+      updated_at: new Date().toISOString(),
+    });
     return candidates;
   }
 
@@ -1775,6 +1804,11 @@ export class WorkbenchService {
     if (!hasIdentityMatch) return null;
     if (/(duckduckgo\.com|x\.com|twitter\.com|wikipedia|facebook|instagram|news|medium\.com\/tag|linkedin\.com\/feed|reddit\.com\/r\/|t\.me\/|dockhunt\.com|24vids\.com|piclur\.com|folo\.is)/i.test(lowerHref)) return null;
 
+    const host = new URL(href).hostname.replace(/^www\./, '');
+    const podcastHost = /(spotify\.com|open\.spotify\.com|podcasts\.apple\.com|substack\.com|buzzsprout\.com|transistor\.fm|simplecast\.com|libsyn\.com|podbean\.com|anchor\.fm|castbox\.fm|overcast\.fm)/i.test(host);
+    const likelyOfficialHost = host.includes(nameToken) || host.includes(queryToken);
+    const likelyBlogOrArticle = likelyOfficialHost || podcastHost || /(blog|podcast|interview|about)/i.test(lowerHref) || /(blog|podcast|访谈|interview|about)/i.test(lowerTitle);
+
     let type: DiscoveredSourceCandidate['type'] | null = null;
     let platform = '';
     let summary = title || href;
@@ -1790,8 +1824,8 @@ export class WorkbenchService {
       confidence = 0.78;
       summary = '发现到公开播客或访谈页面';
     } else {
-      const host = new URL(href).hostname.replace(/^www\./, '');
-      type = /(about|official|官网)/i.test(lowerTitle) || host.includes(lowerName.replace(/\s+/g, '')) ? 'official_site' : 'blog/article';
+      if (!likelyBlogOrArticle) return null;
+      type = /(about|official|官网)/i.test(lowerTitle) || likelyOfficialHost ? 'official_site' : 'blog/article';
       platform = host;
       confidence = type === 'official_site' ? 0.8 : 0.74;
       summary = type === 'official_site' ? '发现到可能的官网或官方主页' : '发现到可补充的文章或博客页';
@@ -1974,96 +2008,143 @@ export class WorkbenchService {
 
     let docs: RawDocument[] = [];
     let sourcePlatform = source.platform ?? source.type;
-    if (source.type === 'social' && source.handle_or_url) {
-      docs = await this.fetchTwitterSourceDocuments(source, forceRemote);
-      sourcePlatform = source.platform ?? 'twitter';
-    } else if (source.type === 'video_file' && source.handle_or_url) {
-      const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
-      const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
-      docs = await adapter.fetch(source.handle_or_url, { limit: 12, since });
-      sourcePlatform = source.platform ?? docs[0]?.source_platform ?? 'video_remote';
-    } else if ((source.type === 'article' || source.mode === 'remote_url') && source.handle_or_url) {
-      const adapter = new AgentReachAdapter('article');
-      docs = await adapter.fetch(source.handle_or_url, { limit: 1 });
-      sourcePlatform = source.platform ?? 'web';
-    }
+    this.touchSyncOperation(slug, config, source, forceRemote);
+    try {
+      if (source.type === 'social' && source.handle_or_url) {
+        docs = await this.fetchTwitterSourceDocuments(source, forceRemote);
+        sourcePlatform = source.platform ?? 'twitter';
+      } else if (source.type === 'video_file' && source.handle_or_url) {
+        const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+        const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
+        docs = await adapter.fetch(source.handle_or_url, { limit: 12, since });
+        sourcePlatform = source.platform ?? docs[0]?.source_platform ?? 'video_remote';
+      } else if ((source.type === 'article' || source.mode === 'remote_url') && source.handle_or_url) {
+        const adapter = new AgentReachAdapter('article');
+        docs = await adapter.fetch(source.handle_or_url, { limit: 1 });
+        sourcePlatform = source.platform ?? 'web';
+      }
 
-    if (docs.length === 0) {
+      if (docs.length === 0) {
+        this.touchSourceSyncState(slug, config, source.id, {
+          last_synced_at: now.toISOString(),
+          status: 'ready',
+          summary: 'No new source content.',
+        });
+        this.clearSyncOperation(slug);
+        return null;
+      }
+
+      const sourceWeight = computeSourceWeight(source);
+      const ingestionBatchId = crypto.randomUUID();
+      docs = docs.map((item) => ({
+        ...item,
+        metadata: {
+          ...(item.metadata ?? {}),
+          source_id: source.id,
+          source_weight: sourceWeight,
+          discovered_from: source.summary,
+          ingestion_batch_id: ingestionBatchId,
+          source_mode: source.mode,
+        },
+      }));
+
+      const cursor = createHash('sha1')
+        .update(JSON.stringify(docs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
+        .digest('hex');
+      if (!forceRemote && source.last_cursor && source.last_cursor === cursor) {
+        this.touchSourceSyncState(slug, config, source.id, {
+          last_synced_at: now.toISOString(),
+          status: 'ready',
+          summary: 'No source delta detected.',
+        });
+        this.clearSyncOperation(slug);
+        return null;
+      }
+
+      const manifest = {
+        target_name: config.name,
+        target_aliases: source.type === 'social' && source.handle_or_url ? [source.handle_or_url.replace(/^@/, ''), source.handle_or_url] : [config.name],
+        self_aliases: [],
+        known_other_aliases: [],
+      };
+      const batch = buildStandaloneEvidenceBatch(docs, { manifest, sourceLabel: sourcePlatform });
+      const importId = crypto.randomUUID();
+      const importDir = join(this.store.getEvidenceImportsDir(), importId);
+      mkdirSync(importDir, { recursive: true });
+      const artifacts = writeEvidenceArtifacts(importDir, batch, manifest);
+      const documentsPath = join(importDir, 'documents.json');
+      writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+
+      const imported = this.store.saveEvidenceImport({
+        id: importId,
+        persona_slug: slug,
+        source_kind: source.type === 'social' ? 'chat' : source.type === 'article' ? 'article' : 'video',
+        source_platform: sourcePlatform,
+        source_path: source.handle_or_url ?? source.local_path ?? '',
+        target_manifest_path: source.manifest_path ?? '',
+        status: 'completed',
+        item_count: batch.items.length,
+        summary: `Imported ${docs.length} new items from ${sourcePlatform}.`,
+        stats: batch.stats,
+        artifacts: {
+          ...artifacts,
+          documents_path: documentsPath,
+        },
+        created_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      });
+
       this.touchSourceSyncState(slug, config, source.id, {
         last_synced_at: now.toISOString(),
+        last_cursor: cursor,
+        last_seen_published_at: extractLatestPublishedAt(docs),
         status: 'ready',
-        summary: 'No new source content.',
+        summary: imported.summary,
       });
-      return null;
-    }
-
-    const sourceWeight = computeSourceWeight(source);
-    const ingestionBatchId = crypto.randomUUID();
-    docs = docs.map((item) => ({
-      ...item,
-      metadata: {
-        ...(item.metadata ?? {}),
-        source_id: source.id,
-        source_weight: sourceWeight,
-        discovered_from: source.summary,
-        ingestion_batch_id: ingestionBatchId,
-        source_mode: source.mode,
-      },
-    }));
-
-    const cursor = createHash('sha1')
-      .update(JSON.stringify(docs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
-      .digest('hex');
-    if (!forceRemote && source.last_cursor && source.last_cursor === cursor) {
+      this.clearSyncOperation(slug);
+      return imported;
+    } catch (error) {
       this.touchSourceSyncState(slug, config, source.id, {
-        last_synced_at: now.toISOString(),
-        status: 'ready',
-        summary: 'No source delta detected.',
+        status: 'error',
+        summary: `Source sync failed: ${String(error instanceof Error ? error.message : error).slice(0, 160)}`,
       });
-      return null;
+      this.clearSyncOperation(slug);
+      throw error;
     }
+  }
 
-    const manifest = {
-      target_name: config.name,
-      target_aliases: source.type === 'social' && source.handle_or_url ? [source.handle_or_url.replace(/^@/, ''), source.handle_or_url] : [config.name],
-      self_aliases: [],
-      known_other_aliases: [],
-    };
-    const batch = buildStandaloneEvidenceBatch(docs, { manifest, sourceLabel: sourcePlatform });
-    const importId = crypto.randomUUID();
-    const importDir = join(this.store.getEvidenceImportsDir(), importId);
-    mkdirSync(importDir, { recursive: true });
-    const artifacts = writeEvidenceArtifacts(importDir, batch, manifest);
-    const documentsPath = join(importDir, 'documents.json');
-    writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
-
-    const imported = this.store.saveEvidenceImport({
-      id: importId,
-      persona_slug: slug,
-      source_kind: source.type === 'social' ? 'chat' : source.type === 'article' ? 'article' : 'video',
-      source_platform: sourcePlatform,
-      source_path: source.handle_or_url ?? source.local_path ?? '',
-      target_manifest_path: source.manifest_path ?? '',
-      status: 'completed',
-      item_count: batch.items.length,
-      summary: `Imported ${docs.length} new items from ${sourcePlatform}.`,
-      stats: batch.stats,
-      artifacts: {
-        ...artifacts,
-        documents_path: documentsPath,
+  private touchSyncOperation(slug: string, config: PersonaConfig, source: PersonaSource, forceRemote: boolean): void {
+    const latestConfig = this.store.getPersonaConfig(slug) ?? config;
+    const currentOperation = source.type === 'social' && (!source.last_seen_published_at || forceRemote)
+      ? 'deep_fetch'
+      : 'incremental_sync';
+    this.store.savePersonaConfig({
+      ...latestConfig,
+      sources: latestConfig.sources.map((item) => item.id === source.id ? { ...item, status: 'syncing' } : item),
+      update_policy: {
+        ...latestConfig.update_policy,
+        current_operation: currentOperation,
+        current_source_label: describeSourceLabel(source),
+        latest_result: currentOperation === 'deep_fetch'
+          ? `正在深抓取 ${describeSourceLabel(source)}…`
+          : `正在增量拉取 ${describeSourceLabel(source)}…`,
       },
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
+      updated_at: new Date().toISOString(),
     });
+  }
 
-    this.touchSourceSyncState(slug, config, source.id, {
-      last_synced_at: now.toISOString(),
-      last_cursor: cursor,
-      last_seen_published_at: extractLatestPublishedAt(docs),
-      status: 'ready',
-      summary: imported.summary,
+  private clearSyncOperation(slug: string): void {
+    const latestConfig = this.store.getPersonaConfig(slug);
+    if (!latestConfig) return;
+    this.store.savePersonaConfig({
+      ...latestConfig,
+      update_policy: {
+        ...latestConfig.update_policy,
+        current_operation: 'idle',
+        current_source_label: undefined,
+      },
+      updated_at: new Date().toISOString(),
     });
-    return imported;
   }
 
   private touchSourceSyncState(
@@ -2478,6 +2559,8 @@ export class WorkbenchService {
         recent_delta_count: evidenceImports
           .filter((item) => Date.now() - new Date(item.updated_at).getTime() < 7 * 24 * 60 * 60 * 1000)
           .reduce((sum, item) => sum + item.item_count, 0),
+        current_operation: config.update_policy.current_operation,
+        current_source_label: config.update_policy.current_source_label,
         last_update_check_at: config.update_policy.last_checked_at,
         latest_update_result: config.update_policy.latest_result,
       },
@@ -2972,6 +3055,8 @@ export class WorkbenchService {
         recent_delta_count: evidenceImports
           .filter((item) => Date.now() - new Date(item.updated_at).getTime() < 7 * 24 * 60 * 60 * 1000)
           .reduce((sum, item) => sum + item.item_count, 0),
+        current_operation: config.update_policy.current_operation,
+        current_source_label: config.update_policy.current_source_label,
         last_update_check_at: config.update_policy.last_checked_at,
         latest_update_result: config.update_policy.latest_result,
       } as any,

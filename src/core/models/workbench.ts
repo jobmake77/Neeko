@@ -258,6 +258,8 @@ export const PersonaConfigSchema = z.object({
     auto_check_remote: z.boolean().default(true),
     check_interval_minutes: z.number().int().min(5).default(60),
     strategy: z.enum(['incremental']).default('incremental'),
+    current_operation: z.enum(['idle', 'deep_fetch', 'incremental_sync', 'discovery']).optional(),
+    current_source_label: z.string().optional(),
     last_checked_at: z.string().datetime().optional(),
     latest_result: z.string().optional(),
   }).default({

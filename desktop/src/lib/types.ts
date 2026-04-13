@@ -104,6 +104,8 @@ export interface PersonaConfig {
     auto_check_remote: boolean;
     check_interval_minutes: number;
     strategy: 'incremental';
+    current_operation?: 'idle' | 'deep_fetch' | 'incremental_sync' | 'discovery';
+    current_source_label?: string;
     last_checked_at?: string;
     latest_result?: string;
   };
@@ -183,6 +185,8 @@ export interface CultivationSummary {
     source_breakdown?: Record<string, number>;
     document_count?: number;
     recent_delta_count?: number;
+    current_operation?: 'idle' | 'deep_fetch' | 'incremental_sync' | 'discovery';
+    current_source_label?: string;
     last_update_check_at?: string;
     latest_update_result?: string;
   };

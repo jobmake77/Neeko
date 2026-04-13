@@ -24,6 +24,29 @@ export function getDefaultModelForProvider(provider: ProviderName): string {
   return DEFAULT_MODELS[provider];
 }
 
+function isModelCompatibleWithProvider(provider: ProviderName, model?: string): boolean {
+  const value = String(model || '').trim();
+  if (!value) return false;
+  if (provider === 'claude') return /^claude-/i.test(value);
+  if (provider === 'openai') return /^(gpt|o1|o3|o4)/i.test(value);
+  if (provider === 'kimi') return /^(moonshot|kimi)/i.test(value);
+  if (provider === 'gemini') return /^gemini/i.test(value);
+  return /^deepseek/i.test(value);
+}
+
+function normalizeModelForProvider(provider: ProviderName | undefined, model?: string): string | undefined {
+  if (!provider) return model;
+  return isModelCompatibleWithProvider(provider, model) ? String(model).trim() : getDefaultModelForProvider(provider);
+}
+
+function hasProviderKey(provider: ProviderName, ctx: ReturnType<typeof getProviderResolutionContext>): boolean {
+  if (provider === 'claude') return Boolean(ctx.anthropicKey);
+  if (provider === 'openai') return Boolean(ctx.openaiKey);
+  if (provider === 'kimi') return Boolean(ctx.kimiKey);
+  if (provider === 'gemini') return Boolean(ctx.geminiKey);
+  return Boolean(ctx.deepseekKey);
+}
+
 function sanitizeProviderName(value: string): ProviderName | undefined {
   if (
     value === 'claude' ||
@@ -43,22 +66,33 @@ function getRolePreference(role: ModelRuntimeRole): { provider?: ProviderName; m
   const sharedProvider = sanitizeProviderName(String(process.env.NEEKO_ACTIVE_PROVIDER || cfg.activeProvider || '').trim().toLowerCase());
   const sharedModel = String(cfg.defaultModel ?? '').trim() || undefined;
   if (mode !== 'split') {
-    return { provider: sharedProvider, model: sharedModel };
+    return { provider: sharedProvider, model: normalizeModelForProvider(sharedProvider, sharedModel) };
   }
 
   if (role === 'chat') {
+    const provider = sanitizeProviderName(String(cfg.chatProvider || sharedProvider || '').trim().toLowerCase());
     return {
-      provider: sanitizeProviderName(String(cfg.chatProvider || sharedProvider || '').trim().toLowerCase()),
-      model: String(cfg.chatModel || sharedModel || '').trim() || undefined,
+      provider,
+      model: normalizeModelForProvider(provider, String(cfg.chatModel || sharedModel || '').trim() || undefined),
     };
   }
   if (role === 'training') {
+    const provider = sanitizeProviderName(String(cfg.trainingProvider || sharedProvider || '').trim().toLowerCase());
     return {
-      provider: sanitizeProviderName(String(cfg.trainingProvider || sharedProvider || '').trim().toLowerCase()),
-      model: String(cfg.trainingModel || sharedModel || '').trim() || undefined,
+      provider,
+      model: normalizeModelForProvider(provider, String(cfg.trainingModel || sharedModel || '').trim() || undefined),
     };
   }
-  return { provider: sharedProvider, model: sharedModel };
+  return { provider: sharedProvider, model: normalizeModelForProvider(sharedProvider, sharedModel) };
+}
+
+export function resolvePreferredModelOverride(role: ModelRuntimeRole = 'general'): ModelRuntimeOverride | undefined {
+  const preference = getRolePreference(role);
+  if (!preference.provider) return undefined;
+  return {
+    provider: preference.provider,
+    model: preference.model || getDefaultModelForProvider(preference.provider),
+  };
 }
 
 export function resolvePreferredProviderName(role: ModelRuntimeRole = 'general'): ProviderName | undefined {
@@ -132,6 +166,14 @@ export function resolveModelProviderName(role: ModelRuntimeRole = 'general'): Pr
   }
 
   throw new Error('未配置任何 LLM API Key。请先在设置页填写至少一个模型的 API Key。');
+}
+
+export function listAvailableProviders(role: ModelRuntimeRole = 'general'): ProviderName[] {
+  const ctx = getProviderResolutionContext(role);
+  return ctx.deduped.filter((provider): provider is ProviderName => {
+    const normalized = sanitizeProviderName(provider);
+    return Boolean(normalized && hasProviderKey(normalized, ctx));
+  }).map((provider) => sanitizeProviderName(provider) as ProviderName);
 }
 
 /**

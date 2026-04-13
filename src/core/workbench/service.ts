@@ -59,7 +59,7 @@ import {
 import { classifyFailure } from '../training/failure-loop.js';
 import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
-import { resolveModelForOverride, type ProviderName } from '../../config/model.js';
+import { getDefaultModelForProvider, resolveModelForOverride, type ProviderName } from '../../config/model.js';
 import { writeRawDocsCache } from '../pipeline/evidence-routing.js';
 
 export interface WorkbenchCreateInput {
@@ -866,6 +866,16 @@ function slugifySegment(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'handoff';
+}
+
+function normalizeRuntimeModel(provider: RuntimeModelConfig['provider'], model: string): string {
+  const value = String(model || '').trim();
+  if (provider === 'claude' && /^claude-/i.test(value)) return value;
+  if (provider === 'openai' && /^(gpt|o1|o3|o4)/i.test(value)) return value;
+  if (provider === 'kimi' && /^(moonshot|kimi)/i.test(value)) return value;
+  if (provider === 'gemini' && /^gemini/i.test(value)) return value;
+  if (provider === 'deepseek' && /^deepseek/i.test(value)) return value;
+  return getDefaultModelForProvider(provider);
 }
 
 function renderPromotionHandoffMarkdown(handoff: PromotionHandoff): string {
@@ -2110,16 +2120,25 @@ export class WorkbenchService {
   }
 
   getRuntimeModelConfig(): RuntimeModelConfig {
+    const mode = settings.get('modelConfigMode') ?? 'shared';
     const sharedProvider = (settings.get('activeProvider') ?? 'claude') as RuntimeModelConfig['provider'];
-    const sharedModel = String(settings.get('defaultModel') ?? 'claude-sonnet-4-6');
-    const chatProvider = (settings.get('chatProvider') ?? sharedProvider) as RuntimeModelConfig['provider'];
-    const chatModel = String(settings.get('chatModel') ?? sharedModel);
-    const trainingProvider = (settings.get('trainingProvider') ?? sharedProvider) as RuntimeModelConfig['provider'];
-    const trainingModel = String(settings.get('trainingModel') ?? sharedModel);
+    const sharedModel = normalizeRuntimeModel(sharedProvider, String(settings.get('defaultModel') ?? 'claude-sonnet-4-6'));
+    const chatProvider = mode === 'split'
+      ? ((settings.get('chatProvider') ?? sharedProvider) as RuntimeModelConfig['provider'])
+      : sharedProvider;
+    const chatModel = mode === 'split'
+      ? normalizeRuntimeModel(chatProvider, String(settings.get('chatModel') ?? sharedModel))
+      : sharedModel;
+    const trainingProvider = mode === 'split'
+      ? ((settings.get('trainingProvider') ?? sharedProvider) as RuntimeModelConfig['provider'])
+      : sharedProvider;
+    const trainingModel = mode === 'split'
+      ? normalizeRuntimeModel(trainingProvider, String(settings.get('trainingModel') ?? sharedModel))
+      : sharedModel;
     return {
       provider: chatProvider,
       model: chatModel,
-      mode: settings.get('modelConfigMode') ?? 'shared',
+      mode,
       shared_default: {
         provider: sharedProvider,
         model: sharedModel,
@@ -2145,19 +2164,19 @@ export class WorkbenchService {
   updateRuntimeModelConfig(input: RuntimeModelConfig): RuntimeModelConfig {
     const mode = input.mode ?? 'shared';
     const sharedProvider = input.shared_default?.provider ?? input.provider;
-    const sharedModel = input.shared_default?.model ?? input.model;
+    const sharedModel = normalizeRuntimeModel(sharedProvider, input.shared_default?.model ?? input.model);
     const chatProvider = mode === 'split'
       ? (input.chat_default?.provider ?? input.provider)
       : sharedProvider;
-    const chatModel = mode === 'split'
+    const chatModel = normalizeRuntimeModel(chatProvider, mode === 'split'
       ? (input.chat_default?.model ?? input.model)
-      : sharedModel;
+      : sharedModel);
     const trainingProvider = mode === 'split'
       ? (input.training_default?.provider ?? sharedProvider)
       : sharedProvider;
-    const trainingModel = mode === 'split'
+    const trainingModel = normalizeRuntimeModel(trainingProvider, mode === 'split'
       ? (input.training_default?.model ?? sharedModel)
-      : sharedModel;
+      : sharedModel);
 
     settings.set('modelConfigMode', mode);
     settings.set('activeProvider', sharedProvider);

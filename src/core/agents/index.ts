@@ -1,7 +1,15 @@
 import { generateText, generateObject } from 'ai';
 import { z } from 'zod';
 import { Soul } from '../models/soul.js';
-import { resolveModel, resolveModelForOverride, type ModelRuntimeOverride, type ProviderName } from '../../config/model.js';
+import {
+  getDefaultModelForProvider,
+  listAvailableProviders,
+  resolveModel,
+  resolveModelForOverride,
+  resolvePreferredModelOverride,
+  type ModelRuntimeOverride,
+  type ProviderName,
+} from '../../config/model.js';
 import { settings } from '../../config/settings.js';
 import { SoulRenderer } from '../soul/renderer.js';
 import { MemoryRetriever } from '../memory/retriever.js';
@@ -84,6 +92,68 @@ function computeRetryBackoffMs(attempt: number): number {
   return base + jitter;
 }
 
+function buildProviderAttemptChain(primary?: ModelRuntimeOverride): ModelRuntimeOverride[] {
+  const primaryProvider = primary?.provider;
+  const primaryModel = primary?.model;
+  const seen = new Set<string>();
+  const attempts: ModelRuntimeOverride[] = [];
+
+  const push = (provider?: ProviderName, model?: string) => {
+    if (!provider) return;
+    const resolvedModel = String(model || '').trim() || getDefaultModelForProvider(provider);
+    const key = `${provider}:${resolvedModel}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    attempts.push({ provider, model: resolvedModel });
+  };
+
+  push(primaryProvider, primaryModel);
+  for (const provider of listAvailableProviders('chat')) {
+    if (provider === primaryProvider) continue;
+    push(provider, undefined);
+  }
+  return attempts;
+}
+
+async function generatePersonaReplyWithProvider(
+  attempt: ModelRuntimeOverride,
+  options: {
+    systemPrompt: string;
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+    query: string;
+    maxTokens?: number;
+    timeoutMs?: number;
+    retries?: number;
+  }
+): Promise<string> {
+  if (attempt.provider === 'gemini') {
+    return withRetry(
+      () => generateTextWithGeminiDirect({
+        systemPrompt: options.systemPrompt,
+        conversationHistory: options.conversationHistory,
+        userMessage: options.query,
+        model: attempt.model,
+      }),
+      { label: `persona respond ${attempt.provider}`, timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
+    );
+  }
+
+  return (await withRetry(
+    () =>
+      generateText({
+        model: resolveModelForOverride(attempt, 'chat'),
+        system: options.systemPrompt,
+        messages: [
+          ...options.conversationHistory,
+          { role: 'user', content: options.query },
+        ],
+        maxTokens: options.maxTokens ?? 1024,
+        temperature: 0.7,
+      }),
+    { label: `persona respond ${attempt.provider ?? 'default'}`, timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
+  )).text;
+}
+
 function containsCjk(text: string): boolean {
   return /[\u3400-\u9fff]/.test(text);
 }
@@ -106,6 +176,18 @@ function buildChineseFallbackAngle(query: string): string {
     return '我通常不会先追求更大的目标，我会先确认目标是不是足够清晰，能不能压缩成今天就能执行的动作。';
   }
   return '我会先把问题收回到最关键的约束上，再判断哪一步最值得投入。';
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function pickVariant<T>(items: T[], seed: string): T {
+  return items[hashString(seed) % items.length];
 }
 
 function normalizeChineseReasoning(reasoning: string): string {
@@ -314,31 +396,47 @@ export class PersonaAgent {
     });
 
     try {
-      const effectiveProvider = (options.modelOverride?.provider ?? getActiveProviderName()) as ProviderName | string;
-      const text = effectiveProvider === 'gemini'
-        ? await withRetry(
-            () => generateTextWithGeminiDirect({
-              systemPrompt,
-              conversationHistory,
-              userMessage: query,
-              model: options.modelOverride?.model,
-            }),
-            { label: 'persona respond gemini', timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
-          )
-        : (await withRetry(
-            () =>
-              generateText({
-                model: resolveModelForOverride(options.modelOverride, 'chat'),
-                system: systemPrompt,
-                messages: [
-                  ...conversationHistory,
-                  { role: 'user', content: query },
-                ],
-                maxTokens: options.maxTokens ?? 1024,
-                temperature: 0.7,
-              }),
-            { label: 'persona respond', timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
-          )).text;
+      const preferredAttempt = resolvePreferredModelOverride('chat');
+      const primaryAttempt: ModelRuntimeOverride | undefined = options.modelOverride?.provider
+        ? {
+            provider: options.modelOverride.provider,
+            model: options.modelOverride.model,
+          }
+        : preferredAttempt?.provider
+          ? preferredAttempt
+          : getActiveProviderName()
+            ? {
+                provider: getActiveProviderName() as ProviderName,
+                model: options.modelOverride?.model,
+              }
+            : undefined;
+      const attempts = buildProviderAttemptChain(primaryAttempt);
+      let lastError: unknown;
+      let text = '';
+      for (const attempt of attempts) {
+        try {
+          if (attempt.provider && primaryAttempt?.provider && attempt.provider !== primaryAttempt.provider) {
+            console.warn(`[PersonaAgent] chat failover ${primaryAttempt.provider} -> ${attempt.provider}`);
+          }
+          text = await generatePersonaReplyWithProvider(attempt, {
+            systemPrompt,
+            conversationHistory,
+            query,
+            maxTokens: options.maxTokens,
+            timeoutMs: options.timeoutMs,
+            retries: options.retries,
+          });
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!shouldRetryProviderError(error)) {
+            throw error;
+          }
+        }
+      }
+      if (!text) {
+        throw lastError instanceof Error ? lastError : new Error('All chat providers failed.');
+      }
 
       return {
         text,
@@ -368,17 +466,37 @@ export class PersonaAgent {
     if (chinese) {
       const angle = buildChineseFallbackAngle(query);
       const normalizedReasoning = normalizeChineseReasoning(reasoning);
-      const sentences = [
+      const seed = `${query}:${belief}:${expertise}`;
+      const opener = pickVariant([
         angle,
-        belief ? `对我来说，一个反复成立的原则是：${belief}。` : normalizedReasoning,
+        `我会先把问题收回到真正起决定作用的约束上。`,
+        `我更关心这个问题里真正起作用的结构，而不是表面波动。`,
+      ], seed);
+      const closer = pickVariant([
         `放到这个问题里，我会先找出最重要的变量，然后把注意力压到最有复利的那一步。`,
+        `如果是我来处理，我不会一下子摊太大，而是先把最关键的一步做扎实。`,
+        `真正有用的做法，通常不是更激烈，而是更稳定地把关键动作重复下去。`,
+      ], `${seed}:close`);
+      const sentences = [
+        opener,
+        belief ? `对我来说，一个反复成立的原则是：${belief}。` : normalizedReasoning,
+        closer,
       ];
       return sentences.join('');
     }
+    const seed = `${query}:${belief}:${expertise}`;
     const sentences = [
-      `My instinct on ${expertise} is to stay concrete and focus on what actually compounds.`,
+      pickVariant([
+        `My instinct on ${expertise} is to stay concrete and focus on what actually compounds.`,
+        `I would pull this back to first principles instead of reacting to surface noise.`,
+        `What matters to me here is the structure of the problem, not just the visible symptom.`,
+      ], seed),
       belief ? `A principle I keep coming back to is ${belief}.` : reasoning,
-      `For "${query}", I would start with the main constraint and then put energy into the highest-leverage next step.`,
+      pickVariant([
+        `For "${query}", I would start with the main constraint and then put energy into the highest-leverage next step.`,
+        `For "${query}", I would reduce the problem to the key variable and then move from there.`,
+        `For "${query}", I would avoid overcomplicating it and just attack the highest-leverage step first.`,
+      ], `${seed}:close`),
     ];
     return sentences.join(' ');
   }

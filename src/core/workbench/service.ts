@@ -10,6 +10,8 @@ import { MemoryStore } from '../memory/store.js';
 import { MemoryNode } from '../models/memory.js';
 import { Persona, PersonaSchema } from '../models/persona.js';
 import { Soul, SoulSchema } from '../models/soul.js';
+import { createPersona as createPersonaAsset } from '../models/persona.js';
+import { createEmptySoul } from '../models/soul.js';
 import { EvidenceItem } from '../models/evidence.js';
 import { loadSkillLibrary } from '../skills/library.js';
 import { RawDocument } from '../models/memory.js';
@@ -56,6 +58,7 @@ import { classifyFailure } from '../training/failure-loop.js';
 import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
 import type { ProviderName } from '../../config/model.js';
+import { writeRawDocsCache } from '../pipeline/evidence-routing.js';
 
 export interface WorkbenchCreateInput {
   target?: string;
@@ -965,7 +968,6 @@ export class WorkbenchService {
     this.store.savePersonaConfig(config);
 
     const run = this.startCreateRunFromConfig(config);
-    this.schedulePostCreateSourceSync(config, run.id);
     return {
       persona: this.readPersonaConfigSummary(slug) ?? this.readPersonaSummary(slug) ?? {
         slug,
@@ -1002,7 +1004,6 @@ export class WorkbenchService {
     await this.preparePersonaRebuild(slug);
     this.markPersonaUpdating(slug);
     const run = this.startCreateRunFromConfig(nextConfig);
-    this.schedulePostCreateSourceSync(nextConfig, run.id);
     return {
       persona: this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug) ?? {
         slug,
@@ -1646,6 +1647,34 @@ export class WorkbenchService {
     return this.startSourceSyncRun(slug, 'deep_fetch');
   }
 
+  async runCreatePersonaForeground(slug: string): Promise<{ run: WorkbenchRun | null; summary: string }> {
+    const config = this.getPersonaConfig(slug);
+    this.initializePersonaAssetsFromConfig(config);
+    const sourceSync = await this.runSourceSyncForeground(slug, 'deep_fetch');
+    const trainRun = sourceSync.run;
+    if (!trainRun) {
+      const latestPersona = this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug);
+      if (latestPersona && latestPersona.status !== 'converged') {
+        const dir = settings.getPersonaDir(slug);
+        const personaPath = join(dir, 'persona.json');
+        if (existsSync(personaPath)) {
+          const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+          writeFileSync(personaPath, JSON.stringify({
+            ...persona,
+            status: 'converged',
+            updated_at: new Date().toISOString(),
+          }, null, 2), 'utf-8');
+        }
+      }
+      return { run: null, summary: sourceSync.summary };
+    }
+    const finalRun = await this.waitForRunCompletion(trainRun.id);
+    if (!finalRun || finalRun.status !== 'completed') {
+      throw new Error(finalRun?.summary ?? 'Initial training did not finish.');
+    }
+    return { run: finalRun, summary: finalRun.summary ?? 'Persona created from configured sources.' };
+  }
+
   async runSourceSyncForeground(
     slug: string,
     mode: 'incremental_sync' | 'deep_fetch'
@@ -1671,6 +1700,68 @@ export class WorkbenchService {
       imports,
       mode === 'deep_fetch' ? 'Continued cultivation from configured sources.' : 'Checked remote sources.'
     );
+  }
+
+  private initializePersonaAssetsFromConfig(config: PersonaConfig): void {
+    const personaDir = settings.getPersonaDir(config.persona_slug);
+    mkdirSync(personaDir, { recursive: true });
+    const sourceTargets = config.sources
+      .filter((item) => item.enabled)
+      .map((item) => item.handle_or_url ?? item.local_path ?? item.type)
+      .filter((item): item is string => Boolean(item));
+    const primarySource = config.sources.find((item) => item.enabled) ?? config.sources[0];
+    const handle = primarySource?.type === 'social' ? primarySource.handle_or_url?.replace(/^@/, '') : undefined;
+    const persona = createPersonaAsset(
+      config.name,
+      'single',
+      sourceTargets.length > 0 ? sourceTargets : [config.name],
+      (slug) => existsSync(settings.getPersonaDir(slug)),
+      config.persona_slug
+    );
+    const soul = createEmptySoul(config.name, handle ? `@${handle}` : undefined);
+    const rawDocs = dedupeRawDocuments(
+      this.store.listEvidenceImports(config.persona_slug)
+        .flatMap((item) => readJsonFile<RawDocument[]>(item.artifacts.documents_path, []))
+    );
+
+    const evidenceBatch = buildStandaloneEvidenceBatch(rawDocs, {
+      manifest: {
+        target_name: config.name,
+        target_aliases: handle ? [handle, `@${handle}`] : [config.name],
+        self_aliases: [],
+        known_other_aliases: [],
+      },
+      sourceLabel: 'workbench_source_pool',
+    });
+
+    writeFileSync(join(personaDir, 'persona.json'), JSON.stringify({
+      ...persona,
+      handle: handle ? `@${handle}` : undefined,
+      status: rawDocs.length > 0 ? 'training' : 'created',
+      doc_count: rawDocs.length,
+      updated_at: new Date().toISOString(),
+    }, null, 2), 'utf-8');
+    writeFileSync(join(personaDir, 'soul.yaml'), yaml.dump(soul), 'utf-8');
+    writeRawDocsCache(personaDir, rawDocs);
+    writeEvidenceArtifacts(personaDir, evidenceBatch, {
+      target_name: config.name,
+      target_aliases: handle ? [handle, `@${handle}`] : [config.name],
+      self_aliases: [],
+      known_other_aliases: [],
+    });
+  }
+
+  private async waitForRunCompletion(runId: string, timeoutMs = 30 * 60 * 1000): Promise<WorkbenchRun | null> {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const run = this.getRunStatus(runId);
+      if (!run) return null;
+      if (run.status === 'completed' || run.status === 'failed') {
+        return run;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    return this.getRunStatus(runId);
   }
 
   getRuntimeModelConfig(): RuntimeModelConfig {
@@ -2115,7 +2206,8 @@ export class WorkbenchService {
       } else if (source.type === 'video_file' && source.handle_or_url) {
         const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
         const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
-        docs = await adapter.fetch(source.handle_or_url, { limit: 12, since });
+        const videoLimit = 1;
+        docs = await adapter.fetch(source.handle_or_url, { limit: videoLimit, since });
         sourcePlatform = source.platform ?? docs[0]?.source_platform ?? 'video_remote';
       } else if ((source.type === 'article' || source.mode === 'remote_url') && source.handle_or_url) {
         const adapter = new AgentReachAdapter('article');
@@ -2628,36 +2720,15 @@ export class WorkbenchService {
   }
 
   private startCreateRunFromConfig(config: PersonaConfig): WorkbenchRun {
-    const input = this.mapPersonaConfigToCreateInput(config);
-    return this.createPersona({
-      ...input,
-      slug: config.persona_slug,
-      rounds: 1,
-    });
-  }
-
-  private mapPersonaConfigToCreateInput(config: PersonaConfig): WorkbenchCreateInput {
-    const primarySource = config.sources.find((item) => item.enabled) ?? config.sources[0];
-    if (!primarySource) {
-      throw new Error('No available source configured for this persona.');
-    }
-    if (primarySource.type === 'social') {
-      return {
-        target: primarySource.handle_or_url,
-      };
-    }
-    if (primarySource.type === 'article') {
-      return {
-        target: primarySource.handle_or_url,
-      };
-    }
-    return {
-      target: primarySource.mode === 'local_file' ? primarySource.local_path : primarySource.handle_or_url,
-      targetManifest: primarySource.manifest_path,
-      chatPlatform: primarySource.type === 'chat_file'
-        ? (primarySource.platform as 'wechat' | 'feishu' | undefined) ?? 'wechat'
-        : undefined,
-    };
+    return this.startCliRun(
+      'create',
+      config.persona_slug,
+      ['workbench-create-persona', config.persona_slug],
+      undefined,
+      {
+        summaryLabel: 'create',
+      }
+    );
   }
 
   private readPersonaConfigSummary(slug: string): PersonaSummary | null {

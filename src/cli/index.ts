@@ -13,6 +13,7 @@ import { cmdSkillsRefresh } from './commands/skills-refresh.js';
 import { cmdDualPipeline } from './commands/dual-pipeline.js';
 import { cmdWorkbenchServer } from './commands/workbench-server.js';
 import { cmdWorkbenchSourceSync } from './commands/workbench-source-sync.js';
+import { cmdWorkbenchCreatePersona } from './commands/workbench-create-persona.js';
 
 // Apply saved API keys to environment on startup
 const cfg = settings.getAll();
@@ -260,6 +261,13 @@ program
   .option('--mode <mode>', 'Sync mode: incremental_sync | deep_fetch', 'deep_fetch')
   .action(async (slug: string, options: { mode?: string }) => {
     await cmdWorkbenchSourceSync(slug, options, process.argv[1]);
+  });
+
+program
+  .command('workbench-create-persona <slug>')
+  .description('Create or rebuild a persona from configured sources')
+  .action(async (slug: string) => {
+    await cmdWorkbenchCreatePersona(slug, process.argv[1]);
   });
 
 program.parseAsync(process.argv)

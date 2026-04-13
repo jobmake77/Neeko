@@ -2,6 +2,7 @@ import { generateText, generateObject } from 'ai';
 import { z } from 'zod';
 import { Soul } from '../models/soul.js';
 import { resolveModel } from '../../config/model.js';
+import { settings } from '../../config/settings.js';
 import { SoulRenderer } from '../soul/renderer.js';
 import { MemoryRetriever } from '../memory/retriever.js';
 import { MemoryNode } from '../models/memory.js';
@@ -99,6 +100,85 @@ export function snapshotAndResetAgentFallbackMetrics(): typeof runtimeFallbackMe
   return snapshot;
 }
 
+function getGeminiApiKey(): string {
+  const configured = String(settings.get('geminiApiKey') ?? '').trim();
+  if (configured) return configured;
+  return String(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? '').trim();
+}
+
+function getActiveProviderName(): string {
+  return String(process.env.NEEKO_ACTIVE_PROVIDER || settings.get('activeProvider') || '').trim().toLowerCase();
+}
+
+function extractGeminiText(payload: any): string {
+  return (payload?.candidates ?? [])
+    .flatMap((candidate: any) => candidate?.content?.parts ?? [])
+    .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+async function generateTextWithGeminiDirect(options: {
+  systemPrompt: string;
+  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+  userMessage: string;
+}): Promise<string> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API key is missing.');
+  }
+
+  const contents = [
+    ...options.conversationHistory.map((item) => ({
+      role: item.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: item.content }],
+    })),
+    {
+      role: 'user',
+      parts: [{ text: options.userMessage }],
+    },
+  ];
+
+  const models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: options.systemPrompt }],
+          },
+          contents,
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 1024,
+          },
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = payload?.error?.message || `Gemini generateContent ${response.status}`;
+        throw new Error(message);
+      }
+      const text = extractGeminiText(payload);
+      if (!text) throw new Error('Gemini returned empty text.');
+      return text;
+    } catch (error) {
+      lastError = error;
+      const message = String(error instanceof Error ? error.message : error).toLowerCase();
+      if (!/high demand|rate limit|resource exhausted|429|503|overloaded|unavailable/.test(message)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Gemini chat generation failed.');
+}
+
 // ─── Persona Agent ────────────────────────────────────────────────────────────
 // Plays the role of the target person using Soul+Memory RAG
 
@@ -171,20 +251,29 @@ export class PersonaAgent {
       (skillContext ? `\n\n${skillContext}` : '');
 
     try {
-      const { text } = await withRetry(
-        () =>
-          generateText({
-            model: this.model,
-            system: systemPrompt,
-            messages: [
-              ...conversationHistory,
-              { role: 'user', content: query },
-            ],
-            maxTokens: options.maxTokens ?? 1024,
-            temperature: 0.7,
-          }),
-        { label: 'persona respond', timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
-      );
+      const text = getActiveProviderName() === 'gemini'
+        ? await withRetry(
+            () => generateTextWithGeminiDirect({
+              systemPrompt,
+              conversationHistory,
+              userMessage: query,
+            }),
+            { label: 'persona respond gemini', timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
+          )
+        : (await withRetry(
+            () =>
+              generateText({
+                model: this.model,
+                system: systemPrompt,
+                messages: [
+                  ...conversationHistory,
+                  { role: 'user', content: query },
+                ],
+                maxTokens: options.maxTokens ?? 1024,
+                temperature: 0.7,
+              }),
+            { label: 'persona respond', timeoutMs: options.timeoutMs ?? 45_000, retries: options.retries ?? 1 }
+          )).text;
 
       return {
         text,

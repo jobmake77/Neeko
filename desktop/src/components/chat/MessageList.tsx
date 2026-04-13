@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/stores/chat';
 import { t } from '@/lib/i18n';
 import type { AttachmentRef } from '@/lib/types';
+import { Image as ImageIcon, Video, FileAudio, FileText, File, Sparkles, AlertCircle, Loader2 } from 'lucide-react';
 
 const HELIX_FRAMES = ['⣾','⣽','⣻','⢿','⡿','⣟','⣯','⣷'];
 
@@ -151,45 +152,103 @@ export function MessageList() {
 
 function AttachmentBadge({ attachment }: { attachment: AttachmentRef }) {
   const status = attachment.processing_status ?? 'pending';
-  const color = status === 'ready'
-    ? 'rgb(34 197 94)'
-    : status === 'unsupported'
-      ? 'rgb(245 158 11)'
-      : status === 'error'
-        ? 'rgb(239 68 68)'
-        : 'rgb(var(--text-tertiary))';
+  const tone = getStatusTone(status);
+  const icon = renderAttachmentIcon(attachment.type);
+  const provider = formatProviderLabel(attachment.processing_provider);
+  const summary = attachment.processing_summary
+    || attachment.processing_error
+    || getFallbackSummary(status);
 
   return (
     <div
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4,
+        display: 'grid',
+        gridTemplateColumns: '32px minmax(0,1fr)',
+        columnGap: 10,
+        rowGap: 6,
         border: '1px solid rgb(var(--border))',
-        background: 'rgb(var(--bg-hover))',
-        borderRadius: 12,
-        padding: '6px 9px',
-        minWidth: 140,
-        maxWidth: 280,
+        background: 'rgb(var(--bg-card))',
+        borderRadius: 14,
+        padding: '9px 10px',
+        minWidth: 180,
+        maxWidth: 320,
+        boxShadow: '0 1px 2px rgb(0 0 0 / 0.03)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{ fontSize: 11, color: 'rgb(var(--text-secondary))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {attachment.name}
-        </span>
-        <span style={{ fontSize: 10, color, flexShrink: 0 }}>
-          {formatAttachmentStatus(status)}
-        </span>
+      <div
+        style={{
+          width: 32,
+          height: 32,
+          borderRadius: 10,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'rgb(var(--bg-hover))',
+          color: 'rgb(var(--text-secondary))',
+          border: '1px solid rgb(var(--border-light))',
+          gridRow: 'span 2',
+        }}
+      >
+        {icon}
       </div>
-      {attachment.processing_summary ? (
-        <div style={{ fontSize: 11, lineHeight: 1.45, color: 'rgb(var(--text-tertiary))' }}>
-          {attachment.processing_summary}
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, minWidth: 0 }}>
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: 'rgb(var(--text-primary))',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              lineHeight: 1.3,
+            }}
+          >
+            {attachment.name}
+          </div>
+          <div style={{ marginTop: 2, fontSize: 11, color: 'rgb(var(--text-tertiary))', lineHeight: 1.3 }}>
+            {formatAttachmentType(attachment.type)}
+          </div>
         </div>
-      ) : attachment.processing_error ? (
-        <div style={{ fontSize: 11, lineHeight: 1.45, color }}>
-          {attachment.processing_error}
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '2px 7px',
+            borderRadius: 999,
+            background: tone.badgeBackground,
+            color: tone.color,
+            fontSize: 10,
+            fontWeight: 600,
+            flexShrink: 0,
+          }}
+        >
+          {tone.statusIcon}
+          <span>{formatAttachmentStatus(status)}</span>
         </div>
-      ) : null}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+        <div style={{ fontSize: 11, lineHeight: 1.5, color: status === 'error' ? tone.color : 'rgb(var(--text-secondary))' }}>
+          {summary}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              fontSize: 10,
+              color: 'rgb(var(--text-tertiary))',
+            }}
+          >
+            <Sparkles size={10} />
+            {t('attachmentSource')}：{provider ?? t('attachmentUnavailable')}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -199,4 +258,70 @@ function formatAttachmentStatus(status: NonNullable<AttachmentRef['processing_st
   if (status === 'unsupported') return t('attachmentUnsupported');
   if (status === 'error') return t('attachmentError');
   return t('attachmentPending');
+}
+
+function formatAttachmentType(type: AttachmentRef['type']): string {
+  if (type === 'image') return t('attachmentTypeImage');
+  if (type === 'video') return t('attachmentTypeVideo');
+  if (type === 'audio') return t('attachmentTypeAudio');
+  if (type === 'text') return t('attachmentTypeText');
+  return t('attachmentTypeFile');
+}
+
+function renderAttachmentIcon(type: AttachmentRef['type']) {
+  if (type === 'image') return <ImageIcon size={15} />;
+  if (type === 'video') return <Video size={15} />;
+  if (type === 'audio') return <FileAudio size={15} />;
+  if (type === 'text') return <FileText size={15} />;
+  return <File size={15} />;
+}
+
+function formatProviderLabel(provider?: string): string | null {
+  if (!provider) return null;
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === 'local') return '本地解析';
+  if (normalized === 'openai') return 'OpenAI';
+  if (normalized === 'gemini') return 'Gemini';
+  if (normalized === 'kimi' || normalized === 'moonshot') return 'Kimi';
+  if (normalized === 'claude') return 'Claude';
+  return provider;
+}
+
+function getFallbackSummary(status: NonNullable<AttachmentRef['processing_status']>): string {
+  if (status === 'ready') return t('attachmentSummaryReady');
+  if (status === 'unsupported') return t('attachmentSummaryUnsupported');
+  if (status === 'error') return t('attachmentSummaryError');
+  return t('attachmentSummaryPending');
+}
+
+function getStatusTone(status: NonNullable<AttachmentRef['processing_status']>) {
+  if (status === 'ready') {
+    return {
+      color: 'rgb(var(--success))',
+      badgeBackground: 'rgb(var(--success) / 0.12)',
+      statusIcon: <Sparkles size={10} />,
+    };
+  }
+
+  if (status === 'unsupported') {
+    return {
+      color: 'rgb(var(--warning))',
+      badgeBackground: 'rgb(var(--warning) / 0.12)',
+      statusIcon: <AlertCircle size={10} />,
+    };
+  }
+
+  if (status === 'error') {
+    return {
+      color: 'rgb(var(--destructive))',
+      badgeBackground: 'rgb(var(--destructive) / 0.12)',
+      statusIcon: <AlertCircle size={10} />,
+    };
+  }
+
+  return {
+    color: 'rgb(var(--text-secondary))',
+    badgeBackground: 'rgb(var(--bg-hover))',
+    statusIcon: <Loader2 size={10} />,
+  };
 }

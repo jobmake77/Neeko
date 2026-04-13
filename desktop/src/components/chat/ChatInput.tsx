@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { Send, Paperclip, X } from 'lucide-react';
+import { Send, Paperclip, X, Image as ImageIcon, Video, FileAudio, FileText, File } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { useAppStore } from '@/stores/app';
 import { t } from '@/lib/i18n';
@@ -87,20 +87,45 @@ export function ChatInput() {
     >
       {/* Attachment chips */}
       {attachments.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
           {attachments.map((file, i) => (
             <div key={i} style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '3px 8px', borderRadius: 20,
-              background: 'rgb(var(--accent) / 0.1)',
-              border: '1px solid rgb(var(--accent) / 0.3)',
-              fontSize: 12, color: 'rgb(var(--accent))',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '7px 10px',
+              borderRadius: 14,
+              background: 'rgb(var(--bg-hover))',
+              border: '1px solid rgb(var(--border))',
+              fontSize: 12,
+              color: 'rgb(var(--text-primary))',
+              minWidth: 0,
             }}>
-              <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-              <span style={{ fontSize: 10, opacity: 0.8 }}>{formatAttachmentType(file.type)}</span>
+              <span
+                style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: 8,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'rgb(var(--bg-card))',
+                  border: '1px solid rgb(var(--border-light))',
+                  color: 'rgb(var(--text-secondary))',
+                  flexShrink: 0,
+                }}
+              >
+                {renderAttachmentIcon(file.type)}
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{file.name}</span>
+                <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', lineHeight: 1.3 }}>
+                  {formatAttachmentType(file.type)} · {t('attachmentWaiting')}
+                </span>
+              </div>
               <button
                 onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'inherit' }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'rgb(var(--text-tertiary))', flexShrink: 0 }}
               >
                 <X size={12} />
               </button>
@@ -223,9 +248,17 @@ function inferAttachmentMime(path: string, type: AttachmentRef['type']): string 
 }
 
 function formatAttachmentType(type: AttachmentRef['type']): string {
-  if (type === 'image') return '图片';
-  if (type === 'video') return '视频';
-  if (type === 'audio') return '音频';
-  if (type === 'text') return '文本';
-  return '文件';
+  if (type === 'image') return t('attachmentTypeImage');
+  if (type === 'video') return t('attachmentTypeVideo');
+  if (type === 'audio') return t('attachmentTypeAudio');
+  if (type === 'text') return t('attachmentTypeText');
+  return t('attachmentTypeFile');
+}
+
+function renderAttachmentIcon(type: AttachmentRef['type']) {
+  if (type === 'image') return <ImageIcon size={13} />;
+  if (type === 'video') return <Video size={13} />;
+  if (type === 'audio') return <FileAudio size={13} />;
+  if (type === 'text') return <FileText size={13} />;
+  return <File size={13} />;
 }

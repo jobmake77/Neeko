@@ -27,6 +27,30 @@ interface OpenCliTweet {
   url?: string;
 }
 
+function normalizeHandleValue(value: string | undefined | null): string {
+  return String(value ?? '').trim().replace(/^@/, '').toLowerCase();
+}
+
+function extractTweetDateOnly(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  return parsed.toISOString().slice(0, 10);
+}
+
+export function filterTweetsByHandle(items: OpenCliTweet[], handle: string): OpenCliTweet[] {
+  const normalizedHandle = normalizeHandleValue(handle);
+  return items.filter((item) => normalizeHandleValue(item.author) === normalizedHandle && String(item.text ?? '').trim().length > 0);
+}
+
+export function computeNextUntilDate(items: OpenCliTweet[]): string | undefined {
+  const dates = items
+    .map((item) => extractTweetDateOnly(item.created_at))
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  return dates[0];
+}
+
 export class TwitterAdapter extends BaseSourceAdapter {
   readonly sourceType = 'twitter' as const;
 
@@ -34,34 +58,67 @@ export class TwitterAdapter extends BaseSourceAdapter {
     const { limit = 100 } = options;
     const cleanHandle = target.replace(/^@/, '');
 
-    // 优先用 search from: 语法抓指定用户推文（结果更精准）
+    // 优先用 search from: + until 分页抓指定用户推文。
     const tweets = await this.searchByUser(cleanHandle, limit);
     return tweets;
   }
 
   private async searchByUser(handle: string, limit: number): Promise<RawDocument[]> {
+    const pageLimit = Math.max(20, Math.min(limit, 100));
+    const maxPages = Math.max(1, Math.min(40, Math.ceil(limit / 20)));
+    const deduped = new Map<string, OpenCliTweet>();
+    let untilDate: string | undefined;
+    let previousUntilDate: string | undefined;
+
+    for (let page = 0; page < maxPages && deduped.size < limit; page += 1) {
+      const items = await this.searchUserPage(handle, pageLimit, untilDate);
+      const matched = filterTweetsByHandle(items, handle);
+      for (const item of matched) {
+        if (!item.id || deduped.has(item.id)) continue;
+        deduped.set(item.id, item);
+        if (deduped.size >= limit) break;
+      }
+      if (matched.length === 0) break;
+      const nextUntilDate = computeNextUntilDate(matched);
+      if (!nextUntilDate || nextUntilDate === previousUntilDate) break;
+      previousUntilDate = untilDate;
+      untilDate = nextUntilDate;
+      await sleep(900);
+    }
+
+    if (deduped.size > 0) {
+      return this.mapTweets([...deduped.values()].slice(0, limit), handle);
+    }
+
+    console.warn('[TwitterAdapter] search 模式全部失败，尝试 timeline 模式');
+    return this.fetchTimeline(handle, limit);
+  }
+
+  private async searchUserPage(handle: string, limit: number, untilDate?: string): Promise<OpenCliTweet[]> {
     const opencli = resolveOpenCliBinary();
+    const query = untilDate
+      ? `from:${handle} until:${untilDate}`
+      : `from:${handle}`;
     const candidates = [limit, Math.min(limit, 120), Math.min(limit, 60)]
       .filter((v, i, arr) => v > 0 && arr.indexOf(v) === i);
 
     for (const n of candidates) {
-      const cmd = `${shellQuote(opencli)} twitter search "from:${handle}" --limit ${n} --format json`;
+      const cmd = `${shellQuote(opencli)} twitter search "${query}" --limit ${n} --format json`;
       try {
         const items = await this.runOpenCliJson(cmd);
         if (items.length > 0) {
           if (n !== limit) {
             console.warn(`[TwitterAdapter] search 降载重试成功（limit ${limit} -> ${n}）`);
           }
-          return this.mapTweets(items, handle);
+          return items;
         }
       } catch (err) {
         const msg = String(err).slice(0, 300);
-        console.warn(`[TwitterAdapter] opencli search 失败（limit=${n}）: ${msg}`);
+        console.warn(`[TwitterAdapter] opencli search 失败（limit=${n}, until=${untilDate ?? 'latest'}）: ${msg}`);
       }
     }
 
-    console.warn('[TwitterAdapter] search 模式全部失败，尝试 timeline 模式');
-    return this.fetchTimeline(handle, limit);
+    return [];
   }
 
   // fallback：抓 following timeline（需要已关注目标账号）
@@ -73,9 +130,7 @@ export class TwitterAdapter extends BaseSourceAdapter {
       const cmd = `${shellQuote(opencli)} twitter timeline --type following --limit ${n} --format json`;
       try {
         const allTweets = await this.runOpenCliJson(cmd);
-        const filtered = allTweets.filter(
-          (t) => t.author?.toLowerCase().replace(/^@/, '') === handle.toLowerCase()
-        );
+        const filtered = filterTweetsByHandle(allTweets, handle);
         if (filtered.length > 0) {
           if (n !== limit) {
             console.warn(`[TwitterAdapter] timeline 降载重试成功（limit ${limit} -> ${n}）`);
@@ -90,16 +145,15 @@ export class TwitterAdapter extends BaseSourceAdapter {
   }
 
   private mapTweets(items: OpenCliTweet[], handle: string): RawDocument[] {
-    return items
-      .filter((t) => t.text?.trim())
+    return filterTweetsByHandle(items, handle)
       .map((t) =>
         this.makeDoc({
           source_type: 'twitter',
           source_url: t.url ?? `https://x.com/${handle}/status/${t.id}`,
           source_platform: 'twitter',
           content: t.text.trim(),
-          author: handle,
-          author_handle: `@${handle}`,
+          author: t.author.replace(/^@/, ''),
+          author_handle: `@${t.author.replace(/^@/, '')}`,
           published_at: t.created_at
             ? new Date(t.created_at).toISOString()
             : undefined,
@@ -136,7 +190,7 @@ export class TwitterAdapter extends BaseSourceAdapter {
       } catch (err) {
         lastError = err;
         const msg = String(err);
-        const detached = msg.includes('Detached while handling command');
+        const detached = isRetryableOpenCliDetachError(msg);
         if (detached && attempt < maxAttempts) {
           const waitMs = attempt * 1200;
           console.warn(`[TwitterAdapter] opencli detached，${waitMs}ms 后重试（${attempt}/${maxAttempts}）`);
@@ -153,6 +207,14 @@ export class TwitterAdapter extends BaseSourceAdapter {
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
+}
+
+function isRetryableOpenCliDetachError(message: string): boolean {
+  const normalized = String(message || '').toLowerCase();
+  return normalized.includes('detached while handling command')
+    || normalized.includes('debugger is not attached')
+    || normalized.includes('target closed')
+    || normalized.includes('no target with given id found');
 }
 
 /**

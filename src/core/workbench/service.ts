@@ -2968,9 +2968,10 @@ export class WorkbenchService {
       return this.markCacheReusedDocuments(cachedDocs, handle);
     }
 
+    const fallbackLimit = Math.max(inferTwitterBatchLimit(source), AUTO_TRAINING_THRESHOLD);
     const twitterAdapter = new TwitterAdapter();
     const openCliFallback = await twitterAdapter.fetch(handle, {
-      limit: inferTwitterBatchLimit(source),
+      limit: fallbackLimit,
     }).catch(() => []);
     if (openCliFallback.length > 0) {
       console.warn(`[WorkbenchService] using TwitterAdapter fallback for ${handle}: ${openCliFallback.length} docs`);
@@ -2979,7 +2980,7 @@ export class WorkbenchService {
 
     const adapter = new AgentReachAdapter('twitter');
     const fallback = await adapter.fetch(handle, {
-      limit: inferTwitterBatchLimit(source),
+      limit: fallbackLimit,
       since: source.last_synced_at ? new Date(source.last_synced_at) : undefined,
     });
     if (fallback.length > 0) {

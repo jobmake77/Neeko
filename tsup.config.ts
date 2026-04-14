@@ -21,6 +21,7 @@ export default defineConfig({
     'src/testing/pk-aggregate-test-entry.ts',
     'src/testing/chat-orchestrator-test-entry.ts',
     'src/testing/api-contract-test-entry.ts',
+    'src/testing/twitter-adapter-test-entry.ts',
   ],
   format: ['esm'],
   target: 'node18',

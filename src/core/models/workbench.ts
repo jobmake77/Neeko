@@ -47,8 +47,21 @@ export const AttachmentRefSchema = z.object({
   processing_provider: z.string().optional(),
   processing_error: z.string().optional(),
   processing_capability: z.enum(['text_extract', 'image_understanding', 'transcription']).optional(),
+  validation_status: z.enum(['validated', 'rejected']).optional(),
+  validation_summary: z.string().optional(),
 });
 export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
+
+export const SourceValidationResultSchema = z.object({
+  status: z.enum(['accepted', 'rejected', 'quarantined']),
+  reason_code: z.string(),
+  summary: z.string(),
+  confidence: z.number().min(0).max(1).default(0),
+  identity_match: z.number().min(0).max(1).default(0),
+  source_integrity: z.number().min(0).max(1).default(0),
+  evidence: z.array(z.string()).default([]),
+});
+export type SourceValidationResult = z.infer<typeof SourceValidationResultSchema>;
 
 export const ConversationOrchestrationSchema = z.object({
   mode: z.enum(['answer', 'clarify', 'refuse_internal']).default('answer'),
@@ -131,7 +144,7 @@ export const WorkbenchEvidenceImportSchema = z.object({
   source_platform: z.string().optional(),
   source_path: z.string(),
   target_manifest_path: z.string(),
-  status: z.enum(['completed', 'failed']).default('completed'),
+  status: z.enum(['completed', 'failed', 'quarantined']).default('completed'),
   item_count: z.number().int().min(0),
   summary: z.string(),
   stats: EvidenceStatsSchema,
@@ -259,6 +272,10 @@ export const CultivationSummarySchema = z.object({
     current_source_label: z.string().optional(),
     last_update_check_at: z.string().datetime().optional(),
     latest_update_result: z.string().optional(),
+    phase: z.enum(['queued', 'deep_fetching', 'incremental_syncing', 'normalizing', 'building_evidence', 'training', 'ready', 'error']).optional(),
+    last_heartbeat_at: z.string().datetime().optional(),
+    completed_windows: z.number().int().min(0).optional(),
+    estimated_total_windows: z.number().int().min(0).optional(),
   }).default({ total_sources: 0, enabled_sources: 0, source_breakdown: {}, document_count: 0, recent_delta_count: 0 }),
   last_update_check_at: z.string().datetime().optional(),
 });
@@ -330,6 +347,8 @@ export interface PersonaSummary {
   current_stage?: string;
   current_round?: number;
   total_rounds?: number;
+  source_count?: number;
+  source_type_count?: number;
 }
 
 export interface PersonaSkillSummary {
@@ -339,6 +358,7 @@ export interface PersonaSkillSummary {
 
 export interface CultivationDetail {
   persona: PersonaSummary;
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;
@@ -356,7 +376,103 @@ export interface CultivationDetail {
     evidence_imports: WorkbenchEvidenceImport[];
     training_preps: TrainingPrepArtifact[];
   };
+  raw_document_count?: number;
+  clean_document_count?: number;
+  latest_activity?: string;
+  last_success_at?: string;
+  last_heartbeat_at?: string;
+  current_window?: {
+    source_id?: string;
+    source_label?: string;
+    window_start?: string;
+    window_end?: string;
+    provider?: string;
+    filter_mode?: string;
+    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+    attempt?: number;
+    started_at?: string;
+    finished_at?: string;
+    updated_at?: string;
+    duration_ms?: number;
+    result_count?: number;
+    new_count?: number;
+    matched_count?: number;
+    rejected_count?: number;
+    quarantined_count?: number;
+    error?: string;
+  };
+  active_windows?: Array<{
+    source_id?: string;
+    source_label?: string;
+    window_start?: string;
+    window_end?: string;
+    provider?: string;
+    filter_mode?: string;
+    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+    attempt?: number;
+    started_at?: string;
+    finished_at?: string;
+    updated_at?: string;
+    duration_ms?: number;
+    result_count?: number;
+    new_count?: number;
+    matched_count?: number;
+    rejected_count?: number;
+    quarantined_count?: number;
+    error?: string;
+  }>;
+  source_items?: Array<{
+    source_id: string;
+    label: string;
+    type: string;
+    enabled: boolean;
+    raw_count: number;
+    clean_count: number;
+    coverage_start?: string;
+    coverage_end?: string;
+    last_synced_at?: string;
+    last_result?: string;
+    status?: string;
+    last_heartbeat_at?: string;
+    validation_summary?: {
+      accepted_count: number;
+      rejected_count: number;
+      quarantined_count: number;
+      latest_summary?: string;
+    };
+    active_window?: {
+      window_start?: string;
+      window_end?: string;
+      provider?: string;
+      filter_mode?: string;
+      status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+      attempt?: number;
+      started_at?: string;
+      finished_at?: string;
+      updated_at?: string;
+      duration_ms?: number;
+      result_count?: number;
+      new_count?: number;
+      matched_count?: number;
+      rejected_count?: number;
+      quarantined_count?: number;
+      error?: string;
+    };
+  }>;
+  rounds?: Array<{
+    round: number;
+    status: string;
+    objective: string;
+    document_count: number;
+    finished_at?: string;
+  }>;
   source_summary?: CultivationSummary['source_summary'];
+  validation_summary?: {
+    accepted_count: number;
+    rejected_count: number;
+    quarantined_count: number;
+    latest_summary?: string;
+  };
 }
 
 export interface PersonaWorkbenchProfile {

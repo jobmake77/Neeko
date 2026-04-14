@@ -1,8 +1,57 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { execSync } from 'child_process';
+import { join } from 'path';
 import { WorkbenchService } from '../../core/workbench/service.js';
 
 interface WorkbenchServerOptions {
   port?: string;
+}
+
+const SERVER_STARTED_AT = new Date().toISOString();
+
+function resolveServerBuildInfo(repoRoot: string): {
+  version?: string;
+  server_version?: string;
+  build_id?: string;
+  started_at: string;
+  git_sha?: string;
+} {
+  let version: string | undefined;
+  let buildId: string | undefined;
+  let gitSha: string | undefined;
+
+  try {
+    const packagePath = join(repoRoot, 'package.json');
+    if (existsSync(packagePath)) {
+      const parsed = JSON.parse(readFileSync(packagePath, 'utf-8')) as { version?: string };
+      version = parsed.version;
+    }
+  } catch {}
+
+  try {
+    const distPath = join(repoRoot, 'dist/cli/index.js');
+    if (existsSync(distPath)) {
+      const mtime = statSync(distPath).mtimeMs;
+      buildId = `${version ?? 'dev'}-${Math.round(mtime)}`;
+    }
+  } catch {}
+
+  try {
+    gitSha = execSync('git rev-parse --short HEAD', {
+      cwd: repoRoot,
+      timeout: 1500,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim() || undefined;
+  } catch {}
+
+  return {
+    version,
+    server_version: version,
+    build_id: buildId,
+    started_at: SERVER_STARTED_AT,
+    git_sha: gitSha,
+  };
 }
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -62,6 +111,7 @@ export async function cmdWorkbenchServer(
 ): Promise<void> {
   const port = Number(options.port ?? process.env.NEEKO_WORKBENCH_PORT ?? 4310);
   const service = new WorkbenchService(undefined, cliEntryPath, process.cwd());
+  const buildInfo = resolveServerBuildInfo(process.cwd());
 
   const server = createServer(async (req, res) => {
     try {
@@ -78,7 +128,7 @@ export async function cmdWorkbenchServer(
       const path = url.pathname;
 
       if (req.method === 'GET' && path === '/health') {
-        writeJson(res, 200, { ok: true, port });
+        writeJson(res, 200, { ok: true, port, ...buildInfo });
         return;
       }
 

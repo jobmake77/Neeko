@@ -1,14 +1,92 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, RefreshCw, Trash2 } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import type { CultivationDetail, PersonaSummary } from '@/lib/types';
 import { useCultivationStore } from '@/stores/cultivation';
+import { useChatStore } from '@/stores/chat';
+import { useAppStore } from '@/stores/app';
 import * as api from '@/lib/api';
 
 function statusMeta(status: string) {
   if (status === 'error') return { color: '#ef4444', label: t('cultivationFailed') };
   if (status === 'converged' || status === 'available' || status === 'ready') return { color: '#22c55e', label: t('cultivationComplete') };
-  return { color: '#f59e0b', label: t('cultivating') };
+  return { color: '#0ea5e9', label: t('cultivating') };
+}
+
+function formatPhaseLabel(phase?: string) {
+  if (phase === 'queued') return '排队中';
+  if (phase === 'deep_fetching') return '深抓取中';
+  if (phase === 'incremental_syncing') return '增量拉取中';
+  if (phase === 'normalizing') return '整理素材中';
+  if (phase === 'building_evidence') return '构建训练上下文中';
+  if (phase === 'training') return '人格收敛中';
+  if (phase === 'ready') return '可聊天';
+  if (phase === 'error') return '待处理';
+  return '培养中';
+}
+
+function isFinishedStatus(status?: string) {
+  return ['converged', 'available', 'ready', 'exported'].includes(String(status ?? '').toLowerCase());
+}
+
+function formatDate(value?: string) {
+  if (!value) return '未记录';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
+function formatWindowDate(value?: string) {
+  if (!value) return '未记录';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatRelativeTime(value?: string) {
+  if (!value) return '未记录';
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) return value;
+  const diffMs = Date.now() - time;
+  const diffMin = Math.max(0, Math.floor(diffMs / 60000));
+  if (diffMin < 1) return '刚刚';
+  if (diffMin < 60) return `${diffMin} 分钟前`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour} 小时前`;
+  const diffDay = Math.floor(diffHour / 24);
+  return `${diffDay} 天前`;
+}
+
+function formatSourceType(type: string) {
+  if (type === 'social') return '公开账号';
+  if (type === 'chat_file') return '聊天资料';
+  if (type === 'video_file') return '视频资料';
+  if (type === 'article') return '网页文章';
+  return type;
+}
+
+function formatRoundStatus(status: string) {
+  if (status === 'completed' || status === 'converged') return '本轮已完成';
+  if (status === 'running') return '本轮推进中';
+  if (status === 'failed') return '本轮待重试';
+  return '等待进入本轮';
+}
+
+function formatWindowStatus(status?: string) {
+  if (status === 'running') return '正在推进';
+  if (status === 'completed') return '窗口完成';
+  if (status === 'empty') return '窗口无新增';
+  if (status === 'timeout') return '超时重试';
+  if (status === 'failed') return '失败待处理';
+  if (status === 'skipped') return '已跳过';
+  return '等待推进';
+}
+
+function formatWindowSentence(detail?: CultivationDetail) {
+  const currentWindow = detail?.current_window;
+  if (!currentWindow?.window_start || !currentWindow?.window_end) return null;
+  const sourceLabel = currentWindow.source_label || detail?.source_summary?.current_source_label || '当前来源';
+  return `${sourceLabel} · ${currentWindow.window_start.slice(0, 10)} ~ ${currentWindow.window_end.slice(0, 10)}`;
 }
 
 function StageIndicator({ stages }: { stages: CultivationDetail['progress']['stages'] }) {
@@ -16,8 +94,265 @@ function StageIndicator({ stages }: { stages: CultivationDetail['progress']['sta
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 12px', marginTop: 10 }}>
       {stages.map((s) => (
         <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: s.completed ? '#22c55e' : s.active ? '#f59e0b' : '#cbd5e1' }} />
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: s.completed ? '#22c55e' : s.active ? '#0ea5e9' : '#cbd5e1' }} />
           <span style={{ fontSize: 11, color: s.active ? 'rgb(var(--text-primary))' : 'rgb(var(--text-tertiary))' }}>{t(s.label)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TideBar({ progress, finished, tickerText }: { progress: number; finished: boolean; tickerText: string }) {
+  const markerOffset = finished ? progress : Math.max(progress, 6);
+  const asciiWave = '▒░▒░▒ :: signal-flow :: persona-growth :: tide-wave ::'.repeat(8);
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div
+        style={{
+          flex: 1,
+          height: 44,
+          background: finished
+            ? 'linear-gradient(180deg, rgba(214,255,230,0.95), rgba(187,247,208,0.95))'
+            : 'linear-gradient(180deg, rgba(6,10,20,0.98), rgba(11,18,32,0.98))',
+          borderRadius: 14,
+          overflow: 'hidden',
+          position: 'relative',
+          border: finished ? '1px solid rgba(34,197,94,0.16)' : '1px solid rgba(96,165,250,0.15)',
+          boxShadow: finished ? 'inset 0 1px 2px rgb(255 255 255 / 0.55)' : 'inset 0 1px 0 rgba(255,255,255,0.05)',
+        }}
+      >
+        {finished ? (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'linear-gradient(90deg, rgba(34,197,94,0.76), rgba(74,222,128,0.92), rgba(167,243,208,0.76))',
+            }}
+          />
+        ) : (
+          <>
+            <div
+              className="ascii-breath cultivation-tide-primary"
+              style={{
+                position: 'absolute',
+                inset: '-22% -6%',
+                background: 'radial-gradient(ellipse at 18% 54%, rgba(34,211,238,0.22), rgba(34,211,238,0) 44%), radial-gradient(ellipse at 44% 48%, rgba(59,130,246,0.28), rgba(59,130,246,0) 50%), radial-gradient(ellipse at 72% 56%, rgba(45,212,191,0.20), rgba(45,212,191,0) 44%)',
+              }}
+            />
+            <div
+              className="ascii-breath cultivation-tide-secondary"
+              style={{
+                position: 'absolute',
+                inset: '-14% -10%',
+                background: 'radial-gradient(ellipse at 16% 70%, rgba(56,189,248,0.18), rgba(56,189,248,0) 40%), radial-gradient(ellipse at 58% 40%, rgba(99,102,241,0.20), rgba(99,102,241,0) 42%), radial-gradient(ellipse at 86% 68%, rgba(125,211,252,0.16), rgba(125,211,252,0) 36%)',
+              }}
+            />
+            <div
+              className="ascii-pulse-sweep"
+              style={{
+                position: 'absolute',
+                inset: '-10% 0',
+                width: '22%',
+                background: 'linear-gradient(90deg, rgba(255,255,255,0), rgba(191,219,254,0.18), rgba(255,255,255,0))',
+                mixBlendMode: 'screen',
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                alignItems: 'center',
+                overflow: 'hidden',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: 9,
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: 'rgba(186,230,253,0.42)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <div className="ascii-wave-travel" style={{ display: 'inline-flex', paddingLeft: 18 }}>
+                <span>{asciiWave}</span>
+                <span style={{ paddingLeft: 22 }}>{asciiWave}</span>
+              </div>
+            </div>
+            <div
+              style={{
+                position: 'absolute',
+                inset: 'auto 0 0 0',
+                height: 15,
+                display: 'flex',
+                alignItems: 'center',
+                overflow: 'hidden',
+                borderTop: '1px solid rgba(148,163,184,0.12)',
+                background: 'linear-gradient(180deg, rgba(2,6,23,0), rgba(2,6,23,0.26))',
+              }}
+            >
+              <div
+                className="hacker-ticker"
+                style={{
+                  display: 'inline-flex',
+                  whiteSpace: 'nowrap',
+                  paddingLeft: 12,
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                  fontSize: 8,
+                  letterSpacing: '0.14em',
+                  color: 'rgba(191,219,254,0.78)',
+                  textTransform: 'uppercase',
+                }}
+              >
+                <span>{tickerText.repeat(4)}</span>
+                <span style={{ paddingLeft: 24 }}>{tickerText.repeat(4)}</span>
+              </div>
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 2,
+                  bottom: 2,
+                  left: `calc(${markerOffset}% - 20px)`,
+                  width: 40,
+                  borderRadius: 999,
+                  background: 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.88), rgba(255,255,255,0))',
+                  boxShadow: '0 0 18px rgba(96,165,250,0.24)',
+                  opacity: 0.72,
+                  transition: 'left 0.35s ease',
+                }}
+              />
+            </div>
+            <div
+              style={{
+                position: 'absolute',
+                top: 6,
+                bottom: 18,
+                left: `calc(${markerOffset}% - 1px)`,
+                width: 2,
+                borderRadius: 999,
+                background: 'linear-gradient(180deg, rgba(255,255,255,0.9), rgba(125,211,252,0.22))',
+                boxShadow: '0 0 14px rgba(125,211,252,0.32)',
+                transition: 'left 0.35s ease',
+              }}
+            />
+          </>
+        )}
+      </div>
+      <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', minWidth: 34, textAlign: 'right' }}>{progress}%</span>
+    </div>
+  );
+}
+
+function InfoStat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="card" style={{ padding: '12px 14px', minHeight: 72 }}>
+      <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: 'rgb(var(--text-primary))' }}>{value}</div>
+    </div>
+  );
+}
+
+function SourceBreakdown({ detail }: { detail: CultivationDetail }) {
+  const grouped = useMemo(() => {
+    const map = new Map<string, { count: number; raw: number; clean: number; lastSyncedAt?: string }>();
+    for (const item of detail.source_items ?? []) {
+      const key = formatSourceType(item.type);
+      const current = map.get(key) ?? { count: 0, raw: 0, clean: 0 };
+      current.count += 1;
+      current.raw += item.raw_count;
+      current.clean += item.clean_count;
+      current.lastSyncedAt = [current.lastSyncedAt, item.last_synced_at].filter(Boolean).sort().at(-1);
+      map.set(key, current);
+    }
+    return [...map.entries()];
+  }, [detail]);
+
+  if (grouped.length === 0) return null;
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+      {grouped.map(([key, item]) => (
+        <div key={key} className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{key}</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>{item.count} 个来源</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>原始素材 {item.raw} 条</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>纳入训练 {item.clean} 条</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>最近同步 {formatDate(item.lastSyncedAt)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SourceItems({ detail }: { detail: CultivationDetail }) {
+  const [expandedSourceId, setExpandedSourceId] = useState<string | null>(null);
+
+  if (!detail.source_items || detail.source_items.length === 0) {
+    return <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>暂时还没有来源明细。</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {detail.source_items.map((item) => {
+        const expanded = expandedSourceId === item.source_id;
+        const hasError = item.status === 'error';
+        return (
+          <div key={item.source_id} className="card" style={{ padding: 12, borderColor: hasError ? 'rgb(239 68 68 / 0.25)' : undefined }}>
+            <button
+              onClick={() => setExpandedSourceId((current) => current === item.source_id ? null : item.source_id)}
+              style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}
+            >
+              <div style={{ minWidth: 0, textAlign: 'left' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'rgb(var(--text-primary))' }}>{item.label}</div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 4 }}>
+                  {formatSourceType(item.type)} · {item.enabled ? '启用中' : '已停用'} · 原始 {item.raw_count} / 纳入 {item.clean_count}
+                </div>
+              </div>
+              {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+            {expanded ? (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgb(var(--border-light))', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
+                <div>抓取规模: <b>{item.raw_count}</b></div>
+                <div>纳入训练: <b>{item.clean_count}</b></div>
+                <div>校验通过: <b>{item.validation_summary?.accepted_count ?? item.clean_count}</b></div>
+                <div>校验拒绝: <b>{item.validation_summary?.rejected_count ?? 0}</b></div>
+                <div>校验隔离: <b>{item.validation_summary?.quarantined_count ?? 0}</b></div>
+                <div>真实抓取窗口: <b>{item.coverage_start || item.coverage_end ? `${formatWindowDate(item.coverage_start)} ~ ${formatWindowDate(item.coverage_end)}` : '未记录'}</b></div>
+                <div>最近同步: <b>{formatDate(item.last_synced_at)}</b></div>
+                <div>最近结果: <b>{item.last_result || '等待下一步推进'}</b></div>
+                <div>当前状态: <b>{item.status === 'error' ? '待重试' : item.status === 'syncing' ? '同步中' : item.status === 'ready' ? '已同步' : '等待同步'}</b></div>
+                <div>最近心跳: <b>{formatRelativeTime(item.last_heartbeat_at)}</b></div>
+                <div>当前窗口: <b>{item.active_window?.window_start && item.active_window?.window_end ? `${item.active_window.window_start.slice(0, 10)} ~ ${item.active_window.window_end.slice(0, 10)}` : '未记录'}</b></div>
+                <div>窗口状态: <b>{formatWindowStatus(item.active_window?.status)}</b></div>
+                <div style={{ gridColumn: '1 / -1' }}>校验摘要: <b>{item.validation_summary?.latest_summary ?? '当前来源暂无额外校验提示。'}</b></div>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RoundSummary({ detail }: { detail: CultivationDetail }) {
+  if (!detail.rounds || detail.rounds.length === 0) {
+    return <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>轮次摘要将在培养推进后显示。</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {detail.rounds.map((round) => (
+        <div key={round.round} className="card" style={{ padding: 12, display: 'grid', gridTemplateColumns: '72px 1fr auto', gap: 12, alignItems: 'start' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'rgb(var(--text-primary))' }}>第 {round.round} 轮</div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>{round.objective}</div>
+            <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 4 }}>本轮使用素材量 {round.document_count} 条，围绕当前阶段继续补齐人格稳定性。</div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 12, color: round.status === 'failed' ? '#ef4444' : round.status === 'running' ? '#0ea5e9' : '#16a34a', fontWeight: 600 }}>
+              {formatRoundStatus(round.status)}
+            </div>
+            <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>{formatDate(round.finished_at)}</div>
+          </div>
         </div>
       ))}
     </div>
@@ -33,6 +368,7 @@ function TrainingCard({
   onReload,
   onCheckUpdates,
   onContinue,
+  onOpenChat,
   pendingOperation,
 }: {
   persona: PersonaSummary;
@@ -43,10 +379,14 @@ function TrainingCard({
   onReload: () => void;
   onCheckUpdates: () => Promise<void>;
   onContinue: () => Promise<void>;
+  onOpenChat: () => void;
   pendingOperation?: 'deep_fetch' | 'incremental_sync';
 }) {
-  const meta = statusMeta(persona.current_stage ?? persona.status);
+  const stageStatus = persona.current_stage ?? persona.status;
   const progress = persona.progress_percent ?? 0;
+  const finished = isFinishedStatus(stageStatus);
+  const phase = detail?.phase ?? (finished ? 'ready' : stageStatus);
+  const meta = statusMeta(phase);
   const operationLabel = pendingOperation === 'deep_fetch'
     ? '深抓取中'
     : pendingOperation === 'incremental_sync'
@@ -58,26 +398,49 @@ function TrainingCard({
           : detail?.source_summary?.current_operation === 'discovery'
             ? '发现来源中'
             : null;
+  const tickerText = `[${String(progress).padStart(3, '0')}%] ${operationLabel ?? formatPhaseLabel(detail?.phase)} :: win ${String((detail?.source_summary as any)?.completed_windows ?? 0).padStart(2, '0')} / ${String((detail?.source_summary as any)?.estimated_total_windows ?? 0).padStart(2, '0')} :: raw ${String(detail?.raw_document_count ?? 0).padStart(4, '0')} :: clean ${String(detail?.clean_document_count ?? 0).padStart(4, '0')} :: round ${String(persona.current_round ?? detail?.progress.current_round ?? 0).padStart(2, '0')} / ${String(persona.total_rounds ?? detail?.progress.total_rounds ?? 0).padStart(2, '0')} :: ${String(detail?.phase ?? stageStatus).toUpperCase()} ::`;
+  const latestActivity = detail?.latest_activity || (operationLabel ? `当前任务：${operationLabel}` : '正在等待培养推进');
+  const currentWindowText = formatWindowSentence(detail);
 
   return (
     <div className="card" style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12, position: 'relative' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-        <div style={{ width: 44, height: 44, borderRadius: 11, background: 'rgb(var(--accent))', color: 'rgb(var(--accent-fg))', fontSize: 18, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <div
+          className={finished ? undefined : 'soft-pulse'}
+          style={{
+            width: 44,
+            height: 44,
+            borderRadius: 11,
+            background: 'rgb(var(--accent))',
+            color: 'rgb(var(--accent-fg))',
+            fontSize: 18,
+            fontWeight: 700,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
           {persona.name.charAt(0).toUpperCase()}
         </div>
         <div style={{ flex: 1, minWidth: 0, paddingRight: 84 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{persona.name}</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: meta.color, fontSize: 12, fontWeight: 600 }}>
-              {meta.color === '#22c55e' ? <CheckCircle2 size={14} /> : meta.color === '#ef4444' ? <AlertCircle size={14} /> : <RefreshCw size={14} />}
-              {meta.label}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{persona.name}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: meta.color, fontSize: 12, fontWeight: 600 }}>
+                {meta.color === '#22c55e' ? <CheckCircle2 size={14} /> : meta.color === '#ef4444' ? <AlertCircle size={14} /> : <RefreshCw size={14} />}
+                {formatPhaseLabel(detail?.phase) || meta.label}
+              </div>
             </div>
+          <TideBar progress={progress} finished={finished} tickerText={tickerText} />
+          <div style={{ marginTop: 10, fontSize: 12, color: finished ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
+            {latestActivity}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ flex: 1, height: 4, background: 'rgb(var(--border))', borderRadius: 999, overflow: 'hidden' }}>
-              <div style={{ width: `${progress}%`, height: '100%', background: meta.color, transition: 'width 0.25s ease' }} />
-            </div>
-            <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', minWidth: 34, textAlign: 'right' }}>{progress}%</span>
+          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+            <span>最近活动 {formatRelativeTime(detail?.last_heartbeat_at ?? detail?.last_success_at)}</span>
+            {(detail?.source_summary as any)?.completed_windows !== undefined ? <span>窗口 {(detail?.source_summary as any)?.completed_windows ?? 0} / {(detail?.source_summary as any)?.estimated_total_windows ?? 0}</span> : null}
+            <span>原始 {detail?.raw_document_count ?? 0}</span>
+            <span>纳入 {detail?.clean_document_count ?? 0}</span>
+            {currentWindowText ? <span>{currentWindowText}</span> : null}
           </div>
         </div>
       </div>
@@ -88,36 +451,59 @@ function TrainingCard({
       </div>
 
       {expanded && detail ? (
-        <div style={{ borderTop: '1px solid rgb(var(--border-light))', paddingTop: 12 }}>
+        <div style={{ borderTop: '1px solid rgb(var(--border-light))', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <StageIndicator stages={detail.progress.stages} />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 12, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
-            <div>当前轮次: <b>{detail.progress.current_round} / {detail.progress.total_rounds}</b></div>
-            <div>技能数: <b>{detail.skills.origin_skills.length + detail.skills.distilled_skills.length}</b></div>
-            <div>素材来源: <b>{detail.source_summary?.enabled_sources ?? 0} / {detail.source_summary?.total_sources ?? 0}</b></div>
-            <div>最近检查: <b>{detail.source_summary?.last_update_check_at ? new Date(detail.source_summary.last_update_check_at).toLocaleString() : '未检查'}</b></div>
-            <div>素材文档: <b>{detail.source_summary?.document_count ?? 0}</b></div>
-            <div>近 7 天增量: <b>{detail.source_summary?.recent_delta_count ?? 0}</b></div>
+
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>培养概览</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+              <InfoStat label="当前阶段" value={formatPhaseLabel(detail.phase)} />
+              <InfoStat label="当前轮次" value={`${detail.progress.current_round} / ${detail.progress.total_rounds}`} />
+              <InfoStat label="原始素材总量" value={detail.raw_document_count ?? 0} />
+              <InfoStat label="纳入训练量" value={detail.clean_document_count ?? 0} />
+              <InfoStat label="最近成功推进" value={formatDate(detail.last_success_at)} />
+              <InfoStat label="最近活动心跳" value={formatRelativeTime(detail.last_heartbeat_at)} />
+              <InfoStat label="最近检查更新" value={formatDate(detail.source_summary?.last_update_check_at)} />
+              <InfoStat label="最近新增素材" value={detail.source_summary?.recent_delta_count ?? 0} />
+            </div>
           </div>
 
-          {detail.source_summary?.source_breakdown && Object.keys(detail.source_summary.source_breakdown).length > 0 ? (
-            <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {Object.entries(detail.source_summary.source_breakdown).map(([key, value]) => (
-                <span key={key} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, background: 'rgb(var(--bg-hover))', border: '1px solid rgb(var(--border))' }}>
-                  {key} {value}
-                </span>
-              ))}
+          {detail.current_window ? (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>当前窗口</div>
+              <div className="card" style={{ padding: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>来源: <b>{detail.current_window.source_label || detail.source_summary?.current_source_label || '当前来源'}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>窗口: <b>{detail.current_window.window_start && detail.current_window.window_end ? `${detail.current_window.window_start.slice(0, 10)} ~ ${detail.current_window.window_end.slice(0, 10)}` : '未记录'}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>Provider: <b>{detail.current_window.provider || '未记录'}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>模式: <b>{detail.current_window.filter_mode || '未记录'}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>状态: <b>{formatWindowStatus(detail.current_window.status)}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>窗口产出: <b>{detail.current_window.result_count ?? 0} 条</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>命中作者: <b>{detail.current_window.matched_count ?? 0}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>拒绝条数: <b>{detail.current_window.rejected_count ?? 0}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>隔离条数: <b>{detail.current_window.quarantined_count ?? 0}</b></div>
+                <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>尝试次数: <b>{detail.current_window.attempt ?? 1}</b></div>
+              </div>
             </div>
           ) : null}
 
-          {operationLabel ? (
-            <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--accent))' }}>
-              当前任务：<b>{operationLabel}</b>{detail?.source_summary?.current_source_label ? ` · ${detail.source_summary.current_source_label}` : ''}
-            </div>
-          ) : null}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>来源分布</div>
+            <SourceBreakdown detail={detail} />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>来源明细</div>
+            <SourceItems detail={detail} />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>轮次摘要</div>
+            <RoundSummary detail={detail} />
+          </div>
 
           {(detail.skills.origin_skills.length > 0 || detail.skills.distilled_skills.length > 0) && (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{t('skillsTitle')}</div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{t('skillsTitle')}</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {detail.skills.origin_skills.map((s) => <span key={s.id} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, background: 'rgb(var(--bg-hover))', border: '1px solid rgb(var(--border))' }}>{s.name}</span>)}
                 {detail.skills.distilled_skills.map((s) => <span key={s.id} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, background: 'rgb(var(--accent) / 0.08)', color: 'rgb(var(--accent))' }}>{s.name}</span>)}
@@ -125,19 +511,20 @@ function TrainingCard({
             </div>
           )}
 
-          <div style={{ marginTop: 12, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
-            素材摘要：最近同步 <b>{detail.assets.evidence_imports.length}</b> 批素材，最近整理 <b>{detail.assets.training_preps.length}</b> 批培养上下文。
-            {detail.source_summary?.latest_update_result ? ` ${detail.source_summary.latest_update_result}` : ''}
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
             <button className="btn btn-secondary" onClick={() => void onCheckUpdates()} style={{ fontSize: 12 }} disabled={Boolean(pendingOperation)}>
               {pendingOperation === 'incremental_sync' ? '增量拉取中…' : '检查更新'}
             </button>
-            <button className="btn btn-primary" onClick={() => void onContinue()} style={{ fontSize: 12 }} disabled={Boolean(pendingOperation)}>
-              {pendingOperation === 'deep_fetch' ? '深抓取中…' : '继续培养'}
-            </button>
-            {(persona.current_stage ?? persona.status) === 'error' ? <button className="btn btn-ghost" onClick={onReload} style={{ fontSize: 12 }}>{t('retry')}</button> : null}
+            {finished ? (
+              <button className="btn btn-primary" onClick={onOpenChat} style={{ fontSize: 12 }}>
+                开始对话
+              </button>
+            ) : (
+              <button className="btn btn-primary" onClick={() => void onContinue()} style={{ fontSize: 12 }} disabled={Boolean(pendingOperation)}>
+                {pendingOperation === 'deep_fetch' ? '深抓取中…' : '继续培养'}
+              </button>
+            )}
+            {stageStatus === 'error' ? <button className="btn btn-ghost" onClick={onReload} style={{ fontSize: 12 }}>{t('retry')}</button> : null}
           </div>
         </div>
       ) : null}
@@ -147,6 +534,8 @@ function TrainingCard({
 
 export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) => void }) {
   const { cultivating, load, reload, details, loadDetail } = useCultivationStore();
+  const { setPersona } = useChatStore();
+  const { setView } = useAppStore();
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
   const [pendingOps, setPendingOps] = useState<Record<string, 'deep_fetch' | 'incremental_sync' | undefined>>({});
 
@@ -220,6 +609,11 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
     }
   }
 
+  async function handleOpenChat(persona: PersonaSummary) {
+    await setPersona(persona.slug);
+    setView('chat');
+  }
+
   if (cultivating.length === 0) {
     return (
       <div style={{ padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 12 }}>
@@ -248,6 +642,7 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
             onReload={() => void reload()}
             onCheckUpdates={() => handleCheckUpdates(persona.slug)}
             onContinue={() => handleContinue(persona.slug)}
+            onOpenChat={() => void handleOpenChat(persona)}
           />
         ))}
       </div>

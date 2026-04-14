@@ -48,6 +48,7 @@ import {
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  SourceValidationResult,
   TrainingPrepArtifact,
   SessionSummary,
   WorkbenchEvidenceImport,
@@ -199,6 +200,71 @@ export interface RuntimeSettingsPayload {
   default_input_routing_strategy?: string;
   qdrant_url?: string;
   data_dir?: string;
+}
+
+type CultivationPhase =
+  | 'queued'
+  | 'deep_fetching'
+  | 'incremental_syncing'
+  | 'normalizing'
+  | 'building_evidence'
+  | 'training'
+  | 'ready'
+  | 'error';
+
+type SourceWindowStatus = 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+
+interface SourceProgressItem {
+  source_id?: string;
+  source_label?: string;
+  window_start?: string;
+  window_end?: string;
+  provider?: string;
+  filter_mode?: string;
+  status?: SourceWindowStatus;
+  attempt?: number;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  duration_ms?: number;
+  result_count?: number;
+  new_count?: number;
+  matched_count?: number;
+  rejected_count?: number;
+  quarantined_count?: number;
+  error?: string;
+}
+
+interface SourceSyncProgressState {
+  handle?: string;
+  out?: string;
+  until?: string;
+  windowDays?: number;
+  queryCount?: number;
+  count?: number;
+  updated_at?: string;
+  last_heartbeat_at?: string;
+  estimated_total_windows?: number;
+  completed_windows?: number;
+  current_window?: SourceProgressItem;
+  recent_windows?: SourceProgressItem[];
+  last_success_window?: SourceProgressItem;
+  last_failure_window?: SourceProgressItem;
+}
+
+interface ValidationSummaryTotals {
+  accepted_count: number;
+  rejected_count: number;
+  quarantined_count: number;
+  latest_summary?: string;
+}
+
+interface DocumentValidationOutcome {
+  accepted: RawDocument[];
+  rejected: RawDocument[];
+  quarantined: RawDocument[];
+  results: SourceValidationResult[];
+  summary: ValidationSummaryTotals;
 }
 
 export interface PromotionHandoffExport {
@@ -398,6 +464,8 @@ function mapTweetRowToRawDocument(handle: string, row: Record<string, any>): Raw
   const url = typeof row.url === 'string' && row.url.trim()
     ? row.url.trim()
     : `https://x.com/${cleanHandle}/status/${id}`;
+  const rawAuthor = String(row.author ?? row.username ?? '').replace(/^@/, '').trim();
+  const rawAuthorHandle = String(row.author_handle ?? row.handle ?? rawAuthor).replace(/^@/, '').trim();
   return {
     id: crypto.randomUUID(),
     fetched_at: new Date().toISOString(),
@@ -405,8 +473,8 @@ function mapTweetRowToRawDocument(handle: string, row: Record<string, any>): Raw
     source_url: url,
     source_platform: 'twitter',
     content: text,
-    author: String(row.author ?? cleanHandle).replace(/^@/, ''),
-    author_handle: `@${cleanHandle}`,
+    author: rawAuthor || cleanHandle,
+    author_handle: rawAuthorHandle ? `@${rawAuthorHandle}` : `@${cleanHandle}`,
     published_at: createdAt,
     metadata: {
       tweet_id: id,
@@ -440,6 +508,25 @@ function buildSourceBreakdown(sources: PersonaSource[]): Record<string, number> 
     acc[item.type] = (acc[item.type] ?? 0) + 1;
     return acc;
   }, {});
+}
+
+function formatSourceTypeLabel(type: string): string {
+  if (type === 'social') return 'X/Twitter';
+  if (type === 'chat_file') return '聊天资料';
+  if (type === 'video_file') return '视频资料';
+  if (type === 'article') return '网页文章';
+  return type;
+}
+
+function productizeWindowResult(window?: SourceProgressItem, fallback?: string): string | undefined {
+  if (!window?.status) return fallback;
+  if (window.status === 'running') return '正在推进当前抓取窗口';
+  if (window.status === 'completed') return '最近一个抓取窗口已完成';
+  if (window.status === 'empty') return '最近一个抓取窗口没有发现新增内容';
+  if (window.status === 'timeout') return '抓取超时，系统正在重试';
+  if (window.status === 'failed') return '来源暂时不可用，稍后会继续尝试';
+  if (window.status === 'skipped') return '当前备用来源已跳过';
+  return fallback;
 }
 
 function computeSourceWeight(source: PersonaSource): number {
@@ -481,6 +568,39 @@ function buildIdentityTokens(personaName: string, query: string, href: string): 
 function includesIdentityToken(text: string, tokens: string[]): boolean {
   const lower = text.toLowerCase();
   return tokens.some((token) => lower.includes(token));
+}
+
+function countIdentityMatches(text: string, tokens: string[]): number {
+  const lower = text.toLowerCase();
+  return tokens.filter((token) => lower.includes(token)).length;
+}
+
+function createValidationResult(input: {
+  status: SourceValidationResult['status'];
+  reason_code: string;
+  summary: string;
+  confidence: number;
+  identity_match: number;
+  source_integrity: number;
+  evidence?: string[];
+}): SourceValidationResult {
+  return {
+    status: input.status,
+    reason_code: input.reason_code,
+    summary: input.summary,
+    confidence: Math.max(0, Math.min(1, input.confidence)),
+    identity_match: Math.max(0, Math.min(1, input.identity_match)),
+    source_integrity: Math.max(0, Math.min(1, input.source_integrity)),
+    evidence: input.evidence ?? [],
+  };
+}
+
+function summarizeValidationResults(results: SourceValidationResult[]): ValidationSummaryTotals {
+  const accepted_count = results.filter((item) => item.status === 'accepted').length;
+  const rejected_count = results.filter((item) => item.status === 'rejected').length;
+  const quarantined_count = results.filter((item) => item.status === 'quarantined').length;
+  const latest_summary = results.at(-1)?.summary;
+  return { accepted_count, rejected_count, quarantined_count, latest_summary };
 }
 
 function dedupeSourcesByRef(sources: PersonaSource[]): PersonaSource[] {
@@ -1215,7 +1335,7 @@ export class WorkbenchService {
   }
 
   private isPersonaReady(summary: PersonaSummary): boolean {
-    return summary.status === 'converged' || summary.status === 'exported';
+    return ['converged', 'exported', 'available', 'ready'].includes(summary.status);
   }
 
   getPersona(slug: string): PersonaWorkbenchProfile {
@@ -1939,6 +2059,88 @@ export class WorkbenchService {
     };
   }
 
+  private validateImportedEvidenceDocs(
+    personaName: string,
+    sourceKind: WorkbenchEvidenceImportInput['sourceKind'],
+    docs: RawDocument[],
+    manifest: ReturnType<typeof loadTargetManifest>,
+    sourcePath: string,
+  ): DocumentValidationOutcome {
+    const targetTokens = Array.from(new Set([
+      personaName,
+      manifest.target_name,
+      ...(manifest.target_aliases ?? []),
+    ].filter(Boolean).map((item) => String(item))));
+
+    const results = docs.map((doc) => {
+      const content = `${doc.author ?? ''} ${doc.author_handle ?? ''} ${doc.content ?? ''} ${doc.source_url ?? ''}`.toLowerCase();
+      const tokenMatches = countIdentityMatches(content, targetTokens.map((item) => item.toLowerCase()));
+      if (sourceKind === 'chat') {
+        const speakerRole = String((doc.metadata as Record<string, unknown> | undefined)?.speaker_role ?? '').toLowerCase();
+        if (speakerRole === 'target' || tokenMatches > 0) {
+          return createValidationResult({
+            status: 'accepted',
+            reason_code: 'chat_target_match',
+            summary: '聊天资料已通过目标说话人校验。',
+            confidence: 0.92,
+            identity_match: 0.92,
+            source_integrity: 0.9,
+            evidence: [doc.author ?? '', speakerRole].filter(Boolean),
+          });
+        }
+        return createValidationResult({
+          status: 'quarantined',
+          reason_code: 'chat_target_coverage_low',
+          summary: '聊天资料目标说话人覆盖不足，已隔离等待补充确认。',
+          confidence: 0.42,
+          identity_match: Math.min(1, tokenMatches / 2),
+          source_integrity: 0.64,
+          evidence: [doc.author ?? '', speakerRole].filter(Boolean),
+        });
+      }
+
+      if (sourceKind === 'video') {
+        if (tokenMatches > 0) {
+          return createValidationResult({
+            status: 'accepted',
+            reason_code: 'video_identity_match',
+            summary: '视频转写内容已通过身份一致性校验。',
+            confidence: 0.82,
+            identity_match: Math.min(1, tokenMatches / 2),
+            source_integrity: 0.82,
+            evidence: [doc.author ?? '', basename(sourcePath)].filter(Boolean),
+          });
+        }
+        return createValidationResult({
+          status: 'quarantined',
+          reason_code: 'video_identity_weak',
+          summary: '视频转写归属不足，已进入隔离区，不进入正式培养。',
+          confidence: 0.36,
+          identity_match: 0.2,
+          source_integrity: 0.62,
+          evidence: [doc.author ?? '', basename(sourcePath)].filter(Boolean),
+        });
+      }
+
+      return createValidationResult({
+        status: 'accepted',
+        reason_code: 'default_accept',
+        summary: '资料已通过基础校验。',
+        confidence: 0.7,
+        identity_match: 0.7,
+        source_integrity: 0.7,
+      });
+    });
+
+    return {
+      accepted: docs.filter((_, index) => results[index]?.status === 'accepted'),
+      rejected: docs.filter((_, index) => results[index]?.status === 'rejected'),
+      quarantined: docs.filter((_, index) => results[index]?.status === 'quarantined'),
+      results,
+      summary: summarizeValidationResults(results),
+    };
+  }
+
   async importEvidence(input: WorkbenchEvidenceImportInput): Promise<WorkbenchEvidenceImport> {
     this.loadPersonaAssets(input.personaSlug);
     validateWorkbenchFilePath(input.sourcePath, 'sourcePath');
@@ -1969,9 +2171,11 @@ export class WorkbenchService {
     }
 
     const docs = convertEvidenceItemsToDocuments(batch.items, sourceDocs);
+    const validation = this.validateImportedEvidenceDocs(input.personaSlug, input.sourceKind, docs, manifest, input.sourcePath);
     const artifacts = writeEvidenceArtifacts(importDir, batch, manifest);
     const documentsPath = join(importDir, 'documents.json');
-    writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+    writeFileSync(documentsPath, JSON.stringify(validation.accepted, null, 2), 'utf-8');
+    writeFileSync(join(importDir, 'validation-summary.json'), JSON.stringify(validation.summary, null, 2), 'utf-8');
 
     return this.store.saveEvidenceImport({
       id: importId,
@@ -1981,10 +2185,13 @@ export class WorkbenchService {
       source_platform: input.sourceKind === 'chat' ? input.chatPlatform : 'video_transcript',
       source_path: input.sourcePath,
       target_manifest_path: input.targetManifestPath,
-      status: 'completed',
-      item_count: batch.items.length,
-      summary: buildEvidenceImportSummary(input.sourceKind, batch.stats),
-      stats: batch.stats,
+      status: validation.accepted.length > 0 ? 'completed' : 'quarantined',
+      item_count: validation.accepted.length,
+      summary: validation.summary.latest_summary ?? buildEvidenceImportSummary(input.sourceKind, batch.stats),
+      stats: {
+        ...batch.stats,
+        raw_messages: docs.length,
+      },
       artifacts: {
         ...artifacts,
         documents_path: documentsPath,
@@ -2008,19 +2215,6 @@ export class WorkbenchService {
     const sourceSync = await this.runSourceSyncForeground(slug, 'deep_fetch');
     const trainRun = sourceSync.run;
     if (!trainRun) {
-      const latestPersona = this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug);
-      if (latestPersona && latestPersona.status !== 'converged') {
-        const dir = settings.getPersonaDir(slug);
-        const personaPath = join(dir, 'persona.json');
-        if (existsSync(personaPath)) {
-          const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
-          writeFileSync(personaPath, JSON.stringify({
-            ...persona,
-            status: 'converged',
-            updated_at: new Date().toISOString(),
-          }, null, 2), 'utf-8');
-        }
-      }
       return { run: null, summary: sourceSync.summary };
     }
     const finalRun = await this.waitForRunCompletion(trainRun.id);
@@ -2045,6 +2239,7 @@ export class WorkbenchService {
       },
       updated_at: new Date().toISOString(),
     });
+    this.appendPersonaRunLog(slug, `${mode === 'deep_fetch' ? 'deep_fetching' : 'incremental_syncing'} started`, mode === 'deep_fetch' ? '正在深抓取来源…' : '正在增量拉取来源…');
     const imports = await this.syncPersonaSources(slug, this.getPersonaConfig(slug), {
       includeLocal: mode === 'deep_fetch',
       forceRemote: mode === 'deep_fetch',
@@ -2480,6 +2675,167 @@ export class WorkbenchService {
     };
   }
 
+  private validateRemoteSourceDocuments(
+    personaName: string,
+    source: PersonaSource,
+    docs: RawDocument[],
+  ): DocumentValidationOutcome {
+    const identityTokens = Array.from(new Set([
+      personaName,
+      source.handle_or_url ?? '',
+      source.platform ?? '',
+    ].flatMap((value) => String(value).split(/[^a-zA-Z0-9@._-]+/)).map((item) => item.trim().toLowerCase()).filter((item) => item.length >= 3 || item.startsWith('@'))));
+
+    const targetHandle = normalizeHandle(source.handle_or_url ?? '').toLowerCase();
+    const results = docs.map((doc) => {
+      const evidence = [
+        doc.author ?? '',
+        doc.author_handle ?? '',
+        doc.source_url ?? '',
+        String((doc.metadata as Record<string, unknown> | undefined)?.uploader ?? ''),
+        String((doc.metadata as Record<string, unknown> | undefined)?.channel ?? ''),
+      ].filter(Boolean);
+      const haystack = evidence.join(' ').toLowerCase();
+      const identityMatchScore = identityTokens.length > 0 ? Math.min(1, countIdentityMatches(haystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3))) : 0;
+
+      if (source.type === 'social') {
+        const author = String(doc.author ?? '').replace(/^@/, '').toLowerCase();
+        const authorHandle = String(doc.author_handle ?? '').replace(/^@/, '').toLowerCase();
+        const urlHandle = /x\.com\/([^/?#]+)/i.exec(String(doc.source_url ?? ''))?.[1]?.replace(/^@/, '').toLowerCase();
+        const matches = [author, authorHandle, urlHandle].filter((value) => value === targetHandle).length;
+        if (matches >= 2) {
+          return createValidationResult({
+            status: 'accepted',
+            reason_code: 'social_author_match',
+            summary: '作者已通过账号一致性校验。',
+            confidence: 0.96,
+            identity_match: 0.98,
+            source_integrity: 0.95,
+            evidence,
+          });
+        }
+        return createValidationResult({
+          status: 'rejected',
+          reason_code: 'social_author_mismatch',
+          summary: '抓取结果作者与目标账号不一致，已拦截。',
+          confidence: 0.08,
+          identity_match: 0.05,
+          source_integrity: 0.25,
+          evidence,
+        });
+      }
+
+      if (source.type === 'article') {
+        const likelyAggregator = /(category|search|tag|archive|rss|feed)/i.test(String(doc.source_url ?? ''));
+        if (likelyAggregator) {
+          return createValidationResult({
+            status: 'rejected',
+            reason_code: 'article_aggregator_page',
+            summary: '聚合页或列表页不会直接进入正式培养。',
+            confidence: 0.2,
+            identity_match: identityMatchScore,
+            source_integrity: 0.25,
+            evidence,
+          });
+        }
+        if (identityMatchScore >= 0.5) {
+          return createValidationResult({
+            status: 'accepted',
+            reason_code: 'article_identity_match',
+            summary: '网页内容已通过来源归属校验。',
+            confidence: 0.78,
+            identity_match: identityMatchScore,
+            source_integrity: 0.76,
+            evidence,
+          });
+        }
+        return createValidationResult({
+          status: 'quarantined',
+          reason_code: 'article_identity_weak',
+          summary: '网页归属不足，已隔离等待人工确认。',
+          confidence: 0.38,
+          identity_match: identityMatchScore,
+          source_integrity: 0.5,
+          evidence,
+        });
+      }
+
+      if (source.type === 'video_file') {
+        const uploader = String((doc.metadata as Record<string, unknown> | undefined)?.uploader ?? (doc.metadata as Record<string, unknown> | undefined)?.channel ?? '').toLowerCase();
+        const firstParty = targetHandle && (uploader.includes(targetHandle) || haystack.includes(targetHandle));
+        if (firstParty || identityMatchScore >= 0.5) {
+          return createValidationResult({
+            status: 'accepted',
+            reason_code: firstParty ? 'video_first_party_match' : 'video_interview_match',
+            summary: firstParty ? '视频来源与目标频道匹配。' : '视频内容与目标身份存在稳定匹配。',
+            confidence: firstParty ? 0.9 : 0.74,
+            identity_match: firstParty ? 0.95 : identityMatchScore,
+            source_integrity: firstParty ? 0.92 : 0.72,
+            evidence,
+          });
+        }
+        return createValidationResult({
+          status: 'quarantined',
+          reason_code: 'video_identity_weak',
+          summary: '视频来源归属不足，已隔离，不进入正式训练。',
+          confidence: 0.34,
+          identity_match: identityMatchScore,
+          source_integrity: 0.48,
+          evidence,
+        });
+      }
+
+      return createValidationResult({
+        status: 'accepted',
+        reason_code: 'default_remote_accept',
+        summary: '远程来源已通过基础校验。',
+        confidence: 0.7,
+        identity_match: identityMatchScore,
+        source_integrity: 0.7,
+        evidence,
+      });
+    });
+
+    return {
+      accepted: docs.filter((_, index) => results[index]?.status === 'accepted'),
+      rejected: docs.filter((_, index) => results[index]?.status === 'rejected'),
+      quarantined: docs.filter((_, index) => results[index]?.status === 'quarantined'),
+      results,
+      summary: summarizeValidationResults(results),
+    };
+  }
+
+  private getValidationSummaryPath(entry: WorkbenchEvidenceImport): string {
+    return join(join(this.store.getEvidenceImportsDir(), entry.id), 'validation-summary.json');
+  }
+
+  private readImportValidationSummary(entry: WorkbenchEvidenceImport): ValidationSummaryTotals {
+    return readJsonFile<ValidationSummaryTotals>(this.getValidationSummaryPath(entry), {
+      accepted_count: entry.item_count,
+      rejected_count: 0,
+      quarantined_count: entry.status === 'quarantined' ? entry.stats.raw_messages : 0,
+      latest_summary: entry.summary,
+    });
+  }
+
+  private getActiveLifecycleRun(slug: string): WorkbenchRun | null {
+    return this.listRuns(slug)
+      .filter((run) => ['create', 'source_sync', 'train'].includes(run.type) && run.status === 'running')
+      .sort((a, b) => b.started_at.localeCompare(a.started_at))[0] ?? null;
+  }
+
+  private appendPersonaRunLog(slug: string, message: string, summary?: string): void {
+    const run = this.getActiveLifecycleRun(slug);
+    if (!run?.log_path) return;
+    const line = `[${new Date().toISOString()}] ${message}\n`;
+    writeFileSync(run.log_path, line, { flag: 'a' });
+    if (summary) {
+      this.store.updateRun(run.id, {
+        summary,
+      });
+    }
+  }
+
   private async fetchTwitterSourceDocuments(source: PersonaSource, forceRemote: boolean): Promise<RawDocument[]> {
     const handle = source.handle_or_url?.trim();
     if (!handle) return [];
@@ -2603,6 +2959,7 @@ export class WorkbenchService {
     let docs: RawDocument[] = [];
     let sourcePlatform = source.platform ?? source.type;
     this.touchSyncOperation(slug, config, source, forceRemote);
+    this.appendPersonaRunLog(slug, `sync source ${describeSourceLabel(source)} started`, forceRemote ? '正在深抓取来源…' : '正在增量拉取来源…');
     try {
       if (source.type === 'social' && source.handle_or_url) {
         docs = await this.fetchTwitterSourceDocuments(source, forceRemote);
@@ -2620,6 +2977,7 @@ export class WorkbenchService {
       }
 
       if (docs.length === 0) {
+        this.appendPersonaRunLog(slug, `source ${describeSourceLabel(source)} produced no new documents`, '当前窗口已完成，但没有新增素材');
         this.touchSourceSyncState(slug, config, source.id, {
           last_synced_at: now.toISOString(),
           status: 'ready',
@@ -2642,9 +3000,60 @@ export class WorkbenchService {
           source_mode: source.mode,
         },
       }));
+      const validation = this.validateRemoteSourceDocuments(config.name, source, docs);
+      const acceptedDocs = validation.accepted;
+      if (validation.rejected.length > 0 || validation.quarantined.length > 0) {
+        this.appendPersonaRunLog(
+          slug,
+          `validation ${describeSourceLabel(source)} accepted=${validation.summary.accepted_count} rejected=${validation.summary.rejected_count} quarantined=${validation.summary.quarantined_count}`,
+          validation.summary.latest_summary ?? '来源校验已更新',
+        );
+      }
+      if (acceptedDocs.length === 0) {
+        this.touchSourceSyncState(slug, config, source.id, {
+          last_synced_at: now.toISOString(),
+          status: validation.rejected.length > 0 ? 'error' : 'ready',
+          summary: validation.summary.latest_summary ?? '来源未通过校验，未进入正式培养。',
+        });
+        this.clearSyncOperation(slug);
+        return this.store.saveEvidenceImport({
+          id: crypto.randomUUID(),
+          persona_slug: slug,
+          source_kind: source.type === 'social' ? 'chat' : source.type === 'article' ? 'article' : 'video',
+          source_platform: sourcePlatform,
+          source_path: source.handle_or_url ?? source.local_path ?? '',
+          target_manifest_path: source.manifest_path ?? '',
+          status: 'quarantined',
+          item_count: 0,
+          summary: validation.summary.latest_summary ?? '来源未通过校验，已隔离。',
+          stats: {
+            raw_messages: docs.length,
+            sessions: 0,
+            windows: 0,
+            target_windows: 0,
+            context_only_windows: 0,
+            downgraded_scene_items: 0,
+            cross_session_stable_items: 0,
+            blocked_scene_items: 0,
+            speaker_role_counts: {},
+            scene_counts: {},
+            modality_counts: {},
+            source_type_counts: {},
+          },
+          artifacts: {
+            evidence_index_path: '',
+            evidence_stats_path: '',
+            speaker_summary_path: '',
+            scene_summary_path: '',
+            documents_path: '',
+          },
+          created_at: now.toISOString(),
+          updated_at: now.toISOString(),
+        });
+      }
 
       const cursor = createHash('sha1')
-        .update(JSON.stringify(docs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
+        .update(JSON.stringify(acceptedDocs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
         .digest('hex');
       if (!forceRemote && source.last_cursor && source.last_cursor === cursor) {
         this.touchSourceSyncState(slug, config, source.id, {
@@ -2662,13 +3071,14 @@ export class WorkbenchService {
         self_aliases: [],
         known_other_aliases: [],
       };
-      const batch = buildStandaloneEvidenceBatch(docs, { manifest, sourceLabel: sourcePlatform });
+      const batch = buildStandaloneEvidenceBatch(acceptedDocs, { manifest, sourceLabel: sourcePlatform });
       const importId = crypto.randomUUID();
       const importDir = join(this.store.getEvidenceImportsDir(), importId);
       mkdirSync(importDir, { recursive: true });
       const artifacts = writeEvidenceArtifacts(importDir, batch, manifest);
       const documentsPath = join(importDir, 'documents.json');
-      writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+      writeFileSync(documentsPath, JSON.stringify(acceptedDocs, null, 2), 'utf-8');
+      writeFileSync(join(importDir, 'validation-summary.json'), JSON.stringify(validation.summary, null, 2), 'utf-8');
 
       const imported = this.store.saveEvidenceImport({
         id: importId,
@@ -2679,7 +3089,7 @@ export class WorkbenchService {
         target_manifest_path: source.manifest_path ?? '',
         status: 'completed',
         item_count: batch.items.length,
-        summary: `Imported ${docs.length} new items from ${sourcePlatform}.`,
+        summary: validation.summary.latest_summary ?? `Imported ${acceptedDocs.length} new items from ${sourcePlatform}.`,
         stats: batch.stats,
         artifacts: {
           ...artifacts,
@@ -2692,13 +3102,15 @@ export class WorkbenchService {
       this.touchSourceSyncState(slug, config, source.id, {
         last_synced_at: now.toISOString(),
         last_cursor: cursor,
-        last_seen_published_at: extractLatestPublishedAt(docs),
+        last_seen_published_at: extractLatestPublishedAt(acceptedDocs),
         status: 'ready',
         summary: imported.summary,
       });
+      this.appendPersonaRunLog(slug, `source ${describeSourceLabel(source)} imported accepted=${acceptedDocs.length} raw=${docs.length}`, imported.summary);
       this.clearSyncOperation(slug);
       return imported;
     } catch (error) {
+      this.appendPersonaRunLog(slug, `source ${describeSourceLabel(source)} failed: ${String(error instanceof Error ? error.message : error).slice(0, 180)}`, '来源暂时不可用，稍后会继续尝试');
       this.touchSourceSyncState(slug, config, source.id, {
         status: 'error',
         summary: `Source sync failed: ${String(error instanceof Error ? error.message : error).slice(0, 160)}`,
@@ -2778,6 +3190,7 @@ export class WorkbenchService {
         },
       };
       this.store.savePersonaConfig(nextConfig);
+      this.appendPersonaRunLog(slug, 'source sync completed with no new accepted content', '当前窗口已完成，但没有可纳入训练的新素材');
       return { imports, run: null, summary: fallbackSummary };
     }
 
@@ -2791,6 +3204,7 @@ export class WorkbenchService {
       prepEvidencePath: prep.evidence_index_path,
       prepArtifactId: prep.id,
     });
+    this.appendPersonaRunLog(slug, `training started from ${imports.length} source batches`, '素材已完成整理，正在进入人格收敛');
     return {
       imports,
       run,
@@ -3142,7 +3556,7 @@ export class WorkbenchService {
     return {
       slug: config.persona_slug,
       name: config.name,
-      status: existsSync(join(settings.getPersonaDir(slug), 'persona.json')) ? 'available' : 'creating',
+      status: 'creating',
       doc_count: evidenceImports.reduce((sum, item) => sum + item.item_count, 0),
       memory_node_count: 0,
       training_rounds: 0,
@@ -3178,6 +3592,258 @@ export class WorkbenchService {
       },
       last_update_check_at: config.update_policy.last_checked_at,
     };
+  }
+
+  private buildCultivationSourceItems(
+    config: PersonaConfig,
+    evidenceImports: WorkbenchEvidenceImport[]
+  ): NonNullable<CultivationDetail['source_items']> {
+    return config.sources.map((source) => {
+      const sourceProgress = this.readSourceSyncProgress(source);
+      const matchingImports = evidenceImports.filter((item) => this.matchesSourceImport(source, item));
+      const rawCount = matchingImports.reduce((sum, item) => sum + (item.stats?.raw_messages ?? 0), 0);
+      const cleanCount = matchingImports.reduce((sum, item) => sum + item.item_count, 0);
+      const validationSummary = matchingImports.reduce<ValidationSummaryTotals>((acc, item) => {
+        const summary = this.readImportValidationSummary(item);
+        acc.accepted_count += summary.accepted_count;
+        acc.rejected_count += summary.rejected_count;
+        acc.quarantined_count += summary.quarantined_count;
+        acc.latest_summary = [acc.latest_summary, summary.latest_summary].filter(Boolean).at(-1);
+        return acc;
+      }, {
+        accepted_count: 0,
+        rejected_count: 0,
+        quarantined_count: 0,
+      });
+      const syncedAt = source.last_synced_at ?? matchingImports.map((item) => item.updated_at).sort().at(-1);
+      const coveragePoints = matchingImports.flatMap((item) => {
+        const window = this.readImportCoverageWindow(item);
+        return [window.start, window.end].filter(Boolean) as string[];
+      }).sort();
+      const inferredCoverageStart = coveragePoints[0]
+        ?? this.inferSourceCoverageStart(source, source.last_seen_published_at);
+      const inferredCoverageEnd = coveragePoints.at(-1) ?? source.last_seen_published_at;
+      return {
+        source_id: source.id,
+        label: source.handle_or_url || source.local_path || source.platform || source.type,
+        type: source.type,
+        enabled: source.enabled,
+        raw_count: rawCount,
+        clean_count: cleanCount,
+        coverage_start: inferredCoverageStart,
+        coverage_end: inferredCoverageEnd,
+        last_synced_at: syncedAt,
+        last_result: productizeWindowResult(sourceProgress?.current_window, source.summary || (matchingImports.at(-1)?.summary ?? undefined)),
+        status: source.status,
+        last_heartbeat_at: sourceProgress?.last_heartbeat_at,
+        validation_summary: validationSummary,
+        active_window: sourceProgress?.current_window,
+      };
+    });
+  }
+
+  private getSourceSyncStatePath(source: PersonaSource): string | null {
+    if (source.type !== 'social' || !source.handle_or_url?.trim()) return null;
+    const handle = normalizeHandle(source.handle_or_url);
+    return join(settings.getDataDir(), 'source-sync', handle, `${handle}-${source.id}.json.state.json`);
+  }
+
+  private readSourceSyncProgress(source: PersonaSource): SourceSyncProgressState | null {
+    const statePath = this.getSourceSyncStatePath(source);
+    if (!statePath || !existsSync(statePath)) return null;
+    try {
+      return JSON.parse(readFileSync(statePath, 'utf-8')) as SourceSyncProgressState;
+    } catch {
+      return null;
+    }
+  }
+
+  private matchesSourceImport(source: PersonaSource, entry: WorkbenchEvidenceImport): boolean {
+    const importSourceIds = this.readImportSourceIds(entry);
+    if (importSourceIds.length > 0) {
+      return importSourceIds.includes(source.id);
+    }
+    const sourceKind =
+      source.type === 'chat_file' ? 'chat'
+      : source.type === 'video_file' ? 'video'
+      : source.type === 'article' ? 'article'
+      : 'chat';
+    if (sourceKind !== entry.source_kind) return false;
+    if (source.platform && entry.source_platform && source.platform !== entry.source_platform) return false;
+    return true;
+  }
+
+  private readImportSourceIds(entry: WorkbenchEvidenceImport): string[] {
+    const docs = this.readImportDocuments(entry);
+    return Array.from(new Set(
+      docs
+        .map((doc) => {
+          const metadata = doc.metadata as Record<string, unknown> | undefined;
+          return typeof metadata?.source_id === 'string' ? metadata.source_id : null;
+        })
+        .filter((value): value is string => Boolean(value))
+    ));
+  }
+
+  private readImportCoverageWindow(entry: WorkbenchEvidenceImport): { start?: string; end?: string } {
+    const docs = this.readImportDocuments(entry);
+    const published = docs
+      .map((doc) => doc.published_at)
+      .filter((value): value is string => Boolean(value))
+      .sort();
+    return {
+      start: published[0],
+      end: published.at(-1),
+    };
+  }
+
+  private readImportDocuments(entry: WorkbenchEvidenceImport): RawDocument[] {
+    const documentsPath = entry.artifacts?.documents_path;
+    if (!documentsPath || !existsSync(documentsPath)) return [];
+    try {
+      const raw = JSON.parse(readFileSync(documentsPath, 'utf-8')) as RawDocument[];
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private inferSourceCoverageStart(source: PersonaSource, end?: string): string | undefined {
+    if (!end) return undefined;
+    const horizonYears = source.horizon_years ?? (source.horizon_mode === 'deep_archive' ? 8 : source.horizon_mode === 'recent_3y' ? 3 : undefined);
+    if (!horizonYears) return undefined;
+    const date = new Date(end);
+    if (Number.isNaN(date.getTime())) return undefined;
+    date.setUTCFullYear(date.getUTCFullYear() - horizonYears);
+    return date.toISOString();
+  }
+
+  private buildCultivationRounds(
+    slug: string,
+    cleanDocumentCount: number
+  ): NonNullable<CultivationDetail['rounds']> {
+    const report = this.readTrainingReport(slug);
+    const rounds = report?.rounds ?? [];
+    return rounds.map((item) => ({
+      round: item.round,
+      status: item.status,
+      objective: this.describeRoundObjective(item.round),
+      document_count: cleanDocumentCount,
+      finished_at: report?.generated_at,
+    }));
+  }
+
+  private describeRoundObjective(round: number): string {
+    if (round <= 1) return '建立初始人格骨架';
+    if (round === 2) return '补全表达习惯与语气稳定性';
+    if (round === 3) return '整合跨来源表达一致性';
+    if (round === 4) return '处理矛盾信号并收紧人格边界';
+    return '继续收敛并稳定长期表达';
+  }
+
+  private buildLatestCultivationActivity(
+    persona: PersonaSummary,
+    config: PersonaConfig,
+    sourceItems: NonNullable<CultivationDetail['source_items']>
+  ): string {
+    if (this.isPersonaReady(persona)) {
+      return '已完成培养，可开始对话';
+    }
+    const runningWindow = sourceItems
+      .map((item) => ({ item, window: item.active_window }))
+      .find((entry) => entry.window?.status === 'running');
+    if (runningWindow?.window) {
+      const start = runningWindow.window.window_start?.slice(0, 10);
+      const end = runningWindow.window.window_end?.slice(0, 10);
+      if (start && end) {
+        return `正在抓取 ${formatSourceTypeLabel(runningWindow.item.type)}：${start} ~ ${end}`;
+      }
+    }
+    const recentFailure = sourceItems
+      .map((item) => ({ item, window: item.active_window }))
+      .find((entry) => entry.window?.status === 'timeout' || entry.window?.status === 'failed');
+    if (recentFailure?.window?.status === 'timeout') {
+      return '抓取超时，系统正在重试';
+    }
+    if (recentFailure?.window?.status === 'failed') {
+      return '来源暂时不可用，稍后会继续尝试';
+    }
+    const currentRound = persona.current_round ?? 0;
+    const totalRounds = persona.total_rounds ?? 0;
+    const currentSource = config.update_policy.current_source_label;
+    if (config.update_policy.current_operation === 'deep_fetch') {
+      return currentSource ? `正在深抓 ${currentSource}` : '正在深抓素材来源';
+    }
+    if (config.update_policy.current_operation === 'incremental_sync') {
+      return currentSource ? `正在增量拉取 ${currentSource}` : '正在增量拉取最新内容';
+    }
+    if (config.update_policy.current_operation === 'discovery') {
+      return '正在发现新的候选来源';
+    }
+    if ((persona.current_stage ?? persona.status) === 'training' && totalRounds > 0) {
+      return `正在进行第 ${currentRound} / ${totalRounds} 轮人格收敛`;
+    }
+    if ((persona.current_stage ?? persona.status) === 'refining') {
+      return '正在整理素材并提炼人格结构';
+    }
+    if ((persona.current_stage ?? persona.status) === 'ingesting') {
+      return '正在接入并清洗素材';
+    }
+    const busiestSource = [...sourceItems].sort((a, b) => b.raw_count - a.raw_count)[0];
+    if (busiestSource) {
+      return `已接入 ${busiestSource.label}，正在等待下一步推进`;
+    }
+    return '正在准备培养';
+  }
+
+  private resolveCultivationPhase(
+    persona: PersonaSummary,
+    config: PersonaConfig,
+    rawDocumentCount: number,
+    cleanDocumentCount: number,
+    sourceItems: NonNullable<CultivationDetail['source_items']>
+  ): CultivationPhase {
+    if (this.isPersonaReady(persona)) return 'ready';
+    if (sourceItems.some((item) => item.status === 'error')) return 'error';
+    if (config.update_policy.current_operation === 'deep_fetch') return 'deep_fetching';
+    if (config.update_policy.current_operation === 'incremental_sync') return 'incremental_syncing';
+    if ((persona.current_stage ?? persona.status) === 'training') return 'training';
+    if ((persona.current_stage ?? persona.status) === 'refining') return 'normalizing';
+    if ((persona.current_stage ?? persona.status) === 'ingesting') return 'building_evidence';
+    if (cleanDocumentCount > 0) return 'building_evidence';
+    if (rawDocumentCount > 0) return 'normalizing';
+    return 'queued';
+  }
+
+  private getCurrentWindow(sourceItems: NonNullable<CultivationDetail['source_items']>): SourceProgressItem | undefined {
+    const running = sourceItems.find((item) => item.active_window?.status === 'running');
+    if (running?.active_window) {
+      return {
+        source_id: running.source_id,
+        source_label: running.label,
+        ...running.active_window,
+      };
+    }
+    const latest = sourceItems
+      .filter((item) => item.active_window?.updated_at)
+      .sort((a, b) => String(b.active_window?.updated_at).localeCompare(String(a.active_window?.updated_at)))[0];
+    if (!latest?.active_window) return undefined;
+    return {
+      source_id: latest.source_id,
+      source_label: latest.label,
+      ...latest.active_window,
+    };
+  }
+
+  private getActiveWindows(sourceItems: NonNullable<CultivationDetail['source_items']>): SourceProgressItem[] {
+    return sourceItems
+      .filter((item) => item.active_window)
+      .map((item) => ({
+        source_id: item.source_id,
+        source_label: item.label,
+        ...item.active_window,
+      }))
+      .sort((a, b) => String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? '')));
   }
 
   private readPersonaSummary(slug: string): PersonaSummary | null {
@@ -3587,6 +4253,7 @@ export class WorkbenchService {
     const configSummary = this.readPersonaConfigSummary(slug);
     const base = personaSummary ?? configSummary;
     if (!base) return null;
+    const config = this.store.getPersonaConfig(slug);
 
     const trainingContext = this.readTrainingContext(slug);
     const trainingReport = this.readTrainingReport(slug);
@@ -3601,6 +4268,8 @@ export class WorkbenchService {
       current_round: currentRound,
       total_rounds: totalRounds,
       progress_percent: this.computeProgressPercent(base.status, currentRound, totalRounds),
+      source_count: config?.sources.length ?? 0,
+      source_type_count: config ? new Set(config.sources.map((item) => item.type)).size : 0,
     };
   }
 
@@ -3619,12 +4288,24 @@ export class WorkbenchService {
     }
   }
 
-  private readTrainingReport(slug: string): { total_rounds: number } | null {
+  private readTrainingReport(slug: string): { total_rounds: number; generated_at?: string; rounds?: Array<{ round: number; status: string }> } | null {
     const path = join(settings.getPersonaDir(slug), 'training-report.json');
     if (!existsSync(path)) return null;
     try {
       const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-      return { total_rounds: Number(raw.total_rounds ?? 0) };
+      return {
+        total_rounds: Number(raw.total_rounds ?? 0),
+        generated_at: typeof raw.generated_at === 'string' ? raw.generated_at : undefined,
+        rounds: Array.isArray(raw.rounds)
+          ? raw.rounds.map((item) => {
+            const row = item as Record<string, unknown>;
+            return {
+              round: Number(row.round ?? 0),
+              status: String(row.status ?? 'pending'),
+            };
+          })
+          : [],
+      };
     } catch {
       return null;
     }
@@ -3667,15 +4348,46 @@ export class WorkbenchService {
     const config = this.getPersonaConfig(slug);
     const evidenceImports = this.store.listEvidenceImports(slug);
     const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
+    const rawDocumentCount = evidenceImports.reduce((sum, item) => sum + (item.stats?.raw_messages ?? 0), 0);
+    const cleanDocumentCount = evidenceImports.reduce((sum, item) => sum + item.item_count, 0);
+    const sourceItems = this.buildCultivationSourceItems(config, evidenceImports);
+    const validationSummary = sourceItems.reduce<ValidationSummaryTotals>((acc, item) => {
+      acc.accepted_count += item.validation_summary?.accepted_count ?? item.clean_count ?? 0;
+      acc.rejected_count += item.validation_summary?.rejected_count ?? 0;
+      acc.quarantined_count += item.validation_summary?.quarantined_count ?? 0;
+      acc.latest_summary = [acc.latest_summary, item.validation_summary?.latest_summary].filter(Boolean).at(-1);
+      return acc;
+    }, {
+      accepted_count: 0,
+      rejected_count: 0,
+      quarantined_count: 0,
+    });
+    const rounds = this.buildCultivationRounds(slug, cleanDocumentCount);
+    const lastSuccessAt = evidenceImports.map((item) => item.updated_at).sort().at(-1);
+    const phase = this.resolveCultivationPhase(persona, config, rawDocumentCount, cleanDocumentCount, sourceItems);
+    const currentWindow = this.getCurrentWindow(sourceItems);
+    const activeWindows = this.getActiveWindows(sourceItems);
+    const windowProgress = sourceItems.reduce((acc, item) => {
+      const progress = item.type === 'social' ? this.readSourceSyncProgress(config.sources.find((source) => source.id === item.source_id) ?? config.sources[0]) : null;
+      acc.completed_windows += progress?.completed_windows ?? 0;
+      acc.estimated_total_windows += progress?.estimated_total_windows ?? 0;
+      return acc;
+    }, { completed_windows: 0, estimated_total_windows: 0 });
+    const lastHeartbeatAt = activeWindows
+      .map((item) => item.updated_at ?? item.started_at)
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1);
     return {
       persona,
+      phase,
       skills,
       progress: {
         percent: persona.progress_percent ?? 0,
         current_stage: persona.current_stage ?? 'created',
         current_round: persona.current_round ?? 0,
         total_rounds: persona.total_rounds ?? 0,
-        stages: this.buildStages(persona.current_stage ?? 'created'),
+        stages: this.buildStages(phase),
       },
       assets: {
         evidence_imports: evidenceImports.map((item) => ({
@@ -3697,11 +4409,21 @@ export class WorkbenchService {
           documents_path: '',
         })),
       },
+      raw_document_count: rawDocumentCount,
+      clean_document_count: cleanDocumentCount,
+      latest_activity: this.buildLatestCultivationActivity(persona, config, sourceItems),
+      last_success_at: lastSuccessAt,
+      last_heartbeat_at: lastHeartbeatAt,
+      current_window: currentWindow,
+      active_windows: activeWindows,
+      source_items: sourceItems,
+      rounds,
+      validation_summary: validationSummary,
       source_summary: {
         total_sources: config.sources.length,
         enabled_sources: config.sources.filter((item) => item.enabled).length,
         source_breakdown: buildSourceBreakdown(config.sources),
-        document_count: evidenceImports.reduce((sum, item) => sum + item.item_count, 0),
+        document_count: cleanDocumentCount,
         recent_delta_count: evidenceImports
           .filter((item) => Date.now() - new Date(item.updated_at).getTime() < 7 * 24 * 60 * 60 * 1000)
           .reduce((sum, item) => sum + item.item_count, 0),
@@ -3709,6 +4431,10 @@ export class WorkbenchService {
         current_source_label: config.update_policy.current_source_label,
         last_update_check_at: config.update_policy.last_checked_at,
         latest_update_result: config.update_policy.latest_result,
+        phase,
+        last_heartbeat_at: lastHeartbeatAt,
+        completed_windows: windowProgress.completed_windows,
+        estimated_total_windows: windowProgress.estimated_total_windows,
       } as any,
     };
   }
@@ -3723,12 +4449,14 @@ export class WorkbenchService {
 
   private buildStages(currentStage: string): CultivationDetail['progress']['stages'] {
     const order = [
-      { key: 'created', label: 'stage_created' },
-      { key: 'ingesting', label: 'stage_ingesting' },
-      { key: 'refining', label: 'stage_refining' },
+      { key: 'queued', label: 'stage_created' },
+      { key: 'deep_fetching', label: 'stage_ingesting' },
+      { key: 'incremental_syncing', label: 'stage_ingesting' },
+      { key: 'normalizing', label: 'stage_refining' },
+      { key: 'building_evidence', label: 'stage_refining' },
       { key: 'training', label: 'stage_training' },
       { key: 'error', label: 'stage_error' },
-      { key: 'converged', label: 'stage_converged' },
+      { key: 'ready', label: 'stage_converged' },
     ];
     const idx = order.findIndex((s) => s.key === currentStage);
     return order.map((s, i) => ({

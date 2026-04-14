@@ -28,6 +28,7 @@ type GeminiFileResource = {
 
 export async function enrichAttachment(item: AttachmentRef): Promise<AttachmentRef> {
   const result = await processAttachment(item);
+  const validationStatus = result.status === 'ready' ? 'validated' : 'rejected';
   return {
     ...item,
     processing_status: result.status,
@@ -35,12 +36,22 @@ export async function enrichAttachment(item: AttachmentRef): Promise<AttachmentR
     processing_provider: result.provider,
     processing_error: result.error,
     processing_capability: result.capability,
+    validation_status: validationStatus,
+    validation_summary: result.status === 'ready'
+      ? '附件已通过输入校验，可作为本轮上下文使用。'
+      : (result.error ?? '附件未通过输入校验，本轮不会作为上下文使用。'),
   };
 }
 
 export async function processAttachment(item: AttachmentRef): Promise<AttachmentProcessingResult> {
   if (!item.path || !existsSync(item.path) || !statSync(item.path).isFile()) {
     return { status: 'error', error: '附件文件当前不可用。' };
+  }
+  if ((item.size ?? 0) > 200 * 1024 * 1024) {
+    return { status: 'error', error: '附件体积超过当前可处理上限。' };
+  }
+  if (item.mime && !/^(image|audio|video|text|application\/(json|pdf|msword|vnd\.openxmlformats-officedocument))/i.test(item.mime)) {
+    return { status: 'unsupported', error: '当前附件 MIME 类型不在可处理范围内。' };
   }
 
   if (item.type === 'text' || item.type === 'file') {

@@ -17,6 +17,8 @@ export interface PersonaSummary {
   current_stage?: string;
   current_round?: number;
   total_rounds?: number;
+  source_count?: number;
+  source_type_count?: number;
 }
 
 export interface PersonaDetail {
@@ -42,6 +44,7 @@ export interface PersonaSkillSummary {
 
 export interface CultivationDetail {
   persona: PersonaSummary;
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;
@@ -59,7 +62,103 @@ export interface CultivationDetail {
     evidence_imports: Array<{ id: string; persona_slug: string; source_path: string; status: string; created_at: string }>;
     training_preps: Array<{ id: string; persona_slug: string; handoff_id?: string; created_at: string }>;
   };
+  raw_document_count?: number;
+  clean_document_count?: number;
+  latest_activity?: string;
+  last_success_at?: string;
+  last_heartbeat_at?: string;
+  current_window?: {
+    source_id?: string;
+    source_label?: string;
+    window_start?: string;
+    window_end?: string;
+    provider?: string;
+    filter_mode?: string;
+    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+    attempt?: number;
+    started_at?: string;
+    finished_at?: string;
+    updated_at?: string;
+    duration_ms?: number;
+    result_count?: number;
+    new_count?: number;
+    matched_count?: number;
+    rejected_count?: number;
+    quarantined_count?: number;
+    error?: string;
+  };
+  active_windows?: Array<{
+    source_id?: string;
+    source_label?: string;
+    window_start?: string;
+    window_end?: string;
+    provider?: string;
+    filter_mode?: string;
+    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+    attempt?: number;
+    started_at?: string;
+    finished_at?: string;
+    updated_at?: string;
+    duration_ms?: number;
+    result_count?: number;
+    new_count?: number;
+    matched_count?: number;
+    rejected_count?: number;
+    quarantined_count?: number;
+    error?: string;
+  }>;
+  source_items?: Array<{
+    source_id: string;
+    label: string;
+    type: string;
+    enabled: boolean;
+    raw_count: number;
+    clean_count: number;
+    coverage_start?: string;
+    coverage_end?: string;
+    last_synced_at?: string;
+    last_result?: string;
+    status?: string;
+    last_heartbeat_at?: string;
+    validation_summary?: {
+      accepted_count: number;
+      rejected_count: number;
+      quarantined_count: number;
+      latest_summary?: string;
+    };
+    active_window?: {
+      window_start?: string;
+      window_end?: string;
+      provider?: string;
+      filter_mode?: string;
+      status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+      attempt?: number;
+      started_at?: string;
+      finished_at?: string;
+      updated_at?: string;
+      duration_ms?: number;
+      result_count?: number;
+      new_count?: number;
+      matched_count?: number;
+      rejected_count?: number;
+      quarantined_count?: number;
+      error?: string;
+    };
+  }>;
+  rounds?: Array<{
+    round: number;
+    status: string;
+    objective: string;
+    document_count: number;
+    finished_at?: string;
+  }>;
   source_summary?: CultivationSummary['source_summary'];
+  validation_summary?: {
+    accepted_count: number;
+    rejected_count: number;
+    quarantined_count: number;
+    latest_summary?: string;
+  };
 }
 
 export interface PersonaSource {
@@ -136,6 +235,18 @@ export interface AttachmentRef {
   processing_provider?: string;
   processing_error?: string;
   processing_capability?: 'text_extract' | 'image_understanding' | 'transcription';
+  validation_status?: 'validated' | 'rejected';
+  validation_summary?: string;
+}
+
+export interface SourceValidationResult {
+  status: 'accepted' | 'rejected' | 'quarantined';
+  reason_code: string;
+  summary: string;
+  confidence: number;
+  identity_match: number;
+  source_integrity: number;
+  evidence: string[];
 }
 
 export interface ConversationOrchestration {
@@ -179,6 +290,10 @@ export interface HealthStatus {
   version?: string;
   uptime?: number;
   port?: number;
+  build_id?: string;
+  server_version?: string;
+  started_at?: string;
+  git_sha?: string;
 }
 
 export interface CultivationSummary {
@@ -200,6 +315,10 @@ export interface CultivationSummary {
     current_source_label?: string;
     last_update_check_at?: string;
     latest_update_result?: string;
+    phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'ready' | 'error';
+    last_heartbeat_at?: string;
+    completed_windows?: number;
+    estimated_total_windows?: number;
   };
   last_update_check_at?: string;
 }

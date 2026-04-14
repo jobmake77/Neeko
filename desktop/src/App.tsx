@@ -1,11 +1,41 @@
 import { useEffect } from 'react';
+import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { bootstrapWorkbench } from './lib/tauri';
 import * as api from './lib/api';
 import { AppShell } from './components/layout/AppShell';
 
+async function ensureWorkbenchReady() {
+  const health = await api.checkHealth();
+  if (!health.ok || !health.build_id || !health.server_version) {
+    await bootstrapWorkbench().catch(console.error);
+    return;
+  }
+}
+
 export default function App() {
   useEffect(() => {
-    bootstrapWorkbench().catch(console.error);
+    let cancelled = false;
+
+    const focusWindow = async () => {
+      try {
+        const appWindow = getCurrentWindow();
+        const retryDelays = [0, 180, 480, 1200];
+        for (const delay of retryDelays) {
+          if (cancelled) return;
+          if (delay > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, delay));
+          }
+          await appWindow.show();
+          await appWindow.setFocus();
+        }
+        await appWindow.requestUserAttention(UserAttentionType.Informational);
+      } catch {
+        // keep startup quiet outside Tauri or when focus APIs are unavailable
+      }
+    };
+
+    void focusWindow();
+    void ensureWorkbenchReady();
     const runAutoCheck = async () => {
       try {
         const personas = await api.listPersonas();
@@ -18,7 +48,10 @@ export default function App() {
     const timer = window.setInterval(() => {
       void runAutoCheck();
     }, 10 * 60 * 1000);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   return <AppShell />;

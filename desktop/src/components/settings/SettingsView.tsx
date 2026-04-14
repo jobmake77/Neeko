@@ -19,7 +19,7 @@ import type { RuntimeModelConfig, RuntimeSettingsPayload } from '@/lib/types';
 type Provider = RuntimeModelConfig['provider'];
 type ConfigMode = NonNullable<RuntimeModelConfig['mode']>;
 type ModelRole = 'shared_default' | 'chat_default' | 'training_default';
-type ServiceStatus = 'checking' | 'connected' | 'disconnected';
+type ServiceStatus = 'checking' | 'connected' | 'stale' | 'disconnected';
 
 const MODEL_OPTIONS: Record<Provider, string[]> = {
   claude: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
@@ -436,6 +436,7 @@ export function SettingsView() {
   const [runtimeLoading, setRuntimeLoading] = useState(true);
   const [runtimeSaved, setRuntimeSaved] = useState(false);
   const [runtimeSettings, setRuntimeSettingsState] = useState<RuntimeSettingsPayload>({});
+  const [healthInfo, setHealthInfo] = useState<Awaited<ReturnType<typeof checkHealth>> | null>(null);
 
   useEffect(() => {
     void checkStatus();
@@ -447,7 +448,12 @@ export function SettingsView() {
   async function checkStatus() {
     setStatus('checking');
     const result = await checkHealth();
-    setStatus(result.ok ? 'connected' : 'disconnected');
+    setHealthInfo(result);
+    if (!result.ok) {
+      setStatus('disconnected');
+      return;
+    }
+    setStatus(result.build_id && result.server_version ? 'connected' : 'stale');
   }
 
   function handleSaveUrl() {
@@ -499,6 +505,14 @@ export function SettingsView() {
         </>
       );
     }
+    if (status === 'stale') {
+      return (
+        <>
+          <RefreshCw size={14} style={{ color: 'rgb(245 158 11)' }} />
+          <span style={{ fontSize: 13, color: 'rgb(245 158 11)' }}>服务版本过旧</span>
+        </>
+      );
+    }
     return (
       <>
         <XCircle size={14} style={{ color: 'rgb(239 68 68)' }} />
@@ -531,11 +545,18 @@ export function SettingsView() {
           </Row>
 
           <Row label={t('serviceStatus')}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {statusNode}
-              <button className="btn btn-ghost" onClick={() => void checkStatus()} style={{ padding: '3px 8px', fontSize: 11 }}>
-                {t('checkStatus')}
-              </button>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {statusNode}
+                <button className="btn btn-ghost" onClick={() => void checkStatus()} style={{ padding: '3px 8px', fontSize: 11 }}>
+                  {t('checkStatus')}
+                </button>
+              </div>
+              {healthInfo?.ok ? (
+                <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+                  v{healthInfo.server_version ?? healthInfo.version ?? 'unknown'} · build {healthInfo.build_id ?? 'missing'}
+                </div>
+              ) : null}
             </div>
           </Row>
 

@@ -18,6 +18,7 @@
     "lint": "tsc --noEmit",
     "test:skills": "npm run -s build && node --test test/skills-library.test.mjs",
     "test:ab": "npm run -s build && node --test test/ab-report.test.mjs",
+    "test:api-contract": "npm run -s build && node dist/testing/api-contract-test-entry.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

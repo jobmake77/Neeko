@@ -6,6 +6,7 @@ const {
   similarityByTokenOverlap,
   dedupeOrigins,
   mergeOrigins,
+  selectAcceptedOriginCandidates,
   computeCoverageByOrigin,
   gateCandidateSkill,
   selectFinalDistilledSkills,
@@ -76,6 +77,35 @@ test('mergeOrigins preserves existing and upgrades confidence/evidence', () => {
   assert.ok(storytelling);
   assert.equal(storytelling.confidence, 0.9);
   assert.ok(storytelling.evidence.length >= 3);
+});
+
+test('selectAcceptedOriginCandidates keeps transferable method candidates and defers weak ones', () => {
+  const result = selectAcceptedOriginCandidates([
+    {
+      name: 'Optionality Mapping',
+      why: 'Maps decisions by preserving upside while limiting irreversible downside.',
+      how: 'List branches, remove irreversible downside, then rank by retained upside.',
+      confidence: 0.78,
+      evidence_quotes: ['quote 1', 'quote 2', 'quote 3'],
+      transferable: true,
+      evidence_strength: 0.8,
+      method_specificity: 0.82,
+    },
+    {
+      name: 'AI',
+      why: 'Likes AI',
+      how: 'Talks about AI',
+      confidence: 0.4,
+      evidence_quotes: ['quote 1'],
+      transferable: false,
+      evidence_strength: 0.2,
+      method_specificity: 0.1,
+    },
+  ]);
+
+  assert.equal(result.accepted.length, 1);
+  assert.equal(result.pending.length, 1);
+  assert.equal(result.accepted[0].name, 'Optionality Mapping');
 });
 
 test('gateCandidateSkill rejects low-evidence skill', () => {

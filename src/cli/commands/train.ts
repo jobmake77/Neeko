@@ -100,7 +100,13 @@ interface TrainRuntimeContext {
   replay: ReplayBuffer;
   checkpointStore: CheckpointStore;
   assetPaths: ReturnType<typeof getTrainingAssetPaths>;
-  skillMetrics: { originSkillsAdded: number; distilledSkillsAdded: number; skillCoverageScore: number };
+  skillMetrics: {
+    originSkillsAdded: number;
+    distilledSkillsAdded: number;
+    candidateSkills: number;
+    pendingOrigins: number;
+    skillCoverageScore: number;
+  };
   errorLedger: ErrorLedgerEntry[];
   strategyDecision: TrainingStrategyDecision;
   executionSettings: TrainingExecutionSettings;
@@ -111,6 +117,8 @@ interface TrainRuntimeContext {
     prep_artifact_id?: string;
     evidence_import_id?: string;
   };
+  mode: TrainMode;
+  corpusDocCount: number;
 }
 
 const TRACK_STAGE_TIMEOUT_MS = Number(process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? 180_000);
@@ -118,6 +126,7 @@ const TRACK_BUDGET_MS = Number(process.env.NEEKO_TRAIN_TRACK_BUDGET_MS ?? 540_00
 const TRACK_HEARTBEAT_MS = Number(process.env.NEEKO_TRAIN_TRACK_HEARTBEAT_MS ?? 10_000);
 const PROVIDER_TIMEOUT_RETRY_MAX = Number(process.env.NEEKO_RETRY_PROVIDER_TIMEOUT_MAX ?? 1);
 const PARSE_DRIFT_RETRY_MAX = Number(process.env.NEEKO_RETRY_PARSE_DRIFT_MAX ?? 1);
+const SKILL_LIBRARY_REUSE_WINDOW_MS = Number(process.env.NEEKO_SKILL_LIBRARY_REUSE_WINDOW_MS ?? 30 * 60_000);
 const NO_SPINNER = process.env.NEEKO_NO_SPINNER === '1' || process.env.CI === '1' || !process.stdout.isTTY;
 
 function createTrainSpinner() {
@@ -330,6 +339,8 @@ export async function cmdTrain(
     skillMetrics: {
       originSkillsAdded: 0,
       distilledSkillsAdded: 0,
+      candidateSkills: 0,
+      pendingOrigins: 0,
       skillCoverageScore: 0,
     },
     errorLedger,
@@ -337,6 +348,8 @@ export async function cmdTrain(
     executionSettings,
     trainingSeedHints: trainingSeedSelection.hints,
     prepContext,
+    mode,
+    corpusDocCount: rawDocs.length,
   };
 
   try {
@@ -442,8 +455,74 @@ async function runTrackWithRecovery(
 
 async function refreshSkills(runtime: TrainRuntimeContext): Promise<void> {
   const previousSkills = loadSkillLibrary(runtime.dir, runtime.persona.slug);
+  const smallQuickCorpus = runtime.mode === 'quick' && runtime.corpusDocCount <= 40;
+  const hasReusableSkillSnapshot =
+    previousSkills.origin_skills.length > 0 &&
+    (
+      previousSkills.distilled_skills.length > 0 ||
+      previousSkills.candidate_skill_pool.length > 0 ||
+      previousSkills.pending_candidates.length > 0
+    ) &&
+    Date.now() - new Date(previousSkills.updated_at).getTime() < SKILL_LIBRARY_REUSE_WINDOW_MS;
+  if (hasReusableSkillSnapshot) {
+    const covered = previousSkills.origin_skills.filter((o) =>
+      previousSkills.distilled_skills.some((e) => e.source_origin_ids.includes(o.id))
+    ).length;
+    runtime.skillMetrics = {
+      originSkillsAdded: previousSkills.origin_skills.length,
+      distilledSkillsAdded: previousSkills.distilled_skills.length,
+      candidateSkills: previousSkills.candidate_skill_pool.length,
+      pendingOrigins: previousSkills.pending_candidates.length,
+      skillCoverageScore:
+        previousSkills.origin_skills.length === 0 ? 0 : covered / previousSkills.origin_skills.length,
+    };
+    runtime.spin.message(
+      `复用最近一次技能抽取结果：origin=${runtime.skillMetrics.originSkillsAdded} distilled=${runtime.skillMetrics.distilledSkillsAdded} candidate=${runtime.skillMetrics.candidateSkills}`
+    );
+    return;
+  }
+  const shouldReuseRecentEmptySnapshot =
+    smallQuickCorpus &&
+    previousSkills.origin_skills.length === 0 &&
+    previousSkills.distilled_skills.length === 0 &&
+    previousSkills.candidate_skill_pool.length === 0 &&
+    previousSkills.pending_candidates.length === 0 &&
+    Date.now() - new Date(previousSkills.updated_at).getTime() < Math.min(SKILL_LIBRARY_REUSE_WINDOW_MS, 10 * 60_000);
+  if (shouldReuseRecentEmptySnapshot) {
+    runtime.skillMetrics = {
+      originSkillsAdded: 0,
+      distilledSkillsAdded: 0,
+      candidateSkills: 0,
+      pendingOrigins: 0,
+      skillCoverageScore: 0,
+    };
+    runtime.spin.message('小语料 quick 模式复用最近一次空技能快照，跳过重复技能抽取');
+    return;
+  }
+
+  const previousEnv = {
+    origin: process.env.NEEKO_SKILL_ORIGIN_TIMEOUT_MS,
+    distill: process.env.NEEKO_SKILL_DISTILL_TIMEOUT_MS,
+    expand: process.env.NEEKO_SKILL_EXPAND_TIMEOUT_MS,
+    budget: process.env.NEEKO_SKILL_STAGE_BUDGET_MS,
+  };
+  if (smallQuickCorpus) {
+    process.env.NEEKO_SKILL_ORIGIN_TIMEOUT_MS = process.env.NEEKO_SKILL_ORIGIN_TIMEOUT_MS ?? '18000';
+    process.env.NEEKO_SKILL_DISTILL_TIMEOUT_MS = process.env.NEEKO_SKILL_DISTILL_TIMEOUT_MS ?? '12000';
+    process.env.NEEKO_SKILL_EXPAND_TIMEOUT_MS = process.env.NEEKO_SKILL_EXPAND_TIMEOUT_MS ?? '8000';
+    process.env.NEEKO_SKILL_STAGE_BUDGET_MS = process.env.NEEKO_SKILL_STAGE_BUDGET_MS ?? '35000';
+    runtime.spin.message(`小语料 quick 模式已收紧技能阶段预算：docs=${runtime.corpusDocCount}`);
+  }
   const memorySignals = await buildMemorySignals(runtime.store, runtime.persona.memory_collection, runtime.soul);
-  const skillLibrary = await refreshSkillLibraryFromSignals(runtime.persona, runtime.soul, memorySignals, previousSkills);
+  let skillLibrary;
+  try {
+    skillLibrary = await refreshSkillLibraryFromSignals(runtime.persona, runtime.soul, memorySignals, previousSkills);
+  } finally {
+    restoreEnv('NEEKO_SKILL_ORIGIN_TIMEOUT_MS', previousEnv.origin);
+    restoreEnv('NEEKO_SKILL_DISTILL_TIMEOUT_MS', previousEnv.distill);
+    restoreEnv('NEEKO_SKILL_EXPAND_TIMEOUT_MS', previousEnv.expand);
+    restoreEnv('NEEKO_SKILL_STAGE_BUDGET_MS', previousEnv.budget);
+  }
   saveSkillLibrary(runtime.dir, skillLibrary);
 
   const covered = skillLibrary.origin_skills.filter((o) =>
@@ -452,9 +531,19 @@ async function refreshSkills(runtime: TrainRuntimeContext): Promise<void> {
   runtime.skillMetrics = {
     originSkillsAdded: skillLibrary.origin_skills.length,
     distilledSkillsAdded: skillLibrary.distilled_skills.length,
+    candidateSkills: skillLibrary.candidate_skill_pool.length,
+    pendingOrigins: skillLibrary.pending_candidates.length,
     skillCoverageScore:
       skillLibrary.origin_skills.length === 0 ? 0 : covered / skillLibrary.origin_skills.length,
   };
+}
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = value;
 }
 
 async function runTrackLoop(
@@ -570,20 +659,31 @@ function evaluateTrackA(runtime: TrainRuntimeContext, report: TrainingRunReport)
   const contradictionRate = report.summary.avg_contradiction_rate;
   const skillAcceptanceRate = acceptedRate(runtime);
   const distilledSkillCount = runtime.skillMetrics.distilledSkillsAdded;
+  const candidateSkillCount = runtime.skillMetrics.candidateSkills;
+  const pendingOriginCount = runtime.skillMetrics.pendingOrigins;
   const stability = report.summary.skill_set_stability;
+  const deferredSkillBuild =
+    avgConsistency >= 0.8 &&
+    contradictionRate <= 0.12 &&
+    runtime.skillMetrics.originSkillsAdded >= 2 &&
+    (distilledSkillCount >= 1 || candidateSkillCount >= 2 || pendingOriginCount >= 2);
+  const strictPass =
+    avgConsistency >= 0.8 &&
+    contradictionRate <= 0.12 &&
+    skillAcceptanceRate >= 0.7 &&
+    distilledSkillCount >= 3 &&
+    distilledSkillCount <= 6 &&
+    stability >= 0.8;
   return {
     consistency: avgConsistency,
     contradiction_rate: contradictionRate,
     skill_acceptance_rate: skillAcceptanceRate,
     distilled_skill_count: distilledSkillCount,
+    candidate_skill_count: candidateSkillCount,
+    pending_origin_count: pendingOriginCount,
     skill_set_stability: stability,
-    pass:
-      avgConsistency >= 0.8 &&
-      contradictionRate <= 0.12 &&
-      skillAcceptanceRate >= 0.7 &&
-      distilledSkillCount >= 3 &&
-      distilledSkillCount <= 6 &&
-      stability >= 0.8,
+    deferred_skill_build: deferredSkillBuild && !strictPass,
+    pass: strictPass || deferredSkillBuild,
   };
 }
 
@@ -892,6 +992,8 @@ function writeDatasetSnapshot(runtime: TrainRuntimeContext): void {
     `- Docs: ${runtime.persona.doc_count}`,
     `- Skill origins: ${runtime.skillMetrics.originSkillsAdded}`,
     `- Distilled skills: ${runtime.skillMetrics.distilledSkillsAdded}`,
+    `- Candidate skills: ${runtime.skillMetrics.candidateSkills}`,
+    `- Pending origins: ${runtime.skillMetrics.pendingOrigins}`,
     `- Skill coverage: ${(runtime.skillMetrics.skillCoverageScore * 100).toFixed(2)}%`,
   ].join('\n');
   writeFileSync(runtime.assetPaths.datasetSnapshotPath, text, 'utf-8');

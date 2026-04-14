@@ -321,9 +321,11 @@ function SourceItems({ detail }: { detail: CultivationDetail }) {
                 <div>最近结果: <b>{item.last_result || '等待下一步推进'}</b></div>
                 <div>当前状态: <b>{item.status === 'error' ? '待重试' : item.status === 'syncing' ? '同步中' : item.status === 'ready' ? '已同步' : '等待同步'}</b></div>
                 <div>最近心跳: <b>{formatRelativeTime(item.last_heartbeat_at)}</b></div>
+                <div>缓存复用: <b>{item.cache_reused ? `已复用 ${item.cache_document_count ?? 0} 条` : '无'}</b></div>
                 <div>当前窗口: <b>{item.active_window?.window_start && item.active_window?.window_end ? `${item.active_window.window_start.slice(0, 10)} ~ ${item.active_window.window_end.slice(0, 10)}` : '未记录'}</b></div>
                 <div>窗口状态: <b>{formatWindowStatus(item.active_window?.status)}</b></div>
                 <div style={{ gridColumn: '1 / -1' }}>校验摘要: <b>{item.validation_summary?.latest_summary ?? '当前来源暂无额外校验提示。'}</b></div>
+                {item.cache_reused ? <div style={{ gridColumn: '1 / -1' }}>缓存说明: <b>{item.cache_summary ?? '当前来源已复用历史素材缓存作为起始语料。'}</b></div> : null}
               </div>
             ) : null}
           </div>
@@ -401,6 +403,15 @@ function TrainingCard({
   const tickerText = `[${String(progress).padStart(3, '0')}%] ${operationLabel ?? formatPhaseLabel(detail?.phase)} :: win ${String((detail?.source_summary as any)?.completed_windows ?? 0).padStart(2, '0')} / ${String((detail?.source_summary as any)?.estimated_total_windows ?? 0).padStart(2, '0')} :: raw ${String(detail?.raw_document_count ?? 0).padStart(4, '0')} :: clean ${String(detail?.clean_document_count ?? 0).padStart(4, '0')} :: round ${String(persona.current_round ?? detail?.progress.current_round ?? 0).padStart(2, '0')} / ${String(persona.total_rounds ?? detail?.progress.total_rounds ?? 0).padStart(2, '0')} :: ${String(detail?.phase ?? stageStatus).toUpperCase()} ::`;
   const latestActivity = detail?.latest_activity || (operationLabel ? `当前任务：${operationLabel}` : '正在等待培养推进');
   const currentWindowText = formatWindowSentence(detail);
+  const cacheReuse = detail?.cache_reuse;
+  const threshold = detail?.training_threshold ?? detail?.source_summary?.training_threshold;
+  const thresholdMet = detail?.training_threshold_met ?? detail?.source_summary?.training_threshold_met;
+  const thresholdLabel = threshold ? `${detail?.clean_document_count ?? 0} / ${threshold}` : null;
+  const thresholdHint = threshold && thresholdMet === false
+    ? `未达到自动训练门槛，继续深抓中`
+    : threshold && thresholdMet
+      ? `已达到自动训练门槛`
+      : null;
 
   return (
     <div className="card" style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12, position: 'relative' }}>
@@ -435,13 +446,25 @@ function TrainingCard({
           <div style={{ marginTop: 10, fontSize: 12, color: finished ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
             {latestActivity}
           </div>
+          {cacheReuse?.active ? (
+            <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(56,189,248,0.18)', background: 'rgba(8,47,73,0.14)', fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
+              {cacheReuse.summary}，当前人格会在这批历史素材基础上继续培养。
+            </div>
+          ) : null}
           <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
             <span>最近活动 {formatRelativeTime(detail?.last_heartbeat_at ?? detail?.last_success_at)}</span>
             {(detail?.source_summary as any)?.completed_windows !== undefined ? <span>窗口 {(detail?.source_summary as any)?.completed_windows ?? 0} / {(detail?.source_summary as any)?.estimated_total_windows ?? 0}</span> : null}
             <span>原始 {detail?.raw_document_count ?? 0}</span>
             <span>纳入 {detail?.clean_document_count ?? 0}</span>
+            {thresholdLabel ? <span>门槛 {thresholdLabel}</span> : null}
+            {cacheReuse?.active ? <span>缓存复用 {cacheReuse.reused_document_count}</span> : null}
             {currentWindowText ? <span>{currentWindowText}</span> : null}
           </div>
+          {thresholdHint ? (
+            <div style={{ marginTop: 8, fontSize: 11, color: thresholdMet ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
+              {thresholdHint}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -461,11 +484,19 @@ function TrainingCard({
               <InfoStat label="当前轮次" value={`${detail.progress.current_round} / ${detail.progress.total_rounds}`} />
               <InfoStat label="原始素材总量" value={detail.raw_document_count ?? 0} />
               <InfoStat label="纳入训练量" value={detail.clean_document_count ?? 0} />
+              <InfoStat label="自动训练门槛" value={detail.training_threshold ?? '未配置'} />
+              <InfoStat label="达训条件" value={detail.training_threshold_met ? '已达到' : '未达到'} />
               <InfoStat label="最近成功推进" value={formatDate(detail.last_success_at)} />
               <InfoStat label="最近活动心跳" value={formatRelativeTime(detail.last_heartbeat_at)} />
               <InfoStat label="最近检查更新" value={formatDate(detail.source_summary?.last_update_check_at)} />
               <InfoStat label="最近新增素材" value={detail.source_summary?.recent_delta_count ?? 0} />
+              <InfoStat label="历史缓存复用" value={detail.cache_reuse?.active ? `${detail.cache_reuse.reused_document_count} 条` : '无'} />
             </div>
+            {detail.training_block_reason ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
+                {detail.training_block_reason}
+              </div>
+            ) : null}
           </div>
 
           {detail.current_window ? (
@@ -552,6 +583,14 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
     if (!expandedSlug || details[expandedSlug]) return;
     void loadDetail(expandedSlug);
   }, [details, expandedSlug, loadDetail]);
+
+  useEffect(() => {
+    cultivating.forEach((persona) => {
+      if (!details[persona.slug]) {
+        void loadDetail(persona.slug);
+      }
+    });
+  }, [cultivating, details, loadDetail]);
 
   useEffect(() => {
     const poll = setInterval(() => {

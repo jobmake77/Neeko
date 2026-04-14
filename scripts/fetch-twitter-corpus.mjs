@@ -215,7 +215,7 @@ function isSnscrapeBlockedError(message) {
 }
 
 function shouldRetryOpenCliError(message) {
-  return /Detached while handling command|Failed to start opencli daemon|Browser Bridge not connected|connection error|timed out|timeout|SPA navigation .*Final path: \/explore|Final path: \/explore/i.test(
+  return /Detached while handling command|Failed to start opencli daemon|Browser Bridge not connected|Debugger is not attached|connection error|timed out|timeout|SPA navigation .*Final path: \/explore|Final path: \/explore|SecurityError: Failed to execute 'pushState'/i.test(
     String(message || '')
   );
 }
@@ -224,13 +224,18 @@ function isStructuralOpenCliError(message) {
   const error = String(message || '').toLowerCase();
   return (
     error.includes('selector not found') ||
-    error.includes('page structure may have changed')
+    error.includes('page structure may have changed') ||
+    error.includes('debugger is not attached') ||
+    error.includes("securityerror: failed to execute 'pushstate'") ||
+    error.includes("origin 'null'") ||
+    error.includes('data:text/html')
   );
 }
 
 function isPrimaryProviderFatal(meta) {
   const error = String(meta?.error || '');
   return (
+    error.includes('majority author mismatch') ||
     isStructuralOpenCliError(error) ||
     /browser bridge not connected|failed to start opencli daemon/i.test(error)
   );
@@ -864,11 +869,19 @@ async function runWindow(since, until) {
   const attempts = [];
   const primary = await runOpenCliWindow(since, until);
   attempts.push(...primary.attempts);
-  if (primary.rows.length > 0 || fallbackProvider === 'off') {
+  const shouldTryFallback =
+    fallbackProvider === 'snscrape' &&
+    (
+      primary.rows.length === 0 ||
+      primary.meta?.error === 'majority author mismatch' ||
+      primary.attempts.some((attempt) => attempt?.error === 'majority author mismatch')
+    );
+
+  if (primary.rows.length > 0 || !shouldTryFallback) {
     return { rows: primary.rows, provider: primary.meta.provider, attempts };
   }
 
-  if (fallbackProvider === 'snscrape' && !snscrapeBlockedInRun) {
+  if (!snscrapeBlockedInRun) {
     const secondary = await runSnscrapeWindow(since, until);
     attempts.push(secondary.meta);
     if (secondary.meta.ok === false && isSnscrapeBlockedError(secondary.meta.error)) {
@@ -878,7 +891,7 @@ async function runWindow(since, until) {
     if (secondary.rows.length > 0) {
       return { rows: secondary.rows, provider: secondary.meta.provider, attempts };
     }
-  } else if (fallbackProvider === 'snscrape' && snscrapeBlockedInRun) {
+  } else {
     const skippedMeta = {
       provider: 'snscrape',
       ok: false,

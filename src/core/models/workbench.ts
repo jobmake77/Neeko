@@ -276,6 +276,16 @@ export const CultivationSummarySchema = z.object({
     last_heartbeat_at: z.string().datetime().optional(),
     completed_windows: z.number().int().min(0).optional(),
     estimated_total_windows: z.number().int().min(0).optional(),
+    training_threshold: z.number().int().min(1).optional(),
+    training_threshold_met: z.boolean().optional(),
+    training_block_reason: z.string().optional(),
+    cache_reuse: z.object({
+      active: z.boolean(),
+      source_id: z.string().optional(),
+      source_label: z.string().optional(),
+      reused_document_count: z.number().int().min(0),
+      summary: z.string(),
+    }).optional(),
   }).default({ total_sources: 0, enabled_sources: 0, source_breakdown: {}, document_count: 0, recent_delta_count: 0 }),
   last_update_check_at: z.string().datetime().optional(),
 });
@@ -378,6 +388,9 @@ export interface CultivationDetail {
   };
   raw_document_count?: number;
   clean_document_count?: number;
+  training_threshold?: number;
+  training_threshold_met?: boolean;
+  training_block_reason?: string;
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;
@@ -434,6 +447,9 @@ export interface CultivationDetail {
     last_result?: string;
     status?: string;
     last_heartbeat_at?: string;
+    cache_reused?: boolean;
+    cache_document_count?: number;
+    cache_summary?: string;
     validation_summary?: {
       accepted_count: number;
       rejected_count: number;
@@ -472,6 +488,13 @@ export interface CultivationDetail {
     rejected_count: number;
     quarantined_count: number;
     latest_summary?: string;
+  };
+  cache_reuse?: {
+    active: boolean;
+    source_id?: string;
+    source_label?: string;
+    reused_document_count: number;
+    summary: string;
   };
 }
 

@@ -46,6 +46,33 @@ const OriginExtractionSchema = z.object({
   ),
 });
 
+const OriginCandidateExtractionSchema = z.object({
+  candidates: z.array(
+    z.object({
+      name: z.string(),
+      why: z.string(),
+      how: z.string(),
+      confidence: z.number().min(0).max(1),
+      evidence_quotes: z.array(z.string()).min(1),
+    })
+  ),
+});
+
+const OriginVerificationSchema = z.object({
+  verified: z.array(
+    z.object({
+      name: z.string(),
+      why: z.string(),
+      how: z.string(),
+      confidence: z.number().min(0).max(1),
+      evidence_quotes: z.array(z.string()).min(1),
+      evidence_strength: z.number().min(0).max(1),
+      method_specificity: z.number().min(0).max(1),
+      transferable: z.boolean(),
+    })
+  ),
+});
+
 const SkillExpandSchema = z.object({
   expanded: z.array(
     z.object({
@@ -81,12 +108,34 @@ const QUALITY_GATE = {
   minMethodCompleteness: 0.7,
 };
 
-const SKILL_ORIGIN_TIMEOUT_MS = Number(process.env.NEEKO_SKILL_ORIGIN_TIMEOUT_MS ?? 45_000);
-const SKILL_DISTILL_TIMEOUT_MS = Number(process.env.NEEKO_SKILL_DISTILL_TIMEOUT_MS ?? 25_000);
-const SKILL_EXPAND_TIMEOUT_MS = Number(process.env.NEEKO_SKILL_EXPAND_TIMEOUT_MS ?? 20_000);
-const SKILL_STAGE_BUDGET_MS = Number(process.env.NEEKO_SKILL_STAGE_BUDGET_MS ?? 180_000);
+function getSkillOriginTimeoutMs(): number {
+  return Number(process.env.NEEKO_SKILL_ORIGIN_TIMEOUT_MS ?? 45_000);
+}
+
+function getSkillDistillTimeoutMs(): number {
+  return Number(process.env.NEEKO_SKILL_DISTILL_TIMEOUT_MS ?? 25_000);
+}
+
+function getSkillExpandTimeoutMs(): number {
+  return Number(process.env.NEEKO_SKILL_EXPAND_TIMEOUT_MS ?? 20_000);
+}
+
+function getSkillStageBudgetMs(): number {
+  return Number(process.env.NEEKO_SKILL_STAGE_BUDGET_MS ?? 180_000);
+}
 const MAX_ORIGINS_FOR_DISTILL = Number(process.env.NEEKO_MAX_ORIGINS_FOR_DISTILL ?? 8);
 const MAX_CLUSTERS_FOR_DISTILL = Number(process.env.NEEKO_MAX_CLUSTERS_FOR_DISTILL ?? 4);
+
+type OriginCandidateDraft = {
+  name: string;
+  why: string;
+  how: string;
+  confidence: number;
+  evidence_quotes: string[];
+  evidence_strength?: number;
+  method_specificity?: number;
+  transferable?: boolean;
+};
 
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
@@ -136,6 +185,52 @@ function dedupeOrigins(origins: OriginSkill[]): OriginSkill[] {
     }
   }
   return result;
+}
+
+function selectAcceptedOriginCandidates(
+  candidates: OriginCandidateDraft[]
+): { accepted: OriginSkill[]; pending: OriginSkill[] } {
+  const accepted: OriginSkill[] = [];
+  const pending: OriginSkill[] = [];
+
+  for (const item of candidates) {
+    const evidenceQuotes = Array.from(new Set(item.evidence_quotes.map((quote) => quote.trim()).filter(Boolean))).slice(0, 6);
+    const normalized: OriginSkill = {
+      id: crypto.randomUUID(),
+      name: item.name.trim(),
+      why: item.why.trim(),
+      how: item.how.trim(),
+      confidence: item.confidence,
+      evidence: evidenceQuotes.map((quote) => ({ quote, source: 'persona_corpus' })),
+    };
+    const evidenceStrength = item.evidence_strength ?? Math.min(1, evidenceQuotes.length / 4);
+    const methodSpecificity = item.method_specificity ?? (
+      normalized.how.length >= 24 && /\b(use|build|compare|decide|map|test|write|frame|split|rank|filter)\b/i.test(normalized.how)
+        ? 0.75
+        : 0.45
+    );
+    const transferable = item.transferable ?? true;
+    const acceptedByGate =
+      transferable &&
+      normalized.name.length >= 4 &&
+      normalized.why.length >= 12 &&
+      normalized.how.length >= 12 &&
+      normalized.confidence >= 0.45 &&
+      evidenceQuotes.length >= 2 &&
+      evidenceStrength >= 0.45 &&
+      methodSpecificity >= 0.5;
+
+    if (acceptedByGate) {
+      accepted.push(normalized);
+    } else {
+      pending.push(normalized);
+    }
+  }
+
+  return {
+    accepted: dedupeOrigins(accepted).slice(0, MAX_ORIGINS_FOR_DISTILL),
+    pending: dedupeOrigins(pending).slice(0, MAX_ORIGINS_FOR_DISTILL),
+  };
 }
 
 function mergeOrigins(previous: OriginSkill[], incoming: OriginSkill[]): OriginSkill[] {
@@ -365,7 +460,7 @@ WHY: ${origin.why}
 HOW: ${origin.how}
 Return 3 candidate sources.`,
     }),
-    SKILL_EXPAND_TIMEOUT_MS,
+    getSkillExpandTimeoutMs(),
     'skill evidence expansion'
   );
 
@@ -433,7 +528,7 @@ Rules:
 - trigger_signals should be short cues from user intent
 - avoid generic skill names`,
     }),
-    SKILL_DISTILL_TIMEOUT_MS,
+    getSkillDistillTimeoutMs(),
     'skill distill'
   );
 
@@ -578,6 +673,7 @@ export const __skillLibraryTestables = {
   similarityByTokenOverlap,
   dedupeOrigins,
   mergeOrigins,
+  selectAcceptedOriginCandidates,
   computeCoverageByOrigin,
   gateCandidateSkill,
   selectFinalDistilledSkills,
@@ -732,6 +828,7 @@ export async function buildSkillLibraryFromSources(
 ): Promise<PersonaSkillLibrary> {
   const seedText = chunks.slice(0, 70).map((c, i) => `[${i + 1}] ${c.content.slice(0, 280)}`).join('\n');
   let extractedOrigins: z.infer<typeof OriginExtractionSchema>['origins'] = [];
+  let candidateOrigins: OriginCandidateDraft[] = [];
   try {
     const { object } = await withTimeout(
       generateObject({
@@ -746,7 +843,7 @@ Rules:
 
 Content:\n${seedText || 'No content'}`,
       }),
-      SKILL_ORIGIN_TIMEOUT_MS,
+      getSkillOriginTimeoutMs(),
       'skill origin extraction'
     );
     extractedOrigins = object.origins;
@@ -754,21 +851,83 @@ Content:\n${seedText || 'No content'}`,
     console.warn(`[SkillLibrary] origin extraction failed, fallback to previous skills: ${String(error)}`);
   }
 
-  const rawOrigins: OriginSkill[] = extractedOrigins.map((item) => ({
-    id: crypto.randomUUID(),
-    name: item.name,
-    why: item.why,
-    how: item.how,
-    confidence: item.confidence,
-    evidence: item.evidence_quotes.slice(0, 6).map((q) => ({ quote: q, source: 'tweet' })),
-  }));
+  if (extractedOrigins.length === 0) {
+    try {
+      const { object } = await withTimeout(
+        generateObject({
+          model: resolveModel(),
+          schema: OriginCandidateExtractionSchema,
+          prompt: `Extract candidate transferable skills from this persona content.
+Persona: ${persona.name}
+Rules:
+- return method-like candidates, not generic topics
+- candidates may be noisy; prioritize recall
+- max 16 candidates
+- each candidate must include direct evidence quotes
 
-  const deduped = dedupeOrigins(rawOrigins);
-  const acceptedOrigins = deduped
-    .filter((item) => item.evidence.length >= 2 && item.confidence >= 0.5)
-    .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, MAX_ORIGINS_FOR_DISTILL);
-  const pendingOrigins = deduped.filter((item) => !acceptedOrigins.includes(item));
+Content:\n${seedText || 'No content'}`,
+        }),
+        getSkillOriginTimeoutMs(),
+        'skill candidate extraction'
+      );
+      candidateOrigins = object.candidates;
+    } catch (error) {
+      console.warn(`[SkillLibrary] candidate extraction failed: ${String(error)}`);
+    }
+  } else {
+    candidateOrigins = extractedOrigins.map((item) => ({
+      name: item.name,
+      why: item.why,
+      how: item.how,
+      confidence: item.confidence,
+      evidence_quotes: item.evidence_quotes,
+      transferable: true,
+      evidence_strength: Math.min(1, item.evidence_quotes.length / 4),
+      method_specificity: item.how.trim().length >= 24 ? 0.8 : 0.55,
+    }));
+  }
+
+  let verifiedOrigins: OriginCandidateDraft[] = [];
+  if (candidateOrigins.length > 0) {
+    const candidateText = candidateOrigins
+      .slice(0, 16)
+      .map((item, idx) => `Candidate ${idx + 1}
+name: ${item.name}
+why: ${item.why}
+how: ${item.how}
+confidence: ${item.confidence}
+evidence:
+- ${item.evidence_quotes.slice(0, 4).join('\n- ')}`)
+      .join('\n\n');
+
+    try {
+      const { object } = await withTimeout(
+        generateObject({
+          model: resolveModel(),
+          schema: OriginVerificationSchema,
+          prompt: `Verify which candidate skills are truly transferable for this persona.
+Persona: ${persona.name}
+Rules:
+- keep only skills that reflect reusable methods or judgment patterns
+- reject pure topics, biography facts, and vague traits
+- require evidence-grounded why/how
+- score evidence_strength and method_specificity strictly
+
+Candidates:
+${candidateText}`,
+        }),
+        getSkillOriginTimeoutMs(),
+        'skill candidate verification'
+      );
+      verifiedOrigins = object.verified.filter((item) => item.transferable);
+    } catch (error) {
+      console.warn(`[SkillLibrary] origin verification failed, fallback to raw candidates: ${String(error)}`);
+    }
+  }
+
+  const selectedOrigins = selectAcceptedOriginCandidates(verifiedOrigins.length > 0 ? verifiedOrigins : candidateOrigins);
+  const acceptedOrigins = selectedOrigins.accepted;
+  const pendingOrigins = selectedOrigins.pending;
 
   const clusters = clusterOrigins(acceptedOrigins).slice(0, MAX_CLUSTERS_FOR_DISTILL);
   const acceptedDistilled: DistilledSkill[] = [];
@@ -776,13 +935,13 @@ Content:\n${seedText || 'No content'}`,
   const stageStart = Date.now();
 
   for (const cluster of clusters) {
-    if (Date.now() - stageStart > SKILL_STAGE_BUDGET_MS) {
+    if (Date.now() - stageStart > getSkillStageBudgetMs()) {
       console.warn('[SkillLibrary] distill stage budget exceeded, stop further clusters');
       break;
     }
     const clusterEvidence: SkillEvidenceRef[] = [];
     for (const origin of cluster.origins) {
-      if (Date.now() - stageStart > SKILL_STAGE_BUDGET_MS) break;
+      if (Date.now() - stageStart > getSkillStageBudgetMs()) break;
       try {
         const refs = await collectEvidenceForOrigin(origin);
         clusterEvidence.push(...refs);

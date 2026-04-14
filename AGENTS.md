@@ -28,6 +28,7 @@
 16. 当前 Persona 删除语义固定为本地硬删除：删除 persona 目录、会话、候选、handoff、evidence import、training prep、runs 以及关联索引资产，不保留归档模式。
 17. 当前桌面打包链路需要自动准备 `desktop/runtime/neeko-runtime`，并把它作为 app bundle 资源带入客户端；这类 staging 目录必须忽略提交，不能进 Git。
 18. 当前桌面打包链路中的 `neeko-runtime` 需要同时携带 `dist`、生产依赖和 `bin/node`，保证打包 app 优先使用内置 Node runtime，而不是依赖用户本机预装。
+19. 当前桌面打包链路中的 `neeko-runtime` 还必须携带运行时必需的 `scripts/` 目录；凡是服务端在运行时通过相对仓库路径调用的脚本，都不能只存在于源码仓库而漏进 app bundle。
 
 ## 交流层纪律
 

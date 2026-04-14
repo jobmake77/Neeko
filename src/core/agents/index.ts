@@ -96,6 +96,186 @@ function computeRetryBackoffMs(attempt: number): number {
   return base + jitter;
 }
 
+function shouldAttemptRelaxedStructuredFallback(error: unknown): boolean {
+  const message = String(error ?? '').toLowerCase();
+  return (
+    message.includes('no object generated') ||
+    message.includes('did not match schema') ||
+    message.includes('schema') ||
+    message.includes('structured output') ||
+    message.includes('json')
+  );
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? text).trim();
+  const start = candidate.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < candidate.length; index += 1) {
+    const char = candidate[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return candidate.slice(start, index + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function clamp01(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, value));
+}
+
+function extractNumericScore(text: string, keys: string[], fallback: number): number {
+  for (const key of keys) {
+    const pattern = new RegExp(`${key}\\s*[:=]\\s*([0-9]*\\.?[0-9]+)`, 'i');
+    const match = text.match(pattern);
+    if (!match) continue;
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed)) {
+      return clamp01(parsed, fallback);
+    }
+  }
+  return fallback;
+}
+
+function extractVerdict(text: string): Evaluation['verdict'] | null {
+  const match = text.match(/verdict\s*[:=]\s*(write|reinforce|discard|flag_contradiction)/i)
+    ?? text.match(/\b(write|reinforce|discard|flag_contradiction)\b/i);
+  if (!match) return null;
+  const verdict = match[1].toLowerCase();
+  if (
+    verdict === 'write' ||
+    verdict === 'reinforce' ||
+    verdict === 'discard' ||
+    verdict === 'flag_contradiction'
+  ) {
+    return verdict;
+  }
+  return null;
+}
+
+function normalizeEvaluationCandidate(
+  candidate: unknown,
+  response: string,
+  strategy: string
+): Evaluation | null {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const record = candidate as Record<string, unknown>;
+  const consistency = clamp01(Number(record.consistency_score), 0.55);
+  const authenticity = clamp01(Number(record.authenticity_score), 0.55);
+  const depth = clamp01(Number(record.depth_score), 0.5);
+  const overall = clamp01(
+    Number(record.overall_score),
+    (consistency * 0.35) + (authenticity * 0.35) + (depth * 0.3),
+  );
+  const verdict = extractVerdict(String(record.verdict ?? '')) ?? (overall >= 0.62 ? 'write' : overall >= 0.48 ? 'reinforce' : 'discard');
+  const insights = Array.isArray(record.insights)
+    ? record.insights.map((item) => String(item).trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const rawCandidates = Array.isArray(record.new_memory_candidates)
+    ? record.new_memory_candidates
+    : [];
+  const newMemoryCandidates = rawCandidates
+    .map((item) => {
+      const node = item as Record<string, unknown>;
+      const category = String(node.category ?? 'opinion');
+      const soulDimension = String(node.soul_dimension ?? 'general');
+      const summary = String(node.summary ?? '').trim() || response.slice(0, 180);
+      const confidence = clamp01(Number(node.confidence), Math.max(0.45, Math.min(0.78, overall)));
+      if (!summary) return null;
+      if (!['belief', 'value', 'fact', 'opinion', 'behavior', 'knowledge', 'preference', 'experience'].includes(category)) return null;
+      if (!['language_style', 'values', 'thinking_patterns', 'behavioral_traits', 'knowledge_domains', 'general'].includes(soulDimension)) return null;
+      return {
+        summary,
+        category: category as Evaluation['new_memory_candidates'][number]['category'],
+        soul_dimension: soulDimension as Evaluation['new_memory_candidates'][number]['soul_dimension'],
+        confidence,
+      };
+    })
+    .filter((item): item is Evaluation['new_memory_candidates'][number] => Boolean(item))
+    .slice(0, 5);
+  const parsed = EvaluationSchema.safeParse({
+    consistency_score: consistency,
+    authenticity_score: authenticity,
+    depth_score: depth,
+    overall_score: overall,
+    verdict,
+    insights: insights.length > 0 ? insights : [`relaxed evaluation for strategy=${strategy}`],
+    new_memory_candidates: verdict === 'write' ? newMemoryCandidates : [],
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+function parseRelaxedEvaluationText(
+  text: string,
+  response: string,
+  strategy: string
+): Evaluation | null {
+  const jsonCandidate = extractFirstJsonObject(text);
+  if (jsonCandidate) {
+    try {
+      const parsed = JSON.parse(jsonCandidate) as unknown;
+      const normalized = normalizeEvaluationCandidate(parsed, response, strategy);
+      if (normalized) return normalized;
+    } catch {
+      // Fall through to line-based parsing.
+    }
+  }
+  const consistency = extractNumericScore(text, ['consistency_score', 'consistency'], 0.55);
+  const authenticity = extractNumericScore(text, ['authenticity_score', 'authenticity'], 0.55);
+  const depth = extractNumericScore(text, ['depth_score', 'depth'], 0.5);
+  const overall = extractNumericScore(
+    text,
+    ['overall_score', 'overall'],
+    (consistency * 0.35) + (authenticity * 0.35) + (depth * 0.3),
+  );
+  const verdict = extractVerdict(text) ?? (overall >= 0.62 ? 'write' : overall >= 0.48 ? 'reinforce' : 'discard');
+  const insightSection = text.match(/insights?\s*[:=]\s*([\s\S]*?)(?:new_memory_candidates|memory candidates|$)/i)?.[1] ?? '';
+  const insights = insightSection
+    .split(/\n|•|- /)
+    .map((item) => item.trim().replace(/^["'-]+|["'-]+$/g, ''))
+    .filter(Boolean)
+    .slice(0, 5);
+  const fallbackCandidate = normalizeEvaluationCandidate({
+    consistency_score: consistency,
+    authenticity_score: authenticity,
+    depth_score: depth,
+    overall_score: overall,
+    verdict,
+    insights,
+    new_memory_candidates: verdict === 'write'
+      ? [{
+          summary: response.slice(0, 180),
+          category: 'opinion',
+          soul_dimension: 'general',
+          confidence: Math.max(0.45, Math.min(0.78, overall)),
+        }]
+      : [],
+  }, response, strategy);
+  return fallbackCandidate;
+}
+
 function buildProviderAttemptChain(primary?: ModelRuntimeOverride): ModelRuntimeOverride[] {
   const primaryProvider = primary?.provider;
   const primaryModel = primary?.model;
@@ -915,7 +1095,66 @@ Extract any new memory candidates (insights about their beliefs, style, knowledg
     } catch (error) {
       runtimeFallbackMetrics.evaluatorFallbacks++;
       console.warn(`[EvaluatorAgent] schema fallback enabled: ${String(error)}`);
+      if (shouldAttemptRelaxedStructuredFallback(error)) {
+        const relaxed = await this.runRelaxedEvaluation(question, responseSnippet, personaName, strategy, options);
+        if (relaxed) {
+          return relaxed;
+        }
+      }
       return this.fallbackEvaluation(question, response, strategy);
+    }
+  }
+
+  private async runRelaxedEvaluation(
+    question: string,
+    responseSnippet: string,
+    personaName: string,
+    strategy: string,
+    options: {
+      calibrationEnabled: boolean;
+      reviewerRole: 'primary' | 'secondary';
+      timeoutMs: number;
+      retries: number;
+      maxResponseChars: number;
+      compactPrompt: boolean;
+    }
+  ): Promise<Evaluation | null> {
+    const prompt = `You are evaluating a persona reply for "${personaName}" as reviewer "${options.reviewerRole}".
+Return a compact JSON object only.
+Required keys:
+- consistency_score (0..1)
+- authenticity_score (0..1)
+- depth_score (0..1)
+- overall_score (0..1)
+- verdict (write|reinforce|discard|flag_contradiction)
+- insights (string[])
+- new_memory_candidates (array of objects with summary, category, soul_dimension, confidence)
+
+Question (${strategy}): "${question}"
+Reply: "${responseSnippet}"
+
+Be tolerant and return best-effort estimates even if evidence is weak.`;
+    try {
+      const { text } = await withRetry(
+        () => generateText({
+          model: this.model,
+          temperature: 0,
+          prompt,
+        }),
+        {
+          label: 'evaluator relaxed text response',
+          timeoutMs: Math.min(options.timeoutMs, 25_000),
+          retries: 0,
+        }
+      );
+      const normalized = parseRelaxedEvaluationText(text, responseSnippet, strategy);
+      if (!normalized) {
+        console.warn('[EvaluatorAgent] relaxed fallback returned unparsable text');
+      }
+      return normalized;
+    } catch (relaxedError) {
+      console.warn(`[EvaluatorAgent] relaxed fallback failed: ${String(relaxedError)}`);
+      return null;
     }
   }
 
@@ -1236,8 +1475,12 @@ function computeDirectorFallbackShouldContinue(
 
 export const __testables__ = {
   computeDirectorFallbackShouldContinue,
+  extractFirstJsonObject,
   estimateCoverageScore,
+  normalizeEvaluationCandidate,
+  parseRelaxedEvaluationText,
   stabilizeCoverageScore,
+  shouldAttemptRelaxedStructuredFallback,
   snapshotAndResetAgentFallbackMetrics,
   shouldRetryProviderError,
 };

@@ -25,6 +25,15 @@ ensureDir(runtimeBinDir);
 log('copying CLI dist bundle');
 cpSync(join(repoRoot, 'dist'), join(runtimeRoot, 'dist'), { recursive: true });
 
+log('copying runtime scripts');
+cpSync(join(repoRoot, 'scripts'), join(runtimeRoot, 'scripts'), {
+  recursive: true,
+  filter(source) {
+    if (source.endsWith('.DS_Store')) return false;
+    return true;
+  },
+});
+
 log('copying bundled Node runtime');
 const nodeBinary = execSync('command -v node', {
   cwd: repoRoot,
@@ -67,6 +76,10 @@ execSync('npm prune --omit=dev --ignore-scripts', {
 
 if (!existsSync(join(runtimeRoot, 'dist', 'cli', 'index.js'))) {
   throw new Error('staged runtime is missing dist/cli/index.js');
+}
+
+if (!existsSync(join(runtimeRoot, 'scripts', 'fetch-twitter-corpus.mjs'))) {
+  throw new Error('staged runtime is missing scripts/fetch-twitter-corpus.mjs');
 }
 
 if (!existsSync(join(runtimeRoot, 'node_modules'))) {

@@ -47,6 +47,10 @@ async function main() {
       ok: hasKeys(detail, ['persona', 'progress', 'phase', 'source_summary']),
       detail: detail.phase,
     });
+    checks.push({
+      name: 'cultivation-detail-source-summary-shape',
+      ok: hasKeys(detail.source_summary, ['document_count', 'recent_delta_count', 'training_threshold', 'training_threshold_met']),
+    });
   }
 
   const failed = checks.filter((item) => !item.ok);

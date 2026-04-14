@@ -64,6 +64,9 @@ export interface CultivationDetail {
   };
   raw_document_count?: number;
   clean_document_count?: number;
+  training_threshold?: number;
+  training_threshold_met?: boolean;
+  training_block_reason?: string;
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;
@@ -120,6 +123,9 @@ export interface CultivationDetail {
     last_result?: string;
     status?: string;
     last_heartbeat_at?: string;
+    cache_reused?: boolean;
+    cache_document_count?: number;
+    cache_summary?: string;
     validation_summary?: {
       accepted_count: number;
       rejected_count: number;
@@ -158,6 +164,13 @@ export interface CultivationDetail {
     rejected_count: number;
     quarantined_count: number;
     latest_summary?: string;
+  };
+  cache_reuse?: {
+    active: boolean;
+    source_id?: string;
+    source_label?: string;
+    reused_document_count: number;
+    summary: string;
   };
 }
 
@@ -319,6 +332,16 @@ export interface CultivationSummary {
     last_heartbeat_at?: string;
     completed_windows?: number;
     estimated_total_windows?: number;
+    training_threshold?: number;
+    training_threshold_met?: boolean;
+    training_block_reason?: string;
+    cache_reuse?: {
+      active: boolean;
+      source_id?: string;
+      source_label?: string;
+      reused_document_count: number;
+      summary: string;
+    };
   };
   last_update_check_at?: string;
 }

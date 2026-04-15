@@ -406,11 +406,21 @@ function TrainingCard({
   const cacheReuse = detail?.cache_reuse;
   const threshold = detail?.training_threshold ?? detail?.source_summary?.training_threshold;
   const thresholdMet = detail?.training_threshold_met ?? detail?.source_summary?.training_threshold_met;
+  const evaluationPassed = detail?.evaluation_passed ?? detail?.source_summary?.evaluation_passed;
+  const collectionCycle = detail?.collection_cycle ?? detail?.source_summary?.collection_cycle;
+  const collectionStopReason = detail?.collection_stop_reason ?? detail?.source_summary?.collection_stop_reason;
+  const historyExhausted = detail?.history_exhausted ?? detail?.source_summary?.history_exhausted;
+  const providerExhausted = detail?.provider_exhausted ?? detail?.source_summary?.provider_exhausted;
   const thresholdLabel = threshold ? `${detail?.clean_document_count ?? 0} / ${threshold}` : null;
   const thresholdHint = threshold && thresholdMet === false
     ? `未达到自动训练门槛，继续深抓中`
     : threshold && thresholdMet
       ? `已达到自动训练门槛`
+      : null;
+  const evaluationHint = evaluationPassed === true
+    ? '测评已通过'
+    : evaluationPassed === false
+      ? '测评未通过，系统会继续补充素材'
       : null;
 
   return (
@@ -457,12 +467,21 @@ function TrainingCard({
             <span>原始 {detail?.raw_document_count ?? 0}</span>
             <span>纳入 {detail?.clean_document_count ?? 0}</span>
             {thresholdLabel ? <span>门槛 {thresholdLabel}</span> : null}
+            {typeof collectionCycle === 'number' && collectionCycle > 0 ? <span>循环 {collectionCycle}</span> : null}
+            {evaluationHint ? <span>{evaluationHint}</span> : null}
             {cacheReuse?.active ? <span>缓存复用 {cacheReuse.reused_document_count}</span> : null}
             {currentWindowText ? <span>{currentWindowText}</span> : null}
           </div>
           {thresholdHint ? (
             <div style={{ marginTop: 8, fontSize: 11, color: thresholdMet ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
               {thresholdHint}
+            </div>
+          ) : null}
+          {collectionStopReason || historyExhausted || providerExhausted ? (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'rgb(var(--text-secondary))' }}>
+              {collectionStopReason ? `收口状态：${collectionStopReason}` : null}
+              {historyExhausted ? `${collectionStopReason ? ' · ' : ''}历史窗口已触边` : null}
+              {providerExhausted ? `${collectionStopReason || historyExhausted ? ' · ' : ''}Provider 待恢复` : null}
             </div>
           ) : null}
         </div>
@@ -486,15 +505,24 @@ function TrainingCard({
               <InfoStat label="纳入训练量" value={detail.clean_document_count ?? 0} />
               <InfoStat label="自动训练门槛" value={detail.training_threshold ?? '未配置'} />
               <InfoStat label="达训条件" value={detail.training_threshold_met ? '已达到' : '未达到'} />
+              <InfoStat label="测评结果" value={evaluationPassed === true ? '已通过' : evaluationPassed === false ? '未通过' : '待测评'} />
+              <InfoStat label="抓取循环轮次" value={collectionCycle ?? 0} />
               <InfoStat label="最近成功推进" value={formatDate(detail.last_success_at)} />
               <InfoStat label="最近活动心跳" value={formatRelativeTime(detail.last_heartbeat_at)} />
               <InfoStat label="最近检查更新" value={formatDate(detail.source_summary?.last_update_check_at)} />
               <InfoStat label="最近新增素材" value={detail.source_summary?.recent_delta_count ?? 0} />
               <InfoStat label="历史缓存复用" value={detail.cache_reuse?.active ? `${detail.cache_reuse.reused_document_count} 条` : '无'} />
+              <InfoStat label="历史窗口状态" value={historyExhausted ? '已耗尽' : '未耗尽'} />
+              <InfoStat label="Provider 状态" value={providerExhausted ? '待恢复' : '正常'} />
             </div>
             {detail.training_block_reason ? (
               <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
                 {detail.training_block_reason}
+              </div>
+            ) : null}
+            {collectionStopReason ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
+                当前收口原因：{collectionStopReason}
               </div>
             ) : null}
           </div>

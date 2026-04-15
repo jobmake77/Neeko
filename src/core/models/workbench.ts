@@ -279,6 +279,12 @@ export const CultivationSummarySchema = z.object({
     training_threshold: z.number().int().min(1).optional(),
     training_threshold_met: z.boolean().optional(),
     training_block_reason: z.string().optional(),
+    clean_document_count: z.number().int().min(0).optional(),
+    evaluation_passed: z.boolean().optional(),
+    collection_cycle: z.number().int().min(0).optional(),
+    collection_stop_reason: z.string().optional(),
+    history_exhausted: z.boolean().optional(),
+    provider_exhausted: z.boolean().optional(),
     cache_reuse: z.object({
       active: z.boolean(),
       source_id: z.string().optional(),
@@ -303,6 +309,11 @@ export const PersonaConfigSchema = z.object({
     current_source_label: z.string().optional(),
     last_checked_at: z.string().datetime().optional(),
     latest_result: z.string().optional(),
+    evaluation_passed: z.boolean().optional(),
+    collection_cycle: z.number().int().min(0).optional(),
+    collection_stop_reason: z.string().optional(),
+    history_exhausted: z.boolean().optional(),
+    provider_exhausted: z.boolean().optional(),
   }).default({
     auto_check_remote: true,
     check_interval_minutes: 60,
@@ -391,6 +402,11 @@ export interface CultivationDetail {
   training_threshold?: number;
   training_threshold_met?: boolean;
   training_block_reason?: string;
+  evaluation_passed?: boolean;
+  collection_cycle?: number;
+  collection_stop_reason?: string;
+  history_exhausted?: boolean;
+  provider_exhausted?: boolean;
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;

@@ -67,6 +67,11 @@ export interface CultivationDetail {
   training_threshold?: number;
   training_threshold_met?: boolean;
   training_block_reason?: string;
+  evaluation_passed?: boolean;
+  collection_cycle?: number;
+  collection_stop_reason?: string;
+  history_exhausted?: boolean;
+  provider_exhausted?: boolean;
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;
@@ -220,6 +225,11 @@ export interface PersonaConfig {
     current_source_label?: string;
     last_checked_at?: string;
     latest_result?: string;
+    evaluation_passed?: boolean;
+    collection_cycle?: number;
+    collection_stop_reason?: string;
+    history_exhausted?: boolean;
+    provider_exhausted?: boolean;
   };
 }
 
@@ -335,6 +345,12 @@ export interface CultivationSummary {
     training_threshold?: number;
     training_threshold_met?: boolean;
     training_block_reason?: string;
+    clean_document_count?: number;
+    evaluation_passed?: boolean;
+    collection_cycle?: number;
+    collection_stop_reason?: string;
+    history_exhausted?: boolean;
+    provider_exhausted?: boolean;
     cache_reuse?: {
       active: boolean;
       source_id?: string;

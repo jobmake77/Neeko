@@ -239,6 +239,7 @@ interface SourceProgressItem {
 interface SourceSyncProgressState {
   handle?: string;
   out?: string;
+  phase?: string;
   until?: string;
   windowDays?: number;
   queryCount?: number;
@@ -247,6 +248,12 @@ interface SourceSyncProgressState {
   last_heartbeat_at?: string;
   estimated_total_windows?: number;
   completed_windows?: number;
+  providerStats?: Record<string, { failures?: number; empty?: number; successes?: number }>;
+  provider_stats?: Record<string, { failures?: number; empty?: number; successes?: number }>;
+  consecutive_primary_provider_failures?: number;
+  history_exhausted?: boolean;
+  provider_exhausted?: boolean;
+  collection_stop_reason?: string;
   current_window?: SourceProgressItem;
   recent_windows?: SourceProgressItem[];
   last_success_window?: SourceProgressItem;
@@ -269,6 +276,8 @@ interface DocumentValidationOutcome {
 }
 
 const AUTO_TRAINING_THRESHOLD = 500;
+const COLLECTION_CONTINUE_DELAY_MS = 2_500;
+const COLLECTION_EXHAUSTED_RETRY_LIMIT = 3;
 
 export interface PromotionHandoffExport {
   handoff: PromotionHandoff;
@@ -1115,6 +1124,55 @@ function buildTrainingThresholdSummary(cleanDocumentCount: number, threshold = A
   };
 }
 
+function mergeDocumentCollections(...collections: RawDocument[][]): RawDocument[] {
+  return dedupeRawDocuments(collections.flat());
+}
+
+function deriveEvaluationPassed(context: {
+  state?: string;
+  acceptance?: { pass?: boolean };
+} | null | undefined): boolean | undefined {
+  if (!context) return undefined;
+  if (typeof context.acceptance?.pass === 'boolean') return context.acceptance.pass;
+  if (context.state === 'completed') return true;
+  if (context.state === 'interrupted') return false;
+  return undefined;
+}
+
+function buildCollectionContinuationDecision(input: {
+  cleanDocumentCount: number;
+  trainingThreshold: number;
+  evaluationPassed?: boolean;
+  historyExhausted: boolean;
+  providerExhausted: boolean;
+  collectionCycle: number;
+  hasActiveRun: boolean;
+}): {
+  shouldContinue: boolean;
+  blockedReason?: string;
+} {
+  if (input.hasActiveRun) {
+    return { shouldContinue: false, blockedReason: 'active_run' };
+  }
+  if (input.evaluationPassed === true) {
+    return { shouldContinue: false, blockedReason: 'evaluation_passed' };
+  }
+  const thresholdMet = input.cleanDocumentCount >= input.trainingThreshold;
+  if (!thresholdMet) {
+    if ((input.historyExhausted || input.providerExhausted) && input.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT) {
+      return { shouldContinue: false, blockedReason: 'exhausted_retry_limit' };
+    }
+    return { shouldContinue: true };
+  }
+  if (input.evaluationPassed === false) {
+    if ((input.historyExhausted || input.providerExhausted) && input.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT) {
+      return { shouldContinue: false, blockedReason: 'exhausted_retry_limit' };
+    }
+    return { shouldContinue: true };
+  }
+  return { shouldContinue: false, blockedReason: 'awaiting_evaluation' };
+}
+
 async function buildAttachmentPriorityContext(attachments: AttachmentRef[]): Promise<string> {
   if (!attachments.length) return '';
 
@@ -1351,6 +1409,9 @@ function parseTranscriptSourceFile(sourcePath: string): RawDocument[] | null {
 }
 
 export class WorkbenchService {
+  private readonly collectionReviewTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly collectionContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   constructor(
     private readonly store = new WorkbenchStore(),
     private readonly cliEntryPath = process.argv[1],
@@ -2911,9 +2972,6 @@ export class WorkbenchService {
         .map((row) => mapTweetRowToRawDocument(handle, row))
         .filter((item): item is RawDocument => Boolean(item))
     );
-    if (forceRemote && cachedDocs.length > 0) {
-      return this.markCacheReusedDocuments(cachedDocs, handle);
-    }
     const horizonYears = inferHorizonYears(source);
     const start = new Date();
     const earliest = new Date();
@@ -2948,7 +3006,10 @@ export class WorkbenchService {
         .filter((item): item is RawDocument => Boolean(item));
       const dedupedDocs = dedupeRawDocuments(docs);
       if (dedupedDocs.length > 0) {
-        return dedupedDocs;
+        return mergeDocumentCollections(
+          dedupedDocs,
+          this.markCacheReusedDocuments(cachedDocs, handle),
+        );
       }
       console.warn(`[WorkbenchService] twitter deep fetch yielded 0 accepted docs for ${handle}, trying provider fallbacks`);
       return this.fetchTwitterFallbackDocuments(source, handle, cachedDocs);
@@ -2963,9 +3024,10 @@ export class WorkbenchService {
     handle: string,
     cachedDocs: RawDocument[],
   ): Promise<RawDocument[]> {
+    const merged: RawDocument[] = [];
     if (cachedDocs.length > 0) {
-      console.warn(`[WorkbenchService] using cached twitter corpus for ${handle}: ${cachedDocs.length} docs`);
-      return this.markCacheReusedDocuments(cachedDocs, handle);
+      console.warn(`[WorkbenchService] using cached twitter corpus baseline for ${handle}: ${cachedDocs.length} docs`);
+      merged.push(...this.markCacheReusedDocuments(cachedDocs, handle));
     }
 
     const fallbackLimit = Math.max(inferTwitterBatchLimit(source), AUTO_TRAINING_THRESHOLD);
@@ -2975,7 +3037,7 @@ export class WorkbenchService {
     }).catch(() => []);
     if (openCliFallback.length > 0) {
       console.warn(`[WorkbenchService] using TwitterAdapter fallback for ${handle}: ${openCliFallback.length} docs`);
-      return dedupeRawDocuments(openCliFallback);
+      merged.push(...openCliFallback);
     }
 
     const adapter = new AgentReachAdapter('twitter');
@@ -2985,8 +3047,9 @@ export class WorkbenchService {
     });
     if (fallback.length > 0) {
       console.warn(`[WorkbenchService] using AgentReach twitter fallback for ${handle}: ${fallback.length} docs`);
+      merged.push(...fallback);
     }
-    return dedupeRawDocuments(fallback);
+    return dedupeRawDocuments(merged);
   }
 
   private markCacheReusedDocuments(documents: RawDocument[], handle: string): RawDocument[] {
@@ -3291,6 +3354,228 @@ export class WorkbenchService {
     });
   }
 
+  private reconcilePersonaDocumentCount(slug: string, cleanDocumentCount: number, updatedAt = new Date().toISOString()): void {
+    const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+    if (!existsSync(personaPath)) return;
+    try {
+      const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+      if (persona.doc_count === cleanDocumentCount && persona.updated_at === updatedAt) return;
+      writeFileSync(personaPath, JSON.stringify({
+        ...persona,
+        doc_count: cleanDocumentCount,
+        updated_at: updatedAt,
+      }, null, 2), 'utf-8');
+    } catch {
+      // Keep sync reconciliation resilient for partially broken persona assets.
+    }
+  }
+
+  private summarizeCollectionState(slug: string): {
+    cleanDocumentCount: number;
+    threshold: ReturnType<typeof buildTrainingThresholdSummary>;
+    evaluationPassed?: boolean;
+    collectionCycle: number;
+    historyExhausted: boolean;
+    providerExhausted: boolean;
+    stopReason?: string;
+  } {
+    const config = this.getPersonaConfig(slug);
+    const cleanDocumentCount = dedupeRawDocuments(
+      this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
+    ).length;
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
+    const trainingContext = this.readTrainingContext(slug);
+    const evaluationPassed = deriveEvaluationPassed(trainingContext);
+    const progressStates = config.sources
+      .filter((source) => source.enabled && source.type === 'social')
+      .map((source) => this.readSourceSyncProgress(source))
+      .filter((item): item is SourceSyncProgressState => Boolean(item));
+    const historyExhausted = progressStates.some((item) => item.history_exhausted === true);
+    const providerExhausted = progressStates.some((item) => item.provider_exhausted === true);
+    const stopReason = progressStates
+      .map((item) => item.collection_stop_reason)
+      .find((item): item is string => Boolean(item))
+      ?? config.update_policy.collection_stop_reason;
+    return {
+      cleanDocumentCount,
+      threshold,
+      evaluationPassed,
+      collectionCycle: Math.max(0, config.update_policy.collection_cycle ?? 0),
+      historyExhausted,
+      providerExhausted,
+      stopReason,
+    };
+  }
+
+  private persistCollectionState(
+    slug: string,
+    patch: Partial<PersonaConfig['update_policy']>,
+    latestResult?: string,
+  ): PersonaConfig {
+    const config = this.getPersonaConfig(slug);
+    const nextConfig: PersonaConfig = {
+      ...config,
+      update_policy: {
+        ...config.update_policy,
+        ...patch,
+        latest_result: latestResult ?? patch.latest_result ?? config.update_policy.latest_result,
+      },
+      updated_at: new Date().toISOString(),
+    };
+    this.store.savePersonaConfig(nextConfig);
+    return nextConfig;
+  }
+
+  private clearCollectionReview(slug: string): void {
+    const timer = this.collectionReviewTimers.get(slug);
+    if (timer) {
+      clearInterval(timer);
+      this.collectionReviewTimers.delete(slug);
+    }
+  }
+
+  private clearCollectionContinuation(slug: string): void {
+    const timer = this.collectionContinuationTimers.get(slug);
+    if (timer) {
+      clearTimeout(timer);
+      this.collectionContinuationTimers.delete(slug);
+    }
+  }
+
+  private scheduleCollectionReview(slug: string, runId: string, runType: 'source_sync' | 'train'): void {
+    this.clearCollectionReview(slug);
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const run = this.getRunStatus(runId);
+      if (!run) {
+        this.clearCollectionReview(slug);
+        return;
+      }
+      if (run.status === 'running' || run.status === 'queued') {
+        if (Date.now() - startedAt > 2 * 60 * 60 * 1000) {
+          this.clearCollectionReview(slug);
+        }
+        return;
+      }
+      this.clearCollectionReview(slug);
+      void this.handleCollectionRunSettled(slug, runType, run).catch(() => undefined);
+    }, 2000);
+    this.collectionReviewTimers.set(slug, timer);
+  }
+
+  private async handleCollectionRunSettled(slug: string, runType: 'source_sync' | 'train', run: WorkbenchRun): Promise<void> {
+    const state = this.summarizeCollectionState(slug);
+    this.reconcilePersonaDocumentCount(slug, state.cleanDocumentCount);
+
+    if (runType === 'source_sync') {
+      if (state.cleanDocumentCount < state.threshold.training_threshold) {
+        const summary = state.threshold.summary;
+        this.persistCollectionState(slug, {
+          current_operation: 'idle',
+          current_source_label: undefined,
+          collection_stop_reason: state.providerExhausted
+            ? 'provider_retry_pending'
+            : state.historyExhausted
+              ? 'history_retry_pending'
+              : 'below_training_threshold',
+          history_exhausted: state.historyExhausted,
+          provider_exhausted: state.providerExhausted,
+          evaluation_passed: state.evaluationPassed,
+        }, summary);
+        this.appendPersonaRunLog(slug, `source sync review clean_docs=${state.cleanDocumentCount} threshold=${state.threshold.training_threshold}`, summary);
+        this.scheduleCollectionContinuation(slug, summary, state);
+        return;
+      }
+
+      const activeRun = this.getActivePersonaRun(slug);
+      if (activeRun?.type === 'train') {
+        this.scheduleCollectionReview(slug, activeRun.id, 'train');
+      }
+      return;
+    }
+
+    const evaluationPassed = state.evaluationPassed;
+    if (evaluationPassed === true) {
+      this.persistCollectionState(slug, {
+        current_operation: 'idle',
+        current_source_label: undefined,
+        evaluation_passed: true,
+        collection_stop_reason: 'evaluation_passed',
+        history_exhausted: state.historyExhausted,
+        provider_exhausted: state.providerExhausted,
+      }, '培养已完成，可开始对话');
+      return;
+    }
+
+    const summary = state.cleanDocumentCount < state.threshold.training_threshold
+      ? state.threshold.summary
+      : '当前测评未通过，系统正在继续补充素材';
+    this.persistCollectionState(slug, {
+      current_operation: 'idle',
+      current_source_label: undefined,
+      evaluation_passed: false,
+      collection_stop_reason: 'evaluation_retry_pending',
+      history_exhausted: state.historyExhausted,
+      provider_exhausted: state.providerExhausted,
+    }, summary);
+    this.appendPersonaRunLog(slug, `train review evaluation_passed=${String(evaluationPassed)} clean_docs=${state.cleanDocumentCount}`, summary);
+    this.scheduleCollectionContinuation(slug, summary, state);
+  }
+
+  private scheduleCollectionContinuation(
+    slug: string,
+    summary: string,
+    state = this.summarizeCollectionState(slug),
+  ): void {
+    this.clearCollectionContinuation(slug);
+    const exhaustionRetry = state.historyExhausted || state.providerExhausted;
+    const decision = buildCollectionContinuationDecision({
+      cleanDocumentCount: state.cleanDocumentCount,
+      trainingThreshold: state.threshold.training_threshold,
+      evaluationPassed: state.evaluationPassed,
+      historyExhausted: state.historyExhausted,
+      providerExhausted: state.providerExhausted,
+      collectionCycle: state.collectionCycle,
+      hasActiveRun: Boolean(this.getActivePersonaRun(slug)),
+    });
+    if (!decision.shouldContinue && decision.blockedReason !== 'exhausted_retry_limit') {
+      return;
+    }
+    if (decision.blockedReason === 'exhausted_retry_limit') {
+      const stopSummary = '历史窗口与 provider 多轮重试后仍未取得新增素材，当前轮次已暂停继续自动推进';
+      this.persistCollectionState(slug, {
+        current_operation: 'idle',
+        current_source_label: undefined,
+        collection_stop_reason: 'unable_to_progress',
+        history_exhausted: state.historyExhausted,
+        provider_exhausted: state.providerExhausted,
+        evaluation_passed: state.evaluationPassed,
+      }, stopSummary);
+      this.appendPersonaRunLog(slug, 'collection continuation stopped after exhausted retries', stopSummary);
+      return;
+    }
+
+    const nextCycle = Math.max(1, state.collectionCycle + 1);
+    this.persistCollectionState(slug, {
+      collection_cycle: nextCycle,
+      collection_stop_reason: exhaustionRetry ? 'retrying_after_exhaustion' : 'continuing_collection',
+      history_exhausted: state.historyExhausted,
+      provider_exhausted: state.providerExhausted,
+      evaluation_passed: state.evaluationPassed,
+      current_operation: 'idle',
+      current_source_label: undefined,
+    }, summary);
+
+    const timer = setTimeout(() => {
+      this.collectionContinuationTimers.delete(slug);
+      if (this.getActivePersonaRun(slug)) return;
+      const latestState = this.summarizeCollectionState(slug);
+      if (latestState.evaluationPassed === true) return;
+      this.startSourceSyncRun(slug, 'deep_fetch');
+    }, COLLECTION_CONTINUE_DELAY_MS);
+    this.collectionContinuationTimers.set(slug, timer);
+  }
+
   private touchSourceSyncState(
     slug: string,
     config: PersonaConfig,
@@ -3317,25 +3602,30 @@ export class WorkbenchService {
     imports: WorkbenchEvidenceImport[],
     fallbackSummary: string
   ): { imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string } {
+    const cleanDocumentCount = dedupeRawDocuments(
+      this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
+    ).length;
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
+    this.reconcilePersonaDocumentCount(slug, cleanDocumentCount);
+
     if (imports.length === 0) {
+      const summary = cleanDocumentCount > 0 && !threshold.training_threshold_met
+        ? threshold.summary
+        : fallbackSummary;
       const nextConfig: PersonaConfig = {
         ...config,
         update_policy: {
           ...config.update_policy,
           last_checked_at: new Date().toISOString(),
-          latest_result: 'No new source content.',
+          latest_result: summary,
+          evaluation_passed: deriveEvaluationPassed(this.readTrainingContext(slug)),
         },
       };
       this.store.savePersonaConfig(nextConfig);
-      this.appendPersonaRunLog(slug, 'source sync completed with no new accepted content', '当前窗口已完成，但没有可纳入训练的新素材');
-      return { imports, run: null, summary: fallbackSummary };
+      this.appendPersonaRunLog(slug, 'source sync completed with no new accepted content', summary);
+      return { imports, run: null, summary };
     }
 
-    const allImports = this.store.listEvidenceImports(slug);
-    const cleanDocumentCount = dedupeRawDocuments(
-      allImports.flatMap((item) => this.readImportDocuments(item))
-    ).length;
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
     if (!threshold.training_threshold_met) {
       const nextConfig: PersonaConfig = {
         ...config,
@@ -3345,6 +3635,7 @@ export class WorkbenchService {
           current_source_label: undefined,
           last_checked_at: new Date().toISOString(),
           latest_result: threshold.summary,
+          evaluation_passed: deriveEvaluationPassed(this.readTrainingContext(slug)),
         },
         updated_at: new Date().toISOString(),
       };
@@ -3406,16 +3697,21 @@ export class WorkbenchService {
       }
     );
 
+    this.clearCollectionContinuation(slug);
     this.store.savePersonaConfig({
       ...config,
       update_policy: {
         ...config.update_policy,
+        collection_cycle: mode === 'deep_fetch'
+          ? Math.max(1, config.update_policy.collection_cycle ?? 0)
+          : config.update_policy.collection_cycle,
         current_operation: mode,
         current_source_label: config.name,
         latest_result: mode === 'deep_fetch' ? '正在深抓取来源…' : '正在增量拉取来源…',
       },
       updated_at: new Date().toISOString(),
     });
+    this.scheduleCollectionReview(slug, run.id, 'source_sync');
 
     return {
       imports: [],
@@ -3564,7 +3860,7 @@ export class WorkbenchService {
     if (inferredPrep?.prepEvidencePath) args.push('--prep-evidence-path', inferredPrep.prepEvidencePath);
     if (inferredPrep?.prepArtifactId) args.push('--prep-artifact-id', inferredPrep.prepArtifactId);
     if (input.evidenceImportId) args.push('--evidence-import-id', input.evidenceImportId);
-    return this.startCliRun(
+    const run = this.startCliRun(
       'train',
       input.slug,
       args,
@@ -3581,6 +3877,8 @@ export class WorkbenchService {
         maxRecoveryAttempts: isSmoke ? 2 : 2,
       }
     );
+    this.scheduleCollectionReview(input.slug, run.id, 'train');
+    return run;
   }
 
   private resolveTrainingPrepInput(input: WorkbenchTrainingInput): {
@@ -3792,6 +4090,13 @@ export class WorkbenchService {
     const sourceItems = this.buildCultivationSourceItems(config, evidenceImports);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
     const threshold = buildTrainingThresholdSummary(uniqueDocumentCount);
+    const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
+    const progressStates = config.sources
+      .filter((item) => item.enabled && item.type === 'social')
+      .map((item) => this.readSourceSyncProgress(item))
+      .filter((item): item is SourceSyncProgressState => Boolean(item));
+    const historyExhausted = progressStates.some((item) => item.history_exhausted === true);
+    const providerExhausted = progressStates.some((item) => item.provider_exhausted === true);
     const showThresholdBlock = uniqueDocumentCount > 0 && !threshold.training_threshold_met;
     return {
       status: persona.status,
@@ -3819,6 +4124,12 @@ export class WorkbenchService {
         training_block_reason: showThresholdBlock
           ? threshold.training_block_reason
           : undefined,
+        clean_document_count: uniqueDocumentCount,
+        evaluation_passed: evaluationPassed,
+        collection_cycle: config.update_policy.collection_cycle,
+        collection_stop_reason: config.update_policy.collection_stop_reason,
+        history_exhausted: historyExhausted,
+        provider_exhausted: providerExhausted,
         cache_reuse: cacheReuse,
       },
       last_update_check_at: config.update_policy.last_checked_at,
@@ -4023,6 +4334,13 @@ export class WorkbenchService {
       return '来源暂时不可用，稍后会继续尝试';
     }
     const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
+    const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(persona.slug));
+    const historyExhausted = sourceItems.some((item) => item.active_window && this.readSourceSyncProgress(
+      config.sources.find((source) => source.id === item.source_id) ?? config.sources[0]
+    )?.history_exhausted === true);
+    const providerExhausted = sourceItems.some((item) => item.active_window && this.readSourceSyncProgress(
+      config.sources.find((source) => source.id === item.source_id) ?? config.sources[0]
+    )?.provider_exhausted === true);
     if (!threshold.training_threshold_met && cleanDocumentCount > 0) {
       if (config.update_policy.current_operation === 'deep_fetch') {
         return `${threshold.progress_label}，继续深抓中`;
@@ -4031,6 +4349,15 @@ export class WorkbenchService {
         return `${threshold.progress_label}，继续拉取中`;
       }
       return threshold.training_block_reason ?? threshold.summary;
+    }
+    if (evaluationPassed === false && threshold.training_threshold_met) {
+      return '当前测评未通过，系统正在继续补充素材';
+    }
+    if (historyExhausted && !evaluationPassed) {
+      return '历史窗口已扫完，系统正在开启新一轮抓取';
+    }
+    if (providerExhausted && !evaluationPassed) {
+      return '来源提供方暂时不稳定，系统正在等待下一轮重试';
     }
     if ((persona.current_stage ?? persona.status) === 'error') {
       return '本轮培养未通过验收，可继续恢复';
@@ -4074,11 +4401,13 @@ export class WorkbenchService {
     cleanDocumentCount: number,
     sourceItems: NonNullable<CultivationDetail['source_items']>
   ): CultivationPhase {
+    const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(persona.slug));
     if (this.isPersonaReady(persona)) return 'ready';
     if (sourceItems.some((item) => item.status === 'error')) return 'error';
     if (config.update_policy.current_operation === 'deep_fetch') return 'deep_fetching';
     if (config.update_policy.current_operation === 'incremental_sync') return 'incremental_syncing';
     if ((persona.current_stage ?? persona.status) === 'error') return 'error';
+    if (evaluationPassed === false && cleanDocumentCount >= AUTO_TRAINING_THRESHOLD) return 'building_evidence';
     if (!buildTrainingThresholdSummary(cleanDocumentCount).training_threshold_met && cleanDocumentCount > 0) {
       return 'building_evidence';
     }
@@ -4501,7 +4830,16 @@ export class WorkbenchService {
     const checkpointStore = checkpointPath ? new CheckpointStore(checkpointPath) : null;
     const latestCheckpoint = checkpointStore?.latest() ?? null;
     const hasCheckpointArg = input.args.includes('--from-checkpoint');
-    const extraArgs = latestCheckpoint && !hasCheckpointArg ? ['--from-checkpoint', 'latest'] : undefined;
+    const extraArgs: string[] = [];
+    if (latestCheckpoint?.track) {
+      const trackIndex = input.args.indexOf('--track');
+      if (trackIndex >= 0 && input.args[trackIndex + 1] && input.args[trackIndex + 1] !== latestCheckpoint.track) {
+        extraArgs.push('--track', latestCheckpoint.track);
+      }
+    }
+    if (latestCheckpoint && !hasCheckpointArg) {
+      extraArgs.push('--from-checkpoint', 'latest');
+    }
     const env: Record<string, string> = {
       NEEKO_PREFLIGHT_TRAIN_TIMEOUT_MS: process.env.NEEKO_PREFLIGHT_TRAIN_TIMEOUT_MS ?? '60000',
     };
@@ -4515,7 +4853,7 @@ export class WorkbenchService {
 
     return {
       env,
-      extraArgs,
+      extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
       delayMs: 1200 * input.attemptNumber,
       userSummary: latestCheckpoint
         ? 'System is retrying from saved progress.'
@@ -4568,15 +4906,29 @@ export class WorkbenchService {
     };
   }
 
-  private readTrainingContext(slug: string): { state: string; requested_rounds: number; completed_rounds: number } | null {
+  private readTrainingContext(slug: string): {
+    state: string;
+    requested_rounds: number;
+    completed_rounds: number;
+    track?: string;
+    acceptance?: { pass?: boolean; [key: string]: number | boolean | undefined };
+  } | null {
     const path = join(settings.getPersonaDir(slug), 'training-context.json');
     if (!existsSync(path)) return null;
     try {
       const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      const acceptanceRaw = raw.acceptance as Record<string, unknown> | undefined;
       return {
         state: String(raw.state ?? ''),
         requested_rounds: Number(raw.requested_rounds ?? 0),
         completed_rounds: Number(raw.completed_rounds ?? 0),
+        track: typeof raw.track === 'string' ? raw.track : undefined,
+        acceptance: acceptanceRaw
+          ? {
+            ...acceptanceRaw,
+            pass: typeof acceptanceRaw.pass === 'boolean' ? acceptanceRaw.pass : undefined,
+          }
+          : undefined,
       };
     } catch {
       return null;
@@ -4655,6 +5007,8 @@ export class WorkbenchService {
           ...config.update_policy,
           current_operation: 'idle',
           current_source_label: undefined,
+          evaluation_passed: true,
+          collection_stop_reason: 'evaluation_passed',
           latest_result: '培养已完成，可开始对话',
         },
         updated_at: nextUpdatedAt,
@@ -4683,6 +5037,18 @@ export class WorkbenchService {
       } catch {
         // Keep reconciliation resilient for partially broken persona assets.
       }
+    }
+    const config = this.store.getPersonaConfig(slug);
+    if (config) {
+      this.store.savePersonaConfig({
+        ...config,
+        update_policy: {
+          ...config.update_policy,
+          evaluation_passed: false,
+          collection_stop_reason: 'evaluation_retry_pending',
+        },
+        updated_at: nextUpdatedAt,
+      });
     }
     return {
       ...summary,
@@ -4747,6 +5113,8 @@ export class WorkbenchService {
     const rounds = this.buildCultivationRounds(slug, cleanDocumentCount);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
     const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
+    const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
+    const collectionCycle = Math.max(0, config.update_policy.collection_cycle ?? 0);
     const showThresholdBlock = cleanDocumentCount > 0 && !threshold.training_threshold_met;
     const lastSuccessAt = [
       evidenceImports.map((item) => item.updated_at).sort().at(-1),
@@ -4781,6 +5149,11 @@ export class WorkbenchService {
       skills,
       training_threshold: threshold.training_threshold,
       training_threshold_met: threshold.training_threshold_met,
+      evaluation_passed: evaluationPassed,
+      collection_cycle: collectionCycle,
+      collection_stop_reason: config.update_policy.collection_stop_reason,
+      history_exhausted: config.update_policy.history_exhausted,
+      provider_exhausted: config.update_policy.provider_exhausted,
       training_block_reason: showThresholdBlock ? threshold.training_block_reason : undefined,
       latest_activity: this.buildLatestCultivationActivity(persona, config, sourceItems, cleanDocumentCount),
       progress: {
@@ -4846,6 +5219,12 @@ export class WorkbenchService {
         training_threshold: threshold.training_threshold,
         training_threshold_met: threshold.training_threshold_met,
         training_block_reason: showThresholdBlock ? threshold.training_block_reason : undefined,
+        clean_document_count: cleanDocumentCount,
+        evaluation_passed: evaluationPassed,
+        collection_cycle: collectionCycle,
+        collection_stop_reason: config.update_policy.collection_stop_reason,
+        history_exhausted: config.update_policy.history_exhausted,
+        provider_exhausted: config.update_policy.provider_exhausted,
         cache_reuse: cacheReuse,
       } as any,
     };
@@ -4884,6 +5263,12 @@ export class WorkbenchService {
     }));
   }
 }
+
+export const __workbenchTestables = {
+  mergeDocumentCollections,
+  deriveEvaluationPassed,
+  buildCollectionContinuationDecision,
+};
 
 function inferExitedRunSummary(summary: string | undefined, status: 'completed' | 'failed'): string {
   if (!summary) {

@@ -241,6 +241,16 @@ function isPrimaryProviderFatal(meta) {
   );
 }
 
+function shouldAbortForProviderStats(stats) {
+  const opencli = stats?.opencli;
+  const snscrape = stats?.snscrape;
+  const opencliExhausted = Number(opencli?.nonEmptyWindows || 0) === 0 && Number(opencli?.failures || 0) >= unhealthyFailureLimit;
+  const snscrapeExhausted = fallbackProvider === 'snscrape'
+    && Number(snscrape?.nonEmptyWindows || 0) === 0
+    && Number(snscrape?.failures || 0) >= unhealthyFailureLimit;
+  return opencliExhausted && (fallbackProvider !== 'snscrape' || snscrapeExhausted);
+}
+
 function resolveSearchModes() {
   if (searchMode === 'top_only') return ['top'];
   if (searchMode === 'top_then_live') return ['top', 'live'];
@@ -306,6 +316,11 @@ function initializeRuntimeState(savedState, seenCount, queryCount) {
     source_label: `@${handle}`,
     estimated_total_windows: Number(savedState?.estimated_total_windows) || estimatedTotalWindows,
     completed_windows: Number(savedState?.completed_windows) || 0,
+    providerStats: savedState?.providerStats ?? savedState?.provider_stats ?? {},
+    consecutivePrimaryProviderFailures: Number(savedState?.consecutivePrimaryProviderFailures ?? savedState?.consecutive_primary_provider_failures) || 0,
+    history_exhausted: savedState?.history_exhausted === true,
+    provider_exhausted: savedState?.provider_exhausted === true,
+    collection_stop_reason: typeof savedState?.collection_stop_reason === 'string' ? savedState.collection_stop_reason : undefined,
     queryCount,
     count: seenCount,
     updated_at: new Date().toISOString(),
@@ -944,7 +959,18 @@ async function main() {
   let stoppedReason = 'completed';
 
   initializeRuntimeState(savedState, seen.size, queryCount);
-  mergeState({ until: until.toISOString(), windowDays, zeroStreak, emptyDaysPastOldest, consecutivePrimaryProviderFailures, providerStats });
+  mergeState({
+    until: until.toISOString(),
+    windowDays,
+    zeroStreak,
+    emptyDaysPastOldest,
+    consecutivePrimaryProviderFailures,
+    providerStats,
+    provider_stats: providerStats,
+    history_exhausted: false,
+    provider_exhausted: false,
+    collection_stop_reason: undefined,
+  });
 
   while (until > earliest && seen.size < target) {
     if (maxQueriesPerRun > 0 && queryCount - queryCountAtStart >= maxQueriesPerRun) {
@@ -1037,6 +1063,14 @@ async function main() {
       break;
     }
 
+    if (shouldAbortForProviderStats(providerStats)) {
+      stoppedReason = 'provider_unhealthy';
+      console.error(
+        `provider unhealthy by cumulative stats: opencli_failures=${providerStats.opencli.failures} snscrape_failures=${providerStats.snscrape.failures}`
+      );
+      break;
+    }
+
     if (emptyDaysPastOldest >= searchHorizonStopDays) {
       stoppedReason = 'search_horizon_reached';
       console.error(
@@ -1047,17 +1081,26 @@ async function main() {
   }
 
   const data = persistCorpus(out, seen);
-  const shouldClearState = stoppedReason === 'completed' || stoppedReason === 'search_horizon_reached';
-  if (!shouldClearState) {
-    mergeState({
-      phase: stoppedReason === 'provider_unhealthy' ? 'error' : 'deep_fetching',
-      updated_at: new Date().toISOString(),
-      last_heartbeat_at: new Date().toISOString(),
-    });
-  }
-  if (shouldClearState && fs.existsSync(statePath)) {
-    fs.unlinkSync(statePath);
-  }
+  const historyExhausted = stoppedReason === 'search_horizon_reached' || (until <= earliest && seen.size < target);
+  const providerExhausted = stoppedReason === 'provider_unhealthy';
+  mergeState({
+    phase: stoppedReason === 'completed'
+      ? 'completed'
+      : historyExhausted
+        ? 'history_exhausted'
+        : providerExhausted
+          ? 'provider_unhealthy'
+          : 'deep_fetching',
+    updated_at: new Date().toISOString(),
+    last_heartbeat_at: new Date().toISOString(),
+    providerStats,
+    provider_stats: providerStats,
+    consecutivePrimaryProviderFailures,
+    consecutive_primary_provider_failures: consecutivePrimaryProviderFailures,
+    history_exhausted: historyExhausted,
+    provider_exhausted: providerExhausted,
+    collection_stop_reason: stoppedReason,
+  });
   console.log(JSON.stringify({
     handle,
     count: data.length,
@@ -1074,6 +1117,8 @@ async function main() {
     fallback_provider: fallbackProvider,
     consecutive_primary_provider_failures: consecutivePrimaryProviderFailures,
     provider_stats: providerStats,
+    history_exhausted: historyExhausted,
+    provider_exhausted: providerExhausted,
   }, null, 2));
 }
 

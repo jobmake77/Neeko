@@ -62,7 +62,7 @@ import { classifyFailure } from '../training/failure-loop.js';
 import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
 import { getDefaultModelForProvider, resolveModelForOverride, type ProviderName } from '../../config/model.js';
-import { writeRawDocsCache } from '../pipeline/evidence-routing.js';
+import { loadRawDocsCache, writeRawDocsCache } from '../pipeline/evidence-routing.js';
 
 export interface WorkbenchCreateInput {
   target?: string;
@@ -2936,7 +2936,7 @@ export class WorkbenchService {
         timeout: 12 * 60 * 1000,
         env: {
           ...process.env,
-          NEEKO_TWITTER_MAX_QUERIES_PER_RUN: forceRemote ? '0' : '18',
+          NEEKO_TWITTER_MAX_QUERIES_PER_RUN: forceRemote ? '6' : '18',
           NEEKO_TWITTER_QUERY_TIMEOUT_MS: '120000',
           NEEKO_TWITTER_FETCH_FALLBACK_PROVIDER: 'snscrape',
           NEEKO_TWITTER_PROVIDER_UNHEALTHY_FAILURES: '2',
@@ -3549,6 +3549,7 @@ export class WorkbenchService {
 
   startTraining(input: WorkbenchTrainingInput): WorkbenchRun {
     const isSmoke = input.smoke === true;
+    const inferredPrep = !isSmoke ? this.resolveTrainingPrepInput(input) : null;
     const args = ['train', input.slug];
     args.push('--mode', isSmoke ? 'quick' : (input.mode ?? 'quick'));
     args.push('--rounds', String(isSmoke ? 1 : (typeof input.rounds === 'number' ? input.rounds : 1)));
@@ -3559,9 +3560,9 @@ export class WorkbenchService {
     args.push('--retries', String(typeof input.retries === 'number' ? input.retries : 2));
     if (!isSmoke && input.fromCheckpoint) args.push('--from-checkpoint', input.fromCheckpoint);
     if (input.kimiStabilityMode) args.push('--kimi-stability-mode', input.kimiStabilityMode);
-    if (input.prepDocumentsPath) args.push('--prep-documents-path', input.prepDocumentsPath);
-    if (input.prepEvidencePath) args.push('--prep-evidence-path', input.prepEvidencePath);
-    if (input.prepArtifactId) args.push('--prep-artifact-id', input.prepArtifactId);
+    if (inferredPrep?.prepDocumentsPath) args.push('--prep-documents-path', inferredPrep.prepDocumentsPath);
+    if (inferredPrep?.prepEvidencePath) args.push('--prep-evidence-path', inferredPrep.prepEvidencePath);
+    if (inferredPrep?.prepArtifactId) args.push('--prep-artifact-id', inferredPrep.prepArtifactId);
     if (input.evidenceImportId) args.push('--evidence-import-id', input.evidenceImportId);
     return this.startCliRun(
       'train',
@@ -3580,6 +3581,37 @@ export class WorkbenchService {
         maxRecoveryAttempts: isSmoke ? 2 : 2,
       }
     );
+  }
+
+  private resolveTrainingPrepInput(input: WorkbenchTrainingInput): {
+    prepDocumentsPath?: string;
+    prepEvidencePath?: string;
+    prepArtifactId?: string;
+  } | null {
+    if (input.prepDocumentsPath || input.prepEvidencePath || input.prepArtifactId || input.evidenceImportId) {
+      return {
+        prepDocumentsPath: input.prepDocumentsPath,
+        prepEvidencePath: input.prepEvidencePath,
+        prepArtifactId: input.prepArtifactId,
+      };
+    }
+    const personaDir = settings.getPersonaDir(input.slug);
+    if (loadRawDocsCache(personaDir).length > 0) {
+      return {
+        prepDocumentsPath: input.prepDocumentsPath,
+        prepEvidencePath: input.prepEvidencePath,
+        prepArtifactId: input.prepArtifactId,
+      };
+    }
+    const prep = this.store
+      .listTrainingPrepArtifacts(input.slug)
+      .find((item) => item.item_count > 0 && existsSync(item.documents_path));
+    if (!prep) return null;
+    return {
+      prepDocumentsPath: prep.documents_path,
+      prepEvidencePath: prep.evidence_index_path,
+      prepArtifactId: prep.id,
+    };
   }
 
   startExperiment(input: WorkbenchExperimentInput): WorkbenchRun {
@@ -3612,7 +3644,13 @@ export class WorkbenchService {
     const run = this.store.getRun(runId);
     if (!run) return null;
     if (run.status === 'running' && run.pid && !this.isPidAlive(run.pid)) {
-      const inferredStatus = run.report_path && existsSync(run.report_path) ? 'completed' : 'failed';
+      let inferredStatus: 'completed' | 'failed' = 'failed';
+      if (run.type === 'train' && run.persona_slug) {
+        const trainingContext = this.readTrainingContext(run.persona_slug);
+        inferredStatus = trainingContext?.state === 'completed' ? 'completed' : 'failed';
+      } else {
+        inferredStatus = run.report_path && existsSync(run.report_path) ? 'completed' : 'failed';
+      }
       return this.store.updateRun(run.id, {
         status: inferredStatus,
         finished_at: new Date().toISOString(),
@@ -3623,6 +3661,16 @@ export class WorkbenchService {
       return this.store.updateRun(run.id, {
         summary: inferExitedRunSummary(run.summary, run.status),
       });
+    }
+    if (run.type === 'train' && run.status === 'completed' && run.persona_slug) {
+      const trainingContext = this.readTrainingContext(run.persona_slug);
+      if (trainingContext?.state !== 'completed') {
+        return this.store.updateRun(run.id, {
+          status: 'failed',
+          finished_at: run.finished_at ?? new Date().toISOString(),
+          summary: 'Training paused before completion. Progress has been saved and can be resumed.',
+        });
+      }
     }
     if (run.status === 'failed' && run.recovery_state === 'recovering') {
       return this.store.updateRun(run.id, {

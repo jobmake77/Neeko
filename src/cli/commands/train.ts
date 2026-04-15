@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
+import { RawDocument } from '../../core/models/memory.js';
 import { Persona, PersonaSchema } from '../../core/models/persona.js';
 import { Soul, SoulSchema } from '../../core/models/soul.js';
 import { MemoryStore } from '../../core/memory/store.js';
@@ -144,6 +145,48 @@ function createTrainSpinner() {
   };
 }
 
+export function loadTrainingRawDocs(
+  personaDir: string,
+  prepContext?: TrainRuntimeContext['prepContext']
+): RawDocument[] {
+  const prepDocumentsPath = prepContext?.prep_documents_path;
+  if (prepDocumentsPath && existsSync(prepDocumentsPath)) {
+    const prepDocs = readJsonFile<RawDocument[]>(prepDocumentsPath, []);
+    if (Array.isArray(prepDocs) && prepDocs.length > 0) {
+      return prepDocs;
+    }
+  }
+  return loadRawDocsCache(personaDir);
+}
+
+export function resolveTrackStageTimeoutMs(
+  corpusDocCount: number,
+  track: TrackType,
+  configuredTimeoutMs = TRACK_STAGE_TIMEOUT_MS
+): number {
+  if (corpusDocCount >= 500) {
+    return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 12 * 60_000 : 10 * 60_000);
+  }
+  if (corpusDocCount >= 200) {
+    return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 8 * 60_000 : 6 * 60_000);
+  }
+  if (corpusDocCount >= 80) {
+    return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 5 * 60_000 : 4 * 60_000);
+  }
+  return configuredTimeoutMs;
+}
+
+export function resolveTrackBudgetMs(
+  corpusDocCount: number,
+  track: TrackType,
+  retries: number,
+  configuredBudgetMs = TRACK_BUDGET_MS
+): number {
+  const stageTimeoutMs = resolveTrackStageTimeoutMs(corpusDocCount, track);
+  const minimumBudgetMs = stageTimeoutMs * (Math.max(0, retries) + 1) + 60_000;
+  return Math.max(configuredBudgetMs, minimumBudgetMs);
+}
+
 export async function cmdTrain(
   slug: string,
   options: {
@@ -186,7 +229,8 @@ export async function cmdTrain(
   const inputRoutingReport = loadInputRoutingReport(dir, inputRouting);
   const legacyRoutingReport = loadInputRoutingReport(dir, 'legacy');
   const v2RoutingReport = loadInputRoutingReport(dir, 'v2');
-  const rawDocs = loadRawDocsCache(dir);
+  const prepContext = buildPrepContext(options);
+  const rawDocs = loadTrainingRawDocs(dir, prepContext);
   const providerName = resolvePreferredProviderName();
   const trainingSeedMode = normalizeTrainingSeedMode(options.trainingSeedMode);
   const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
@@ -202,7 +246,6 @@ export async function cmdTrain(
     rounds,
     explicitKimiStabilityMode: options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
   });
-  const prepContext = buildPrepContext(options);
   if (rawDocs.length > 0) {
     const evidenceItems = loadEvidenceItemsFromFile(join(dir, 'evidence-index.jsonl'));
     const packSourceItems = evidenceItems.length > 0
@@ -418,14 +461,21 @@ async function runTrackWithRecovery(
   };
 
   let lastError: unknown;
-  const deadline = Date.now() + TRACK_BUDGET_MS;
+  const stageTimeoutMs = resolveTrackStageTimeoutMs(runtime.corpusDocCount, track);
+  const trackBudgetMs = resolveTrackBudgetMs(runtime.corpusDocCount, track, retries);
+  if (stageTimeoutMs > TRACK_STAGE_TIMEOUT_MS || trackBudgetMs > TRACK_BUDGET_MS) {
+    runtime.spin.message(
+      `大语料训练已放宽轨道预算：track=${track} docs=${runtime.corpusDocCount} stage_timeout=${stageTimeoutMs}ms budget=${trackBudgetMs}ms`
+    );
+  }
+  const deadline = Date.now() + trackBudgetMs;
   for (let attempt = 1; ; attempt++) {
     if (Date.now() >= deadline) {
-      throw new Error(`track ${track} budget timeout after ${TRACK_BUDGET_MS}ms`);
+      throw new Error(`track ${track} budget timeout after ${trackBudgetMs}ms`);
     }
     try {
       return await runWithTrackHeartbeat(runtime, track, () =>
-        withTimeout(runOnce(), TRACK_STAGE_TIMEOUT_MS, `track ${track}`)
+        withTimeout(runOnce(), stageTimeoutMs, `track ${track}`)
       );
     } catch (error) {
       lastError = error;

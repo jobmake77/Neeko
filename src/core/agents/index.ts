@@ -8,6 +8,7 @@ import {
   resolveModelForOverride,
   resolvePreferredModelOverride,
   type ModelRuntimeOverride,
+  type ModelRuntimeRole,
   type ProviderName,
 } from '../../config/model.js';
 import { settings } from '../../config/settings.js';
@@ -63,6 +64,8 @@ function shouldRetryProviderError(error: unknown): boolean {
   return (
     message.includes('quota exceeded') ||
     message.includes('quota') ||
+    message.includes('usage limit') ||
+    message.includes('limit for this period') ||
     message.includes('resource exhausted') ||
     message.includes('high demand') ||
     message.includes('timeout') ||
@@ -276,7 +279,10 @@ function parseRelaxedEvaluationText(
   return fallbackCandidate;
 }
 
-function buildProviderAttemptChain(primary?: ModelRuntimeOverride): ModelRuntimeOverride[] {
+function buildProviderAttemptChain(
+  primary?: ModelRuntimeOverride,
+  role: ModelRuntimeRole = 'chat'
+): ModelRuntimeOverride[] {
   const primaryProvider = primary?.provider;
   const primaryModel = primary?.model;
   const seen = new Set<string>();
@@ -292,11 +298,123 @@ function buildProviderAttemptChain(primary?: ModelRuntimeOverride): ModelRuntime
   };
 
   push(primaryProvider, primaryModel);
-  for (const provider of listAvailableProviders('chat')) {
+  for (const provider of listAvailableProviders(role)) {
     if (provider === primaryProvider) continue;
     push(provider, undefined);
   }
   return attempts;
+}
+
+async function generateObjectWithProviderFailover<T>({
+  attempts,
+  role,
+  schema,
+  prompt,
+  temperature,
+  label,
+  timeoutMs,
+  retries,
+  logPrefix,
+}: {
+  attempts: ModelRuntimeOverride[];
+  role: ModelRuntimeRole;
+  schema: z.ZodSchema<T>;
+  prompt: string;
+  temperature?: number;
+  label: string;
+  timeoutMs: number;
+  retries: number;
+  logPrefix: string;
+}): Promise<T> {
+  let lastError: unknown;
+  const primaryProvider = attempts[0]?.provider;
+  for (const attempt of attempts) {
+    try {
+      if (attempt.provider && primaryProvider && attempt.provider !== primaryProvider) {
+        console.warn(`[${logPrefix}] provider failover ${primaryProvider} -> ${attempt.provider}`);
+      }
+      if (attempt.provider === 'gemini') {
+        const text = await withRetry(
+          () => generatePromptWithGeminiDirect({
+            prompt,
+            model: attempt.model,
+            temperature,
+          }),
+          { label: `${label} ${attempt.provider}`, timeoutMs, retries }
+        );
+        const jsonCandidate = extractFirstJsonObject(text);
+        if (!jsonCandidate) {
+          throw new Error(`Gemini direct JSON parse failed: ${text.slice(0, 240)}`);
+        }
+        return schema.parse(JSON.parse(jsonCandidate));
+      }
+      const { object } = await withRetry(
+        () =>
+          generateObject({
+            model: resolveModelForOverride(attempt, role),
+            schema,
+            prompt,
+            temperature,
+          }),
+        { label: `${label} ${attempt.provider ?? 'default'}`, timeoutMs, retries }
+      );
+      return object;
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetryProviderError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function generateTextWithProviderFailover(options: {
+  attempts: ModelRuntimeOverride[];
+  role: ModelRuntimeRole;
+  prompt: string;
+  temperature?: number;
+  label: string;
+  timeoutMs: number;
+  retries: number;
+  logPrefix: string;
+}): Promise<string> {
+  let lastError: unknown;
+  const primaryProvider = options.attempts[0]?.provider;
+  for (const attempt of options.attempts) {
+    try {
+      if (attempt.provider && primaryProvider && attempt.provider !== primaryProvider) {
+        console.warn(`[${options.logPrefix}] provider failover ${primaryProvider} -> ${attempt.provider}`);
+      }
+      if (attempt.provider === 'gemini') {
+        return await withRetry(
+          () => generatePromptWithGeminiDirect({
+            prompt: options.prompt,
+            model: attempt.model,
+            temperature: options.temperature,
+            maxOutputTokens: 2048,
+          }),
+          { label: `${options.label} ${attempt.provider}`, timeoutMs: options.timeoutMs, retries: options.retries }
+        );
+      }
+      const { text } = await withRetry(
+        () =>
+          generateText({
+            model: resolveModelForOverride(attempt, options.role),
+            temperature: options.temperature,
+            prompt: options.prompt,
+          }),
+        { label: `${options.label} ${attempt.provider ?? 'default'}`, timeoutMs: options.timeoutMs, retries: options.retries }
+      );
+      return text;
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetryProviderError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 async function generatePersonaReplyWithProvider(
@@ -506,6 +624,69 @@ async function generateTextWithGeminiDirect(options: {
   throw lastError instanceof Error ? lastError : new Error('Gemini chat generation failed.');
 }
 
+async function generatePromptWithGeminiDirect(options: {
+  prompt: string;
+  systemPrompt?: string;
+  model?: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+}): Promise<string> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API key is missing.');
+  }
+
+  const requestedModel = String(options.model || '').trim();
+  const models = requestedModel
+    ? [requestedModel, ...(requestedModel === 'gemini-2.5-flash' ? ['gemini-2.5-flash-lite'] : [])]
+    : ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...(options.systemPrompt
+            ? {
+                system_instruction: {
+                  parts: [{ text: options.systemPrompt }],
+                },
+              }
+            : {}),
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: options.prompt }],
+            },
+          ],
+          generationConfig: {
+            temperature: options.temperature ?? 0,
+            maxOutputTokens: options.maxOutputTokens ?? 2048,
+          },
+        }),
+      });
+      const payload: any = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = payload?.error?.message || `Gemini generateContent ${response.status}`;
+        throw new Error(message);
+      }
+      const text = extractGeminiText(payload);
+      if (!text) throw new Error('Gemini returned empty text.');
+      return text;
+    } catch (error) {
+      lastError = error;
+      const message = String(error instanceof Error ? error.message : error).toLowerCase();
+      if (!/high demand|rate limit|resource exhausted|429|503|overloaded|unavailable|unsupported model|not found/.test(message)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Gemini prompt generation failed.');
+}
+
 // ─── Persona Agent ────────────────────────────────────────────────────────────
 // Plays the role of the target person using Soul+Memory RAG
 
@@ -702,8 +883,6 @@ const QuestionSetSchema = z.object({
 });
 
 export class TrainerAgent {
-  private model = resolveModel('training');
-
   async generateQuestions(
     soul: Soul,
     round: number,
@@ -774,19 +953,16 @@ export class TrainerAgent {
       );
 
     try {
-      const { object } = await withRetry(
-        () =>
-          generateObject({
-            model: this.model,
-            schema: QuestionSetSchema,
-            prompt,
-          }),
-        {
-          label: 'trainer generate questions',
-          timeoutMs: options.timeoutMs ?? 45_000,
-          retries: options.retries ?? 1,
-        }
-      );
+      const object = await generateObjectWithProviderFailover({
+        attempts: buildProviderAttemptChain(resolvePreferredModelOverride('training'), 'training'),
+        role: 'training',
+        schema: QuestionSetSchema,
+        prompt,
+        label: 'trainer generate questions',
+        timeoutMs: options.timeoutMs ?? 45_000,
+        retries: options.retries ?? 1,
+        logPrefix: 'TrainerAgent',
+      });
       return object.questions;
     } catch (error) {
       runtimeFallbackMetrics.trainerFallbacks++;
@@ -955,9 +1131,6 @@ const EvaluationSchema = z.object({
 export type Evaluation = z.infer<typeof EvaluationSchema>;
 
 export class EvaluatorAgent {
-  // High quality model for evaluation — accuracy over cost
-  private model = resolveModel('training');
-
   async evaluate(
     question: string,
     response: string,
@@ -1081,17 +1254,17 @@ Verdict:
 Extract any new memory candidates (insights about their beliefs, style, knowledge).`;
 
     try {
-      const { object } = await withRetry(
-        () =>
-          generateObject({
-            model: this.model,
-            schema: EvaluationSchema,
-            temperature: 0,
-            prompt: options.compactPrompt ? compactPrompt : fullPrompt,
-          }),
-        { label: 'evaluator score response', timeoutMs: options.timeoutMs, retries: options.retries }
-      );
-      return object;
+      return await generateObjectWithProviderFailover({
+        attempts: buildProviderAttemptChain(resolvePreferredModelOverride('training'), 'training'),
+        role: 'training',
+        schema: EvaluationSchema,
+        temperature: 0,
+        prompt: options.compactPrompt ? compactPrompt : fullPrompt,
+        label: 'evaluator score response',
+        timeoutMs: options.timeoutMs,
+        retries: options.retries,
+        logPrefix: 'EvaluatorAgent',
+      });
     } catch (error) {
       runtimeFallbackMetrics.evaluatorFallbacks++;
       console.warn(`[EvaluatorAgent] schema fallback enabled: ${String(error)}`);
@@ -1135,18 +1308,16 @@ Reply: "${responseSnippet}"
 
 Be tolerant and return best-effort estimates even if evidence is weak.`;
     try {
-      const { text } = await withRetry(
-        () => generateText({
-          model: this.model,
-          temperature: 0,
-          prompt,
-        }),
-        {
-          label: 'evaluator relaxed text response',
-          timeoutMs: Math.min(options.timeoutMs, 25_000),
-          retries: 0,
-        }
-      );
+      const text = await generateTextWithProviderFailover({
+        attempts: buildProviderAttemptChain(resolvePreferredModelOverride('training'), 'training'),
+        role: 'training',
+        temperature: 0,
+        prompt,
+        label: 'evaluator relaxed text response',
+        timeoutMs: Math.min(options.timeoutMs, 25_000),
+        retries: 0,
+        logPrefix: 'EvaluatorAgent',
+      });
       const normalized = parseRelaxedEvaluationText(text, responseSnippet, strategy);
       if (!normalized) {
         console.warn('[EvaluatorAgent] relaxed fallback returned unparsable text');
@@ -1248,8 +1419,6 @@ export type DirectorDecisionSource = 'llm' | 'fallback' | 'heuristic_skip';
 type ResolvedDirectorDecision = DirectorDecision & { decision_source: DirectorDecisionSource };
 
 export class DirectorAgent {
-  private model = resolveModel('training');
-
   async review(
     soul: Soul,
     roundSummary: {
@@ -1281,20 +1450,17 @@ export class DirectorAgent {
       );
     }
     try {
-      const { object } = await withRetry(
-        () =>
-          generateObject({
-            model: this.model,
-            schema: DirectorDecisionSchema,
-            temperature: 0,
-            prompt,
-          }),
-        {
-          label: 'director review round',
-          timeoutMs: options.timeoutMs ?? 40_000,
-          retries: options.retries ?? 1,
-        }
-      );
+      const object = await generateObjectWithProviderFailover({
+        attempts: buildProviderAttemptChain(resolvePreferredModelOverride('training'), 'training'),
+        role: 'training',
+        schema: DirectorDecisionSchema,
+        temperature: 0,
+        prompt,
+        label: 'director review round',
+        timeoutMs: options.timeoutMs ?? 40_000,
+        retries: options.retries ?? 1,
+        logPrefix: 'DirectorAgent',
+      });
       return {
         ...object,
         decision_source: 'llm',

@@ -8,6 +8,11 @@ import { PersonaCard } from './PersonaCard';
 import { PersonaEditor } from './PersonaEditor';
 import { CultivationCenter } from './CultivationCenter';
 
+function isReadyPersona(status?: string, isReady?: boolean): boolean {
+  if (isReady) return true;
+  return ['ready', 'available', 'converged', 'exported'].includes(String(status ?? '').toLowerCase());
+}
+
 type Tab = 'personas' | 'cultivation';
 
 function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void }) {
@@ -37,6 +42,7 @@ function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void 
 
 export function PersonaView() {
   const { personas, loading, load, remove } = usePersonaStore();
+  const readyPersonas = personas.filter((item) => isReadyPersona(item.status, item.is_ready));
   const [activeTab, setActiveTab] = useState<Tab>('personas');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<'create' | 'edit'>('create');
@@ -104,12 +110,12 @@ export function PersonaView() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: 'rgb(var(--text-tertiary))' }}>
                 {t('loading')}
               </div>
-            ) : personas.length === 0 ? (
+            ) : readyPersonas.length === 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 12 }}>
                 <div style={{ fontSize: 40, opacity: 0.3 }}>🧑</div>
-                <div style={{ fontSize: 15, color: 'rgb(var(--text-secondary))' }}>{t('noPersonas')}</div>
+                <div style={{ fontSize: 15, color: 'rgb(var(--text-secondary))' }}>还没有可聊天的人格</div>
                 <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))', textAlign: 'center', maxWidth: 300 }}>
-                  {t('noPersonasHint')}
+                  已创建但仍在培养中的人格会留在培养中心，培养完成后才会出现在这里。
                 </div>
                 <button className="btn btn-primary" onClick={handleCreate} style={{ marginTop: 4 }}>
                   {t('newPersona')}
@@ -117,7 +123,7 @@ export function PersonaView() {
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(272px, 1fr))', gap: 18, alignItems: 'start' }}>
-                {personas.map((p) => (
+                {readyPersonas.map((p) => (
                   <PersonaCard key={p.slug} persona={p} onEdit={() => handleEdit(p)} onDelete={() => setDeleteTarget(p)} />
                 ))}
               </div>

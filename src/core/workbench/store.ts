@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { z } from 'zod';
 import { settings } from '../../config/settings.js';
 import {
   Conversation,
@@ -41,6 +42,36 @@ function readJsonFile<T>(path: string, fallback: T): T {
 function writeJsonFile(path: string, value: unknown): void {
   ensureDir(dirname(path));
   writeFileSync(path, JSON.stringify(value, null, 2), 'utf-8');
+}
+
+const IsoDatetimeSchema = z.string().datetime();
+
+function normalizeDatetime(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  if (IsoDatetimeSchema.safeParse(value).success) return value;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  return parsed.toISOString();
+}
+
+function sanitizePersonaConfig(raw: PersonaConfig): PersonaConfig {
+  const config: PersonaConfig = JSON.parse(JSON.stringify(raw));
+  config.sources = Array.isArray(config.sources)
+    ? config.sources.map((source) => {
+      const next = { ...source };
+      next.last_synced_at = normalizeDatetime(next.last_synced_at);
+      next.last_seen_published_at = normalizeDatetime(next.last_seen_published_at);
+      if (!next.last_synced_at) delete next.last_synced_at;
+      if (!next.last_seen_published_at) delete next.last_seen_published_at;
+      return next;
+    })
+    : [];
+  if (config.update_policy) {
+    config.update_policy.last_checked_at = normalizeDatetime(config.update_policy.last_checked_at);
+    if (!config.update_policy.last_checked_at) delete config.update_policy.last_checked_at;
+  }
+  config.updated_at = normalizeDatetime(config.updated_at) ?? new Date().toISOString();
+  return config;
 }
 
 export class WorkbenchStore {
@@ -372,7 +403,7 @@ export class WorkbenchStore {
   }
 
   savePersonaConfig(config: PersonaConfig): PersonaConfig {
-    const parsed = PersonaConfigSchema.parse(config);
+    const parsed = PersonaConfigSchema.parse(sanitizePersonaConfig(config));
     writeJsonFile(this.getPersonaConfigPath(parsed.persona_slug), parsed);
     return parsed;
   }
@@ -380,7 +411,9 @@ export class WorkbenchStore {
   getPersonaConfig(slug: string): PersonaConfig | null {
     const raw = readJsonFile<PersonaConfig | null>(this.getPersonaConfigPath(slug), null);
     if (!raw) return null;
-    return PersonaConfigSchema.parse(raw);
+    const parsed = PersonaConfigSchema.parse(sanitizePersonaConfig(raw));
+    writeJsonFile(this.getPersonaConfigPath(slug), parsed);
+    return parsed;
   }
 
   deletePersonaConfig(slug: string): boolean {

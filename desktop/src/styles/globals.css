@@ -235,4 +235,209 @@
   .input::placeholder {
     color: rgb(var(--text-tertiary));
   }
+
+  @keyframes progressPulse {
+    0%, 100% {
+      box-shadow: 0 0 0 0 rgb(var(--accent) / 0.18);
+      transform: scale(1);
+    }
+    50% {
+      box-shadow: 0 0 0 6px rgb(var(--accent) / 0);
+      transform: scale(1.02);
+    }
+  }
+
+  .soft-pulse {
+    animation: progressPulse 2.4s ease-in-out infinite;
+    will-change: transform, box-shadow;
+  }
+
+  @keyframes tideDriftPrimary {
+    0% {
+      transform: translateX(-12%) translateY(0);
+    }
+    50% {
+      transform: translateX(8%) translateY(-3%);
+    }
+    100% {
+      transform: translateX(-12%) translateY(0);
+    }
+  }
+
+  @keyframes tideDriftSecondary {
+    0% {
+      transform: translateX(10%) translateY(0);
+    }
+    50% {
+      transform: translateX(-9%) translateY(4%);
+    }
+    100% {
+      transform: translateX(10%) translateY(0);
+    }
+  }
+
+  @keyframes tideGlyphFlow {
+    0% {
+      transform: translateX(0);
+    }
+    100% {
+      transform: translateX(-50%);
+    }
+  }
+
+  @keyframes tideGlowPulse {
+    0%, 100% {
+      opacity: 0.24;
+    }
+    50% {
+      opacity: 0.52;
+    }
+  }
+
+  .cultivation-tide-primary {
+    animation: tideDriftPrimary 7.2s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  .cultivation-tide-secondary {
+    animation: tideDriftSecondary 9.4s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  .cultivation-tide-glyphs {
+    animation: tideGlyphFlow 16s linear infinite;
+    will-change: transform;
+  }
+
+  .cultivation-tide-glow {
+    animation: tideGlowPulse 2.8s ease-in-out infinite;
+    will-change: opacity;
+  }
+
+  @keyframes asciiBreath {
+    0%, 100% {
+      transform: scaleY(0.96) translateY(0);
+      opacity: 0.72;
+      filter: saturate(0.92) brightness(0.96);
+    }
+    50% {
+      transform: scaleY(1.06) translateY(-1%);
+      opacity: 1;
+      filter: saturate(1.08) brightness(1.06);
+    }
+  }
+
+  @keyframes asciiColorShift {
+    0% {
+      filter: hue-rotate(0deg);
+    }
+    50% {
+      filter: hue-rotate(24deg);
+    }
+    100% {
+      filter: hue-rotate(0deg);
+    }
+  }
+
+  @keyframes asciiWaveTravel {
+    0% {
+      transform: translateX(0);
+    }
+    100% {
+      transform: translateX(-50%);
+    }
+  }
+
+  @keyframes asciiPulseSweep {
+    0% {
+      transform: translateX(-18%);
+      opacity: 0.14;
+    }
+    50% {
+      opacity: 0.32;
+    }
+    100% {
+      transform: translateX(118%);
+      opacity: 0.1;
+    }
+  }
+
+  @keyframes hackerTicker {
+    0% {
+      transform: translateX(0);
+    }
+    100% {
+      transform: translateX(-50%);
+    }
+  }
+
+  .ascii-breath {
+    animation: asciiBreath 4.8s ease-in-out infinite, asciiColorShift 8.4s ease-in-out infinite;
+    transform-origin: center;
+    will-change: transform, opacity, filter;
+  }
+
+  .ascii-wave-travel {
+    animation: asciiWaveTravel 18s linear infinite;
+    will-change: transform;
+  }
+
+  .ascii-pulse-sweep {
+    animation: asciiPulseSweep 5.8s ease-in-out infinite;
+    will-change: transform, opacity;
+  }
+
+  .hacker-ticker {
+    animation: hackerTicker 14s linear infinite;
+    will-change: transform;
+  }
+
+  @keyframes ribbonSweep {
+    0% {
+      transform: translateX(-35%);
+      opacity: 0.2;
+    }
+    50% {
+      opacity: 0.55;
+    }
+    100% {
+      transform: translateX(135%);
+      opacity: 0.18;
+    }
+  }
+
+  @keyframes asciiTicker {
+    0% {
+      transform: translateX(0);
+    }
+    100% {
+      transform: translateX(-50%);
+    }
+  }
+
+  @keyframes ribbonGlow {
+    0%, 100% {
+      opacity: 0.36;
+      filter: blur(0px);
+    }
+    50% {
+      opacity: 0.68;
+      filter: blur(1px);
+    }
+  }
+
+  .genesis-ribbon-sweep {
+    animation: ribbonSweep 2.8s linear infinite;
+    will-change: transform, opacity;
+  }
+
+  .genesis-ascii-ticker {
+    animation: asciiTicker 11s linear infinite;
+    will-change: transform;
+  }
+
+  .genesis-ribbon-glow {
+    animation: ribbonGlow 2.6s ease-in-out infinite;
+    will-change: opacity, filter;
+  }
 }

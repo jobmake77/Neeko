@@ -56,6 +56,17 @@ export function PersonaGenesisAscii({ name, subtitle = '统一素材池正在同
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const label = useMemo(() => (name.trim() || 'N').slice(0, 1).toUpperCase(), [name]);
   const [stageIndex, setStageIndex] = useState(0);
+  const ribbonWidth = stageIndex === 0 ? '28%' : stageIndex === 1 ? '64%' : '100%';
+  const ribbonTone = stageIndex === 0
+    ? 'linear-gradient(90deg, rgba(14,165,233,0.86), rgba(59,130,246,0.92), rgba(96,165,250,0.82))'
+    : stageIndex === 1
+      ? 'linear-gradient(90deg, rgba(34,197,94,0.78), rgba(59,130,246,0.96), rgba(168,85,247,0.82))'
+      : 'linear-gradient(90deg, rgba(34,197,94,0.92), rgba(16,185,129,0.96), rgba(56,189,248,0.78))';
+  const tickerText = stageIndex === 0
+    ? '::: ingest :: map :: parse :: signal ::'
+    : stageIndex === 1
+      ? '<<< shape :: align :: encode :: converge >>>'
+      : '[[ stabilize :: refine :: lock persona :: ready ]]';
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -238,25 +249,133 @@ export function PersonaGenesisAscii({ name, subtitle = '统一素材池正在同
       <div
         className="card"
         style={{
+          padding: 16,
+          border: '1px solid rgb(var(--border-light))',
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.95) 100%)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: 'rgb(var(--accent))', textTransform: 'uppercase' }}>
+              {activeStage.label}
+            </div>
+            <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 5 }}>
+              {STAGE_HINTS[stageIndex]}
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', whiteSpace: 'nowrap' }}>
+            阶段 {stageIndex + 1} / {STAGES.length}
+          </div>
+        </div>
+
+        <div
+          style={{
+            position: 'relative',
+            height: 68,
+            borderRadius: 14,
+            overflow: 'hidden',
+            background: 'linear-gradient(180deg, rgba(15,23,42,0.92), rgba(30,41,59,0.92))',
+            border: '1px solid rgba(148,163,184,0.18)',
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: ribbonWidth,
+              background: ribbonTone,
+              transition: 'width 720ms ease, background 420ms ease',
+            }}
+          />
+          <div
+            className="genesis-ribbon-glow"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: ribbonWidth,
+              background: 'linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.3), rgba(255,255,255,0.02))',
+              mixBlendMode: 'screen',
+              transition: 'width 720ms ease',
+            }}
+          />
+          <div
+            className="genesis-ribbon-sweep"
+            style={{
+              position: 'absolute',
+              top: -10,
+              bottom: -10,
+              width: '24%',
+              background: 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.22), rgba(255,255,255,0))',
+              transform: 'skewX(-18deg)',
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              inset: '0 0 0 0',
+              display: 'flex',
+              alignItems: 'center',
+              overflow: 'hidden',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+              fontSize: 11,
+              letterSpacing: '0.12em',
+              color: 'rgba(255,255,255,0.72)',
+              textTransform: 'uppercase',
+            }}
+          >
+            <div className="genesis-ascii-ticker" style={{ display: 'inline-flex', whiteSpace: 'nowrap', paddingLeft: 16 }}>
+              <span>{tickerText.repeat(6)}</span>
+              <span style={{ paddingLeft: 24 }}>{tickerText.repeat(6)}</span>
+            </div>
+          </div>
+          <div
+            style={{
+              position: 'absolute',
+              left: 16,
+              right: 16,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 16,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: 'rgba(255,255,255,0.96)' }}>{label}</div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.88)', minWidth: 0 }}>
+                {name.trim() || '未命名人格'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+              {STAGES.map((stage, index) => (
+                <div key={stage.key} style={{ width: index === stageIndex ? 26 : 14, height: 4, borderRadius: 999, background: index <= stageIndex ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.28)', transition: 'all 220ms ease' }} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        className="card"
+        style={{
           flex: 1,
-          minHeight: 360,
+          minHeight: 288,
           padding: 18,
           background: 'linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.94) 100%)',
           border: '1px solid rgb(var(--border-light))',
           overflow: 'hidden',
           position: 'relative',
         }}
-      >
+        >
         <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block', borderRadius: 12 }} />
         <div style={{ position: 'absolute', left: 20, right: 20, bottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: 'rgb(var(--accent))', textTransform: 'uppercase' }}>{activeStage.label}</div>
-            <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 6 }}>{STAGE_HINTS[stageIndex]}</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
+            下方字符场持续重组素材纹理，最终向稳定人格形态收敛。
           </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            {STAGES.map((stage, index) => (
-              <div key={stage.key} style={{ width: index === 1 ? 28 : 18, height: 4, borderRadius: 999, background: stage.key === activeStage.key ? 'rgb(var(--accent))' : 'rgb(var(--border))', transition: 'all 160ms ease' }} />
-            ))}
+          <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', whiteSpace: 'nowrap' }}>
+            ASCII FIELD
           </div>
         </div>
       </div>

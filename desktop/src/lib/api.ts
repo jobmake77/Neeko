@@ -70,7 +70,7 @@ export async function getPersona(slug: string): Promise<PersonaDetail> {
  */
 export async function createPersona(config: {
   name: string;
-  persona_slug: string;
+  persona_slug?: string;
   sources: PersonaSource[];
   update_policy?: PersonaConfig['update_policy'];
 }): Promise<PersonaMutationResult> {

@@ -10,6 +10,11 @@ export const CHAT_MODEL_OPTIONS: Record<RuntimeModelConfig['provider'], string[]
   deepseek: ['deepseek-chat', 'deepseek-reasoner'],
 };
 
+function isChatReady(status?: string, isReady?: boolean): boolean {
+  if (isReady) return true;
+  return ['ready', 'available', 'converged', 'exported'].includes(String(status ?? '').toLowerCase());
+}
+
 interface ChatState {
   personaSlug: string | null;
   threads: Conversation[];
@@ -61,6 +66,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
 
   setPersona: async (slug) => {
+    try {
+      const personas = await api.listPersonas();
+      const target = personas.find((item) => item.slug === slug);
+      if (!target || !isChatReady(target.status, target.is_ready)) {
+        set({ personaSlug: null, threads: [], threadId: null, messages: [], error: '当前人格仍在培养中，完成后才能开始对话。' });
+        localStorage.removeItem('neeko.personaSlug');
+        localStorage.removeItem('neeko.threadId');
+        return;
+      }
+    } catch {
+      // ignore readiness preflight failures and continue with the existing selection flow
+    }
     set({ personaSlug: slug, threads: [], threadId: null, messages: [] });
     localStorage.setItem('neeko.personaSlug', slug);
     localStorage.removeItem('neeko.threadId');

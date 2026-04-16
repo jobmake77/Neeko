@@ -20,6 +20,11 @@ const STATUS_COLORS: Record<string, string> = {
   error:      '#ef4444',
 };
 
+function isChatReady(status?: string, isReady?: boolean): boolean {
+  if (isReady) return true;
+  return ['ready', 'available', 'converged', 'exported'].includes(String(status ?? '').toLowerCase());
+}
+
 interface Props {
   persona: PersonaSummary;
   onEdit: () => void;
@@ -30,8 +35,10 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
   const { setPersona } = useChatStore();
   const { setView } = useAppStore();
   const [hovered, setHovered] = useState(false);
+  const chatReady = isChatReady(persona.status, persona.is_ready);
 
   function handleCardClick() {
+    if (!chatReady) return;
     setPersona(persona.slug);
     setView('chat');
   }
@@ -44,6 +51,13 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
   function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
     onDelete();
+  }
+
+  function handleStartChat(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!chatReady) return;
+    setPersona(persona.slug);
+    setView('chat');
   }
 
   const statusColor = STATUS_COLORS[persona.status ?? 'created'] ?? '#94a3b8';
@@ -61,8 +75,9 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
         flexDirection: 'column',
         gap: 12,
         position: 'relative',
-        cursor: 'pointer',
+        cursor: chatReady ? 'pointer' : 'default',
         minHeight: 152,
+        opacity: chatReady ? 1 : 0.9,
       }}
     >
       {/* 操作按钮 */}
@@ -132,6 +147,22 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
         <span>{persona.doc_count} 条素材</span>
         <span>{persona.training_rounds} 轮</span>
       </div>
+      {chatReady ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ fontSize: 11.5, color: '#16a34a', fontWeight: 600 }}>
+            {persona.source_type_count && persona.source_count
+              ? `已基于 ${persona.source_type_count} 类来源、${persona.doc_count} 条素材完成培养`
+              : '已完成培养，可开始对话'}
+          </div>
+          <button className="btn btn-primary" onClick={handleStartChat} style={{ minHeight: 30, padding: '0 12px', fontSize: 12 }}>
+            {t('startChat')}
+          </button>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11.5, color: 'rgb(var(--text-secondary))' }}>
+          培养完成后可聊天
+        </div>
+      )}
     </div>
   );
 }

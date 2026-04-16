@@ -16,9 +16,19 @@ const DEFAULT_MODELS: Record<ProviderName, string> = {
   claude: 'claude-sonnet-4-6',
   openai: 'gpt-4o-mini',
   kimi: 'moonshot-v1-128k',
-  gemini: 'gemini-1.5-flash',
+  gemini: 'gemini-2.5-flash',
   deepseek: 'deepseek-chat',
 };
+
+function isSupportedGeminiModel(model?: string): boolean {
+  const value = String(model || '').trim().toLowerCase();
+  return (
+    value === 'gemini-2.5-flash' ||
+    value === 'gemini-2.5-flash-lite' ||
+    value === 'gemini-1.5-flash' ||
+    value === 'gemini-1.5-pro'
+  );
+}
 
 export function getDefaultModelForProvider(provider: ProviderName): string {
   return DEFAULT_MODELS[provider];
@@ -30,7 +40,7 @@ function isModelCompatibleWithProvider(provider: ProviderName, model?: string): 
   if (provider === 'claude') return /^claude-/i.test(value);
   if (provider === 'openai') return /^(gpt|o1|o3|o4)/i.test(value);
   if (provider === 'kimi') return /^(moonshot|kimi)/i.test(value);
-  if (provider === 'gemini') return /^gemini/i.test(value);
+  if (provider === 'gemini') return isSupportedGeminiModel(value);
   return /^deepseek/i.test(value);
 }
 
@@ -157,7 +167,7 @@ function resolveConfiguredModel(rawDefaultModel: string): Partial<Record<Provide
   if (/^claude-/i.test(value)) return { claude: value };
   if (/^(gpt|o1|o3|o4)/i.test(value)) return { openai: value };
   if (/^(moonshot|kimi)/i.test(value)) return { kimi: value };
-  if (/^gemini/i.test(value)) return { gemini: value };
+  if (/^gemini/i.test(value)) return { gemini: isSupportedGeminiModel(value) ? value : DEFAULT_MODELS.gemini };
   if (/^deepseek/i.test(value)) return { deepseek: value };
   return {};
 }

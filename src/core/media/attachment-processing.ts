@@ -116,7 +116,7 @@ async function processImageAttachment(item: AttachmentRef): Promise<AttachmentPr
       const bytes = readFileSync(item.path);
       const mimeType = item.mime ?? inferMimeType(item.path, 'image/jpeg');
       const { text } = await generateText({
-        model: google('gemini-1.5-flash') as any,
+        model: google('gemini-2.5-flash') as any,
         messages: [
           {
             role: 'user',

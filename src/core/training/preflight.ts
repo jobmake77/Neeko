@@ -1,6 +1,13 @@
 import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
-import { ProviderName, resolveModel, resolveModelProviderName } from '../../config/model.js';
+import {
+  getDefaultModelForProvider,
+  listAvailableProviders,
+  ProviderName,
+  resolveModelForOverride,
+  resolvePreferredModelOverride,
+} from '../../config/model.js';
+import { settings } from '../../config/settings.js';
 
 export type PreflightFailureStage = 'text_probe' | 'structured_probe';
 export type PreflightFailureCategory =
@@ -37,70 +44,144 @@ export async function runModelPreflight(options?: {
 }): Promise<ModelPreflightResult> {
   const timeoutMs = Math.max(3_000, options?.timeoutMs ?? 12_000);
   const requireStructured = options?.requireStructured ?? true;
-  const providerName = resolveModelProviderName();
-  const model = resolveModel();
   const startedAt = Date.now();
-  let textAttempts = 0;
-  try {
-    textAttempts = await runTextProbe(model, providerName, timeoutMs);
-  } catch (error) {
-    const failure = classifyCapabilityFailure(error);
-    return {
-      ok: false,
-      latencyMs: Date.now() - startedAt,
-      structuredOk: false,
-      providerName,
-      textAttempts,
-      structuredAttempts: 0,
-      failureStage: 'text_probe',
-      failureCategory: failure,
-      reason: `text_probe_failed: ${String(error)}`,
-    };
+  const attempts = buildProviderAttempts();
+  let lastFailure: {
+    providerName: ProviderName;
+    textAttempts: number;
+    structuredAttempts: number;
+    failureStage: PreflightFailureStage;
+    error: unknown;
+  } | null = null;
+
+  for (const attempt of attempts) {
+    const providerName = attempt.provider;
+    const model = resolveModelForOverride(attempt, 'training');
+    let textAttempts = 0;
+    try {
+      textAttempts = await runTextProbe(model, providerName, timeoutMs);
+    } catch (error) {
+      lastFailure = {
+        providerName,
+        textAttempts,
+        structuredAttempts: 0,
+        failureStage: 'text_probe',
+        error,
+      };
+      if (shouldAttemptProviderFailover(error, attempt, attempts)) {
+        continue;
+      }
+      break;
+    }
+
+    if (!requireStructured) {
+      return {
+        ok: true,
+        latencyMs: Date.now() - startedAt,
+        structuredOk: true,
+        providerName,
+        textAttempts,
+        structuredAttempts: 0,
+      };
+    }
+
+    let structuredAttempts = 0;
+    try {
+      structuredAttempts = await runStructuredProbe(model, providerName, timeoutMs);
+      return {
+        ok: true,
+        latencyMs: Date.now() - startedAt,
+        structuredOk: true,
+        providerName,
+        textAttempts,
+        structuredAttempts,
+      };
+    } catch (error) {
+      lastFailure = {
+        providerName,
+        textAttempts,
+        structuredAttempts,
+        failureStage: 'structured_probe',
+        error,
+      };
+      if (shouldAttemptProviderFailover(error, attempt, attempts)) {
+        continue;
+      }
+      break;
+    }
   }
 
-  if (!requireStructured) {
-    return {
-      ok: true,
-      latencyMs: Date.now() - startedAt,
-      structuredOk: true,
-      providerName,
-      textAttempts,
-      structuredAttempts: 0,
-    };
-  }
+  const providerName = lastFailure?.providerName ?? attempts[0]?.provider ?? 'kimi';
+  const failure = classifyCapabilityFailure(lastFailure?.error);
+  return {
+    ok: false,
+    latencyMs: Date.now() - startedAt,
+    structuredOk: false,
+    providerName,
+    textAttempts: lastFailure?.textAttempts ?? 0,
+    structuredAttempts: lastFailure?.structuredAttempts ?? 0,
+    failureStage: lastFailure?.failureStage,
+    failureCategory: failure,
+    reason: `${lastFailure?.failureStage === 'structured_probe' ? 'structured_probe_failed' : 'text_probe_failed'}: ${String(lastFailure?.error ?? 'unknown preflight failure')}`,
+  };
+}
 
-  let structuredAttempts = 0;
-  try {
-    structuredAttempts = await runStructuredProbe(model, providerName, timeoutMs);
-    return {
-      ok: true,
-      latencyMs: Date.now() - startedAt,
-      structuredOk: true,
-      providerName,
-      textAttempts,
-      structuredAttempts,
-    };
-  } catch (error) {
-    const failure = classifyCapabilityFailure(error);
-    return {
-      ok: false,
-      latencyMs: Date.now() - startedAt,
-      structuredOk: false,
-      providerName,
-      textAttempts,
-      structuredAttempts,
-      failureStage: 'structured_probe',
-      failureCategory: failure,
-      reason: `structured_probe_failed: ${String(error)}`,
-    };
+function buildProviderAttempts(): Array<{ provider: ProviderName; model?: string }> {
+  const preferred = resolvePreferredModelOverride('training');
+  const seen = new Set<string>();
+  const attempts: Array<{ provider: ProviderName; model?: string }> = [];
+  const push = (provider?: ProviderName, model?: string) => {
+    if (!provider) return;
+    const resolvedModel = String(model || '').trim() || getDefaultModelForProvider(provider);
+    const key = `${provider}:${resolvedModel}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    attempts.push({ provider, model: resolvedModel });
+  };
+  push(preferred?.provider, preferred?.model);
+  for (const provider of listAvailableProviders('training')) {
+    if (provider === preferred?.provider) continue;
+    push(provider);
   }
+  return attempts;
+}
+
+function shouldAttemptProviderFailover(
+  error: unknown,
+  currentAttempt: { provider: ProviderName },
+  attempts: Array<{ provider: ProviderName }>
+): boolean {
+  const hasNextProvider = attempts.some((attempt) => attempt.provider !== currentAttempt.provider);
+  if (!hasNextProvider) return false;
+  const msg = String(error ?? '').toLowerCase();
+  return (
+    msg.includes('quota') ||
+    msg.includes('usage limit') ||
+    msg.includes('limit for this period') ||
+    msg.includes('resource exhausted') ||
+    msg.includes('rate limit') ||
+    msg.includes('high demand') ||
+    msg.includes('429') ||
+    msg.includes('503') ||
+    msg.includes('overloaded') ||
+    msg.includes('service unavailable')
+  );
 }
 
 async function runTextProbe(
-  model: ReturnType<typeof resolveModel>,
-  providerName: ReturnType<typeof resolveModelProviderName>,
+  model: ReturnType<typeof resolveModelForOverride>,
+  providerName: ProviderName,
   timeoutMs: number
 ): Promise<number> {
+  if (providerName === 'gemini') {
+    await runGeminiPromptProbe({
+      model: extractModelId(model),
+      prompt: 'Reply exactly with "pong".',
+      timeoutMs,
+      maxOutputTokens: 16,
+    });
+    return 1;
+  }
   const attempts = providerName === 'kimi' ? 2 : 1;
   let lastError: unknown;
 
@@ -132,10 +213,19 @@ async function runTextProbe(
 }
 
 async function runStructuredProbe(
-  model: ReturnType<typeof resolveModel>,
-  providerName: ReturnType<typeof resolveModelProviderName>,
+  model: ReturnType<typeof resolveModelForOverride>,
+  providerName: ProviderName,
   timeoutMs: number
 ): Promise<number> {
+  if (providerName === 'gemini') {
+    await runGeminiPromptProbe({
+      model: extractModelId(model),
+      prompt: 'Return JSON object: {"ok": true, "note": "ready"}.',
+      timeoutMs,
+      maxOutputTokens: 64,
+    });
+    return 1;
+  }
   const attempts = providerName === 'kimi' ? 2 : 1;
   let lastError: unknown;
 
@@ -213,4 +303,79 @@ function classifyCapabilityFailure(error: unknown): PreflightFailureCategory {
     return 'structured_output_failure';
   }
   return 'unknown';
+}
+
+function getGeminiApiKey(): string {
+  const configured = String(settings.get('geminiApiKey') ?? '').trim();
+  if (configured) return configured;
+  return String(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? '').trim();
+}
+
+function extractModelId(model: unknown): string | undefined {
+  const candidate = model as { modelId?: string; model?: string };
+  return String(candidate?.modelId ?? candidate?.model ?? '').trim() || undefined;
+}
+
+async function runGeminiPromptProbe(input: {
+  model?: string;
+  prompt: string;
+  timeoutMs: number;
+  maxOutputTokens: number;
+}): Promise<void> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API key is missing.');
+  }
+  const requestedModel = String(input.model || '').trim();
+  const models = requestedModel
+    ? [requestedModel, ...(requestedModel === 'gemini-2.5-flash' ? ['gemini-2.5-flash-lite'] : [])]
+    : ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      const response = await withTimeout(
+        fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: input.prompt }],
+              },
+            ],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: input.maxOutputTokens,
+            },
+          }),
+        }),
+        input.timeoutMs,
+        'gemini preflight probe'
+      );
+      const payload: any = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = payload?.error?.message || `Gemini generateContent ${response.status}`;
+        throw new Error(message);
+      }
+      const text = (payload?.candidates ?? [])
+        .flatMap((candidate: any) => candidate?.content?.parts ?? [])
+        .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+        .join('\n')
+        .trim();
+      if (!text) {
+        throw new Error('Gemini returned empty text.');
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      const message = String(error instanceof Error ? error.message : error).toLowerCase();
+      if (!/high demand|rate limit|resource exhausted|429|503|overloaded|unavailable|unsupported model|not found/.test(message)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Gemini preflight probe failed.');
 }

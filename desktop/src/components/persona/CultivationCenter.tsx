@@ -66,7 +66,8 @@ function formatSourceType(type: string) {
 }
 
 function formatRoundStatus(status: string) {
-  if (status === 'completed' || status === 'converged') return '本轮已完成';
+  if (status === 'completed' || status === 'converged' || status === 'max_rounds_reached') return '本轮已完成';
+  if (status === 'interrupted' || status === 'paused') return '本轮已产出，等待继续';
   if (status === 'running') return '本轮推进中';
   if (status === 'failed') return '本轮待重试';
   return '等待进入本轮';
@@ -388,6 +389,12 @@ function TrainingCard({
   const progress = persona.progress_percent ?? 0;
   const finished = isFinishedStatus(stageStatus);
   const phase = detail?.phase ?? (finished ? 'ready' : stageStatus);
+  const threshold = detail?.training_threshold ?? detail?.source_summary?.training_threshold;
+  const thresholdMet = detail?.training_threshold_met ?? detail?.source_summary?.training_threshold_met;
+  const evaluationPassed = detail?.evaluation_passed ?? detail?.source_summary?.evaluation_passed;
+  const rawDocumentCount = detail?.raw_document_count ?? detail?.source_summary?.document_count ?? 0;
+  const cleanDocumentCount = detail?.clean_document_count ?? detail?.source_summary?.clean_document_count ?? detail?.source_summary?.document_count ?? 0;
+  const displayPhaseLabel = evaluationPassed === false && thresholdMet ? '继续培养中' : formatPhaseLabel(detail?.phase);
   const meta = statusMeta(phase);
   const operationLabel = pendingOperation === 'deep_fetch'
     ? '深抓取中'
@@ -400,18 +407,15 @@ function TrainingCard({
           : detail?.source_summary?.current_operation === 'discovery'
             ? '发现来源中'
             : null;
-  const tickerText = `[${String(progress).padStart(3, '0')}%] ${operationLabel ?? formatPhaseLabel(detail?.phase)} :: win ${String((detail?.source_summary as any)?.completed_windows ?? 0).padStart(2, '0')} / ${String((detail?.source_summary as any)?.estimated_total_windows ?? 0).padStart(2, '0')} :: raw ${String(detail?.raw_document_count ?? 0).padStart(4, '0')} :: clean ${String(detail?.clean_document_count ?? 0).padStart(4, '0')} :: round ${String(persona.current_round ?? detail?.progress.current_round ?? 0).padStart(2, '0')} / ${String(persona.total_rounds ?? detail?.progress.total_rounds ?? 0).padStart(2, '0')} :: ${String(detail?.phase ?? stageStatus).toUpperCase()} ::`;
+  const tickerText = `[${String(progress).padStart(3, '0')}%] ${operationLabel ?? displayPhaseLabel} :: win ${String((detail?.source_summary as any)?.completed_windows ?? 0).padStart(2, '0')} / ${String((detail?.source_summary as any)?.estimated_total_windows ?? 0).padStart(2, '0')} :: raw ${String(rawDocumentCount).padStart(4, '0')} :: clean ${String(cleanDocumentCount).padStart(4, '0')} :: round ${String(persona.current_round ?? detail?.progress.current_round ?? 0).padStart(2, '0')} / ${String(persona.total_rounds ?? detail?.progress.total_rounds ?? 0).padStart(2, '0')} :: ${String(detail?.phase ?? stageStatus).toUpperCase()} ::`;
   const latestActivity = detail?.latest_activity || (operationLabel ? `当前任务：${operationLabel}` : '正在等待培养推进');
   const currentWindowText = formatWindowSentence(detail);
   const cacheReuse = detail?.cache_reuse;
-  const threshold = detail?.training_threshold ?? detail?.source_summary?.training_threshold;
-  const thresholdMet = detail?.training_threshold_met ?? detail?.source_summary?.training_threshold_met;
-  const evaluationPassed = detail?.evaluation_passed ?? detail?.source_summary?.evaluation_passed;
   const collectionCycle = detail?.collection_cycle ?? detail?.source_summary?.collection_cycle;
   const collectionStopReason = detail?.collection_stop_reason ?? detail?.source_summary?.collection_stop_reason;
   const historyExhausted = detail?.history_exhausted ?? detail?.source_summary?.history_exhausted;
   const providerExhausted = detail?.provider_exhausted ?? detail?.source_summary?.provider_exhausted;
-  const thresholdLabel = threshold ? `${detail?.clean_document_count ?? 0} / ${threshold}` : null;
+  const thresholdLabel = threshold ? `${cleanDocumentCount} / ${threshold}` : null;
   const thresholdHint = threshold && thresholdMet === false
     ? `未达到自动训练门槛，继续深抓中`
     : threshold && thresholdMet
@@ -446,10 +450,10 @@ function TrainingCard({
         </div>
         <div style={{ flex: 1, minWidth: 0, paddingRight: 84 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{persona.name}</div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{persona.name}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: meta.color, fontSize: 12, fontWeight: 600 }}>
                 {meta.color === '#22c55e' ? <CheckCircle2 size={14} /> : meta.color === '#ef4444' ? <AlertCircle size={14} /> : <RefreshCw size={14} />}
-                {formatPhaseLabel(detail?.phase) || meta.label}
+                {displayPhaseLabel || meta.label}
               </div>
             </div>
           <TideBar progress={progress} finished={finished} tickerText={tickerText} />
@@ -464,8 +468,8 @@ function TrainingCard({
           <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
             <span>最近活动 {formatRelativeTime(detail?.last_heartbeat_at ?? detail?.last_success_at)}</span>
             {(detail?.source_summary as any)?.completed_windows !== undefined ? <span>窗口 {(detail?.source_summary as any)?.completed_windows ?? 0} / {(detail?.source_summary as any)?.estimated_total_windows ?? 0}</span> : null}
-            <span>原始 {detail?.raw_document_count ?? 0}</span>
-            <span>纳入 {detail?.clean_document_count ?? 0}</span>
+            <span>原始 {rawDocumentCount}</span>
+            <span>纳入 {cleanDocumentCount}</span>
             {thresholdLabel ? <span>门槛 {thresholdLabel}</span> : null}
             {typeof collectionCycle === 'number' && collectionCycle > 0 ? <span>循环 {collectionCycle}</span> : null}
             {evaluationHint ? <span>{evaluationHint}</span> : null}
@@ -499,10 +503,10 @@ function TrainingCard({
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>培养概览</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-              <InfoStat label="当前阶段" value={formatPhaseLabel(detail.phase)} />
+              <InfoStat label="当前阶段" value={displayPhaseLabel} />
               <InfoStat label="当前轮次" value={`${detail.progress.current_round} / ${detail.progress.total_rounds}`} />
-              <InfoStat label="原始素材总量" value={detail.raw_document_count ?? 0} />
-              <InfoStat label="纳入训练量" value={detail.clean_document_count ?? 0} />
+              <InfoStat label="原始素材总量" value={rawDocumentCount} />
+              <InfoStat label="纳入训练量" value={cleanDocumentCount} />
               <InfoStat label="自动训练门槛" value={detail.training_threshold ?? '未配置'} />
               <InfoStat label="达训条件" value={detail.training_threshold_met ? '已达到' : '未达到'} />
               <InfoStat label="测评结果" value={evaluationPassed === true ? '已通过' : evaluationPassed === false ? '未通过' : '待测评'} />

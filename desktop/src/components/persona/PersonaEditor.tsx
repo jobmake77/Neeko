@@ -18,6 +18,7 @@ type Props = {
 const DEFAULT_POLICY: PersonaConfig['update_policy'] = {
   auto_check_remote: true,
   check_interval_minutes: 60,
+  training_threshold: 500,
   strategy: 'incremental',
 };
 
@@ -191,6 +192,7 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
   const [policy, setPolicy] = useState<PersonaConfig['update_policy']>(DEFAULT_POLICY);
   const [discovered, setDiscovered] = useState<DiscoveredSourceCandidate[]>([]);
   const [discovering, setDiscovering] = useState(false);
+  const hasTwitterSource = sources.some((source) => source.type === 'social');
 
   useEffect(() => {
     if (!open) return;
@@ -389,6 +391,27 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
                         />
                       </div>
                     </div>
+
+                    {hasTwitterSource ? (
+                      <div className="card" style={{ padding: 16, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+                        <div style={{ minWidth: 220, flex: '1 1 320px' }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>Twitter 自动训练门槛</div>
+                          <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>达到这个素材量后，系统才会自动进入训练。未达到时会继续深抓；达到后若测评未通过，仍会继续补料。</div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <input
+                            className="input"
+                            type="number"
+                            min={1}
+                            max={20000}
+                            value={policy.training_threshold ?? 500}
+                            onChange={(e) => setPolicy({ ...policy, training_threshold: Math.max(1, Number(e.target.value || 500)) })}
+                            style={{ width: 120 }}
+                          />
+                          <span style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>条</span>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {mode === 'edit' && persona ? (
                       <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>

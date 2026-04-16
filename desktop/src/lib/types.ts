@@ -220,6 +220,7 @@ export interface PersonaConfig {
   update_policy: {
     auto_check_remote: boolean;
     check_interval_minutes: number;
+    training_threshold?: number;
     strategy: 'incremental';
     current_operation?: 'idle' | 'deep_fetch' | 'incremental_sync' | 'discovery';
     current_source_label?: string;

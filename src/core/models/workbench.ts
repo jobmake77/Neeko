@@ -304,6 +304,7 @@ export const PersonaConfigSchema = z.object({
   update_policy: z.object({
     auto_check_remote: z.boolean().default(true),
     check_interval_minutes: z.number().int().min(5).default(60),
+    training_threshold: z.number().int().min(1).max(20000).optional(),
     strategy: z.enum(['incremental']).default('incremental'),
     current_operation: z.enum(['idle', 'deep_fetch', 'incremental_sync', 'discovery']).optional(),
     current_source_label: z.string().optional(),

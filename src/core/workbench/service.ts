@@ -406,6 +406,9 @@ function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { 
       update_policy: {
         auto_check_remote: input.update_policy?.auto_check_remote ?? true,
         check_interval_minutes: input.update_policy?.check_interval_minutes ?? 60,
+        training_threshold: Number.isFinite(input.update_policy?.training_threshold)
+          ? Math.max(1, Math.min(20_000, Math.round(Number(input.update_policy?.training_threshold))))
+          : undefined,
         strategy: 'incremental',
         current_operation: input.update_policy?.current_operation,
         current_source_label: input.update_policy?.current_source_label,
@@ -428,6 +431,9 @@ function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { 
     update_policy: {
       auto_check_remote: input.update_policy?.auto_check_remote ?? true,
       check_interval_minutes: input.update_policy?.check_interval_minutes ?? 60,
+      training_threshold: Number.isFinite(input.update_policy?.training_threshold)
+        ? Math.max(1, Math.min(20_000, Math.round(Number(input.update_policy?.training_threshold))))
+        : undefined,
       strategy: 'incremental',
       current_operation: input.update_policy?.current_operation,
       current_source_label: input.update_policy?.current_source_label,
@@ -1125,6 +1131,12 @@ function buildTrainingThresholdSummary(cleanDocumentCount: number, threshold = A
       ? `当前已纳入 ${cleanDocumentCount} 条素材，已达到自动训练门槛（${threshold} 条），正在进入训练`
       : `当前已接入 ${cleanDocumentCount} 条素材，未达到自动训练门槛（${threshold} 条），系统将继续深抓取`,
   };
+}
+
+function resolveTrainingThreshold(config?: { update_policy?: { training_threshold?: number } }): number {
+  const raw = Number(config?.update_policy?.training_threshold ?? AUTO_TRAINING_THRESHOLD);
+  if (!Number.isFinite(raw)) return AUTO_TRAINING_THRESHOLD;
+  return Math.max(1, Math.min(20_000, Math.round(raw)));
 }
 
 function mergeDocumentCollections(...collections: RawDocument[][]): RawDocument[] {
@@ -3471,7 +3483,7 @@ export class WorkbenchService {
     const cleanDocumentCount = dedupeRawDocuments(
       this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
     ).length;
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
     const trainingContext = this.readTrainingContext(slug);
     const evaluationPassed = deriveEvaluationPassed(trainingContext);
     const progressStates = config.sources
@@ -3693,7 +3705,7 @@ export class WorkbenchService {
     const cleanDocumentCount = dedupeRawDocuments(
       this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
     ).length;
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
     this.reconcilePersonaDocumentCount(slug, cleanDocumentCount);
 
     if (imports.length === 0) {
@@ -4169,15 +4181,11 @@ export class WorkbenchService {
     const config = this.getPersonaConfig(slug);
     const skills = this.readSkillSummary(slug);
     const evidenceImports = this.store.listEvidenceImports(slug);
-    const uniqueDocumentCount = dedupeRawDocuments(evidenceImports.flatMap((item) => this.readImportDocuments(item))).length;
-    const recentUniqueDocumentCount = dedupeRawDocuments(
-      evidenceImports
-        .filter((item) => Date.now() - new Date(item.updated_at).getTime() < 7 * 24 * 60 * 60 * 1000)
-        .flatMap((item) => this.readImportDocuments(item))
-    ).length;
     const sourceItems = this.buildCultivationSourceItems(config, evidenceImports);
+    const uniqueDocumentCount = sourceItems.reduce((sum, item) => sum + item.clean_count, 0);
+    const recentUniqueDocumentCount = this.computeRecentDeltaCount(evidenceImports, sourceItems);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
-    const threshold = buildTrainingThresholdSummary(uniqueDocumentCount);
+    const threshold = buildTrainingThresholdSummary(uniqueDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const progressStates = config.sources
       .filter((item) => item.enabled && item.type === 'social')
@@ -4204,9 +4212,7 @@ export class WorkbenchService {
         current_operation: config.update_policy.current_operation,
         current_source_label: config.update_policy.current_source_label,
         last_update_check_at: config.update_policy.last_checked_at,
-        latest_update_result: showThresholdBlock
-          ? threshold.summary
-          : config.update_policy.latest_result,
+        latest_update_result: this.resolveCultivationStatusMessage(persona, config, threshold, evaluationPassed),
         training_threshold: threshold.training_threshold,
         training_threshold_met: threshold.training_threshold_met,
         training_block_reason: showThresholdBlock
@@ -4232,8 +4238,15 @@ export class WorkbenchService {
       const sourceProgress = this.readSourceSyncProgress(source);
       const matchingImports = evidenceImports.filter((item) => this.matchesSourceImport(source, item));
       const dedupedDocuments = dedupeRawDocuments(matchingImports.flatMap((item) => this.readImportDocuments(item)));
-      const rawCount = dedupedDocuments.length;
-      const cleanCount = dedupedDocuments.length;
+      const realtimeCount = source.type === 'social'
+        ? Math.max(
+            sourceProgress?.count ?? 0,
+            sourceProgress?.current_window?.new_count ?? 0,
+            sourceProgress?.last_success_window?.new_count ?? 0,
+          )
+        : 0;
+      const rawCount = Math.max(dedupedDocuments.length, realtimeCount);
+      const cleanCount = Math.max(dedupedDocuments.length, realtimeCount);
       const cacheReuse = this.summarizeCacheReuseDocuments(dedupedDocuments, describeSourceLabel(source));
       const latestImport = [...matchingImports].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
       const validationSummary = latestImport
@@ -4243,7 +4256,7 @@ export class WorkbenchService {
             rejected_count: 0,
             quarantined_count: 0,
           };
-      const syncedAt = source.last_synced_at ?? matchingImports.map((item) => item.updated_at).sort().at(-1);
+      const syncedAt = sourceProgress?.updated_at ?? source.last_synced_at ?? matchingImports.map((item) => item.updated_at).sort().at(-1);
       const coveragePoints = dedupedDocuments
         .map((doc) => doc.published_at)
         .filter((value): value is string => Boolean(value))
@@ -4276,6 +4289,33 @@ export class WorkbenchService {
         active_window: sourceProgress?.current_window,
       };
     });
+  }
+
+  private computeRecentDeltaCount(
+    evidenceImports: WorkbenchEvidenceImport[],
+    sourceItems: NonNullable<CultivationDetail['source_items']>
+  ): number {
+    const sorted = [...evidenceImports].sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+    const latest = sorted.at(-1);
+    if (latest) {
+      const previous = sorted.at(-2);
+      const delta = latest.item_count - (previous?.item_count ?? 0);
+      if (delta > 0) return delta;
+      if (latest.item_count > 0 && !previous) return latest.item_count;
+    }
+    return sourceItems.reduce((sum, item) => sum + Math.max(0, item.clean_count), 0);
+  }
+
+  private getLatestPrepDocumentCount(slug: string): number | undefined {
+    const context = this.readTrainingContext(slug) as { prep_context?: { prep_documents_path?: string } } | null;
+    const prepPath = context?.prep_context?.prep_documents_path;
+    if (!prepPath || !existsSync(prepPath)) return undefined;
+    try {
+      const docs = JSON.parse(readFileSync(prepPath, 'utf-8')) as RawDocument[];
+      return Array.isArray(docs) ? docs.length : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private getCultivationCacheReuse(
@@ -4375,12 +4415,13 @@ export class WorkbenchService {
     cleanDocumentCount: number
   ): NonNullable<CultivationDetail['rounds']> {
     const report = this.readTrainingReport(slug);
+    const prepDocumentCount = this.getLatestPrepDocumentCount(slug);
     const rounds = report?.rounds ?? [];
     return rounds.map((item) => ({
       round: item.round,
       status: item.status,
       objective: this.describeRoundObjective(item.round),
-      document_count: cleanDocumentCount,
+      document_count: prepDocumentCount ?? cleanDocumentCount,
       finished_at: report?.generated_at,
     }));
   }
@@ -4402,6 +4443,16 @@ export class WorkbenchService {
     if (this.isPersonaReady(persona)) {
       return '已完成培养，可开始对话';
     }
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const trainingContext = this.readTrainingContext(persona.slug);
+    const report = this.readTrainingReport(persona.slug);
+    const evaluationPassed = deriveEvaluationPassed(trainingContext);
+    if (evaluationPassed === false && threshold.training_threshold_met) {
+      if ((report?.total_rounds ?? 0) > 0) {
+        return `已完成第 ${report?.total_rounds ?? 0} 轮训练，当前测评未通过，系统正在继续补充素材`;
+      }
+      return '当前测评未通过，系统正在继续补充素材';
+    }
     const runningWindow = sourceItems
       .map((item) => ({ item, window: item.active_window }))
       .find((entry) => entry.window?.status === 'running');
@@ -4421,8 +4472,6 @@ export class WorkbenchService {
     if (recentFailure?.window?.status === 'failed') {
       return '来源暂时不可用，稍后会继续尝试';
     }
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
-    const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(persona.slug));
     const historyExhausted = sourceItems.some((item) => item.active_window && this.readSourceSyncProgress(
       config.sources.find((source) => source.id === item.source_id) ?? config.sources[0]
     )?.history_exhausted === true);
@@ -4438,16 +4487,13 @@ export class WorkbenchService {
       }
       return threshold.training_block_reason ?? threshold.summary;
     }
-    if (evaluationPassed === false && threshold.training_threshold_met) {
-      return '当前测评未通过，系统正在继续补充素材';
-    }
     if (historyExhausted && !evaluationPassed) {
       return '历史窗口已扫完，系统正在开启新一轮抓取';
     }
     if (providerExhausted && !evaluationPassed) {
       return '来源提供方暂时不稳定，系统正在等待下一轮重试';
     }
-    if ((persona.current_stage ?? persona.status) === 'error') {
+    if ((persona.current_stage ?? persona.status) === 'error' && evaluationPassed !== false) {
       return '本轮培养未通过验收，可继续恢复';
     }
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
@@ -4482,6 +4528,24 @@ export class WorkbenchService {
     return '正在准备培养';
   }
 
+  private resolveCultivationStatusMessage(
+    persona: PersonaSummary,
+    config: PersonaConfig,
+    threshold: ReturnType<typeof buildTrainingThresholdSummary>,
+    evaluationPassed?: boolean,
+  ): string {
+    if (this.isPersonaReady(persona)) {
+      return '培养已完成，可开始对话';
+    }
+    if (evaluationPassed === false && threshold.training_threshold_met) {
+      return '当前测评未通过，系统正在继续补充素材';
+    }
+    if (!threshold.training_threshold_met && threshold.training_block_reason) {
+      return threshold.summary;
+    }
+    return config.update_policy.latest_result ?? '正在继续培养';
+  }
+
   private resolveCultivationPhase(
     persona: PersonaSummary,
     config: PersonaConfig,
@@ -4489,17 +4553,24 @@ export class WorkbenchService {
     cleanDocumentCount: number,
     sourceItems: NonNullable<CultivationDetail['source_items']>
   ): CultivationPhase {
-    const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(persona.slug));
+    const trainingContext = this.readTrainingContext(persona.slug);
+    const trainingReport = this.readTrainingReport(persona.slug);
+    const evaluationPassed = deriveEvaluationPassed(trainingContext);
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const hasTrainingArtifacts = (trainingReport?.total_rounds ?? 0) > 0
+      || (trainingContext?.completed_rounds ?? 0) > 0
+      || persona.training_rounds > 0
+      || persona.memory_node_count > 0;
     if (this.isPersonaReady(persona)) return 'ready';
-    if (sourceItems.some((item) => item.status === 'error')) return 'error';
+    if (sourceItems.some((item) => item.status === 'error') && !hasTrainingArtifacts) return 'error';
+    if (evaluationPassed === false && hasTrainingArtifacts) return 'training';
+    if ((persona.current_stage ?? persona.status) === 'training') return 'training';
     if (config.update_policy.current_operation === 'deep_fetch') return 'deep_fetching';
     if (config.update_policy.current_operation === 'incremental_sync') return 'incremental_syncing';
-    if ((persona.current_stage ?? persona.status) === 'error') return 'error';
-    if (evaluationPassed === false && cleanDocumentCount >= AUTO_TRAINING_THRESHOLD) return 'building_evidence';
-    if (!buildTrainingThresholdSummary(cleanDocumentCount).training_threshold_met && cleanDocumentCount > 0) {
+    if ((persona.current_stage ?? persona.status) === 'error' && !hasTrainingArtifacts) return 'error';
+    if (!threshold.training_threshold_met && cleanDocumentCount > 0) {
       return 'building_evidence';
     }
-    if ((persona.current_stage ?? persona.status) === 'training') return 'training';
     if ((persona.current_stage ?? persona.status) === 'refining') return 'normalizing';
     if ((persona.current_stage ?? persona.status) === 'ingesting') return 'building_evidence';
     if (cleanDocumentCount > 0) return 'building_evidence';
@@ -5069,8 +5140,11 @@ export class WorkbenchService {
     const cleanDocumentCount = dedupeRawDocuments(
       this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
     ).length;
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
-    const thresholdBlockedStage = !threshold.training_threshold_met && cleanDocumentCount > 0 && stage === 'training';
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const thresholdBlockedStage = !threshold.training_threshold_met
+      && cleanDocumentCount > 0
+      && stage === 'training'
+      && (trainingReport?.total_rounds ?? 0) === 0;
     const effectiveStage = thresholdBlockedStage ? 'refining' : stage;
     const effectiveStatus = thresholdBlockedStage ? 'refining' : base.status;
     const currentRound = Math.max(
@@ -5288,9 +5362,10 @@ export class WorkbenchService {
     if (status === 'converged' || status === 'exported') return 'converged';
     if (status === 'training') {
       if (context?.state === 'completed') return 'converged';
-      if (context?.state === 'interrupted') return 'error';
+      if (context?.state === 'interrupted') return 'training';
       return 'training';
     }
+    if (report && report.total_rounds > 0 && context?.state === 'interrupted') return 'training';
     if (status === 'refining') return 'refining';
     if (status === 'ingesting') return 'ingesting';
     if (report && report.total_rounds > 0 && (!context || context.state === 'completed')) return 'converged';
@@ -5334,7 +5409,7 @@ export class WorkbenchService {
     });
     const rounds = this.buildCultivationRounds(slug, cleanDocumentCount);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount);
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const collectionCycle = Math.max(0, config.update_policy.collection_cycle ?? 0);
     const showThresholdBlock = cleanDocumentCount > 0 && !threshold.training_threshold_met;
@@ -5420,20 +5495,11 @@ export class WorkbenchService {
         enabled_sources: config.sources.filter((item) => item.enabled).length,
         source_breakdown: buildSourceBreakdown(config.sources),
         document_count: cleanDocumentCount,
-        recent_delta_count: sourceItems
-          .filter((item) => item.last_synced_at && Date.now() - new Date(item.last_synced_at).getTime() < 7 * 24 * 60 * 60 * 1000)
-          .reduce((sum, item) => sum + item.clean_count, 0),
+        recent_delta_count: this.computeRecentDeltaCount(evidenceImports, sourceItems),
         current_operation: config.update_policy.current_operation,
         current_source_label: config.update_policy.current_source_label,
         last_update_check_at: config.update_policy.last_checked_at,
-        latest_update_result:
-          phase === 'error'
-            ? '本轮培养未通过验收，可继续恢复'
-            : phase === 'ready'
-              ? '培养已完成，可开始对话'
-              : showThresholdBlock
-                ? threshold.summary
-                : config.update_policy.latest_result,
+        latest_update_result: this.resolveCultivationStatusMessage(persona, config, threshold, evaluationPassed),
         phase,
         last_heartbeat_at: lastHeartbeatAt,
         completed_windows: windowProgress.completed_windows,

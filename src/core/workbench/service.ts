@@ -277,6 +277,7 @@ interface DocumentValidationOutcome {
 
 const AUTO_TRAINING_THRESHOLD = 500;
 const COLLECTION_CONTINUE_DELAY_MS = 2_500;
+const SOURCE_SYNC_HEARTBEAT_STALE_MS = 90_000;
 const COLLECTION_EXHAUSTED_RETRY_LIMIT = 3;
 
 export interface PromotionHandoffExport {
@@ -1541,7 +1542,7 @@ export class WorkbenchService {
 
   createPersonaFromConfig(input: PersonaConfigInput): PersonaMutationResult {
     const now = new Date().toISOString();
-    const slug = this.resolveCreatePersonaSlug(input.persona_slug, input.name);
+    const slug = this.resolveCreatePersonaSlug(input);
     const normalized = normalizePersonaConfigInput(input, now);
     const config: PersonaConfig = {
       persona_slug: slug,
@@ -1568,14 +1569,30 @@ export class WorkbenchService {
     };
   }
 
-  private resolveCreatePersonaSlug(preferredSlug: string | undefined, name: string): string {
-    const trimmed = preferredSlug?.trim();
-    if (!trimmed) {
-      return this.buildAvailablePersonaSlug(name);
+  private resolveCreatePersonaSlug(input: PersonaConfigInput): string {
+    const preferredSlug = input.persona_slug?.trim();
+    const desiredSlug = preferredSlug || slugifyPersonaName(input.name);
+    const reusableSlug = this.findReusablePersonaDraftSlug(desiredSlug, input.name);
+    if (reusableSlug) return reusableSlug;
+    if (!preferredSlug) {
+      return this.buildAvailablePersonaSlug(input.name);
     }
     const personasDir = join(settings.getDataDir(), 'personas');
-    const exists = existsSync(join(personasDir, trimmed));
-    return exists ? this.buildAvailablePersonaSlug(name) : trimmed;
+    const exists = existsSync(join(personasDir, preferredSlug));
+    return exists ? this.buildAvailablePersonaSlug(input.name) : preferredSlug;
+  }
+
+  private findReusablePersonaDraftSlug(desiredSlug: string, name: string): string | null {
+    const config = this.store.getPersonaConfig(desiredSlug);
+    if (!config) return null;
+    const summary = this.readPersonaSummary(desiredSlug) ?? this.readPersonaConfigSummary(desiredSlug);
+    const normalizedExistingName = config.name.trim().toLowerCase();
+    const normalizedNextName = name.trim().toLowerCase();
+    const isReady = summary ? this.isPersonaReady(summary) : false;
+    if (normalizedExistingName === normalizedNextName && !isReady) {
+      return desiredSlug;
+    }
+    return null;
   }
 
   async updatePersona(slug: string, input: PersonaConfigInput): Promise<PersonaMutationResult> {
@@ -3777,6 +3794,51 @@ export class WorkbenchService {
     ) ?? null;
   }
 
+  private hasFreshSourceSyncHeartbeat(source: PersonaSource): boolean {
+    const progress = this.readSourceSyncProgress(source);
+    const heartbeatAt = progress?.last_heartbeat_at ?? progress?.updated_at;
+    if (!heartbeatAt || progress?.current_window?.status !== 'running') return false;
+    const heartbeatMs = new Date(heartbeatAt).getTime();
+    if (!Number.isFinite(heartbeatMs)) return false;
+    return Date.now() - heartbeatMs <= SOURCE_SYNC_HEARTBEAT_STALE_MS;
+  }
+
+  private getHandleLevelSourceSyncConflict(
+    slug: string,
+    config: PersonaConfig,
+  ): { slug: string; handle: string } | null {
+    const socialHandles = new Set(
+      config.sources
+        .filter((source) => source.enabled && source.type === 'social' && source.handle_or_url?.trim())
+        .map((source) => normalizeHandle(source.handle_or_url ?? ''))
+        .filter(Boolean)
+    );
+    if (socialHandles.size === 0) return null;
+
+    const personasDir = join(settings.getDataDir(), 'personas');
+    if (!existsSync(personasDir)) return null;
+
+    for (const entry of readdirSync(personasDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const otherSlug = entry.name;
+      const otherConfig = this.store.getPersonaConfig(otherSlug);
+      if (!otherConfig) continue;
+      for (const source of otherConfig.sources) {
+        if (!source.enabled || source.type !== 'social' || !source.handle_or_url?.trim()) continue;
+        const handle = normalizeHandle(source.handle_or_url);
+        if (!socialHandles.has(handle)) continue;
+        if (otherSlug === slug && !this.hasFreshSourceSyncHeartbeat(source)) continue;
+        if (otherSlug !== slug && this.hasFreshSourceSyncHeartbeat(source)) {
+          return { slug: otherSlug, handle };
+        }
+        if (otherSlug === slug && this.hasFreshSourceSyncHeartbeat(source)) {
+          return { slug: otherSlug, handle };
+        }
+      }
+    }
+    return null;
+  }
+
   private startSourceSyncRun(
     slug: string,
     mode: 'incremental_sync' | 'deep_fetch'
@@ -3787,6 +3849,15 @@ export class WorkbenchService {
     }
 
     const config = this.getPersonaConfig(slug);
+    if (mode === 'deep_fetch') {
+      const conflict = this.getHandleLevelSourceSyncConflict(slug, config);
+      if (conflict) {
+        const summary = conflict.slug === slug
+          ? `@${conflict.handle} 正在深抓取中，复用现有抓取任务`
+          : `@${conflict.handle} 已由人格 ${conflict.slug} 深抓取中，暂不重复启动`;
+        return { imports: [], run: null, summary };
+      }
+    }
     const run = this.startCliRun(
       'source_sync',
       slug,

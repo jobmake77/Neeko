@@ -28,12 +28,6 @@ export class AgentReachAdapter extends BaseSourceAdapter {
     handle: string,
     options: { limit: number; since?: Date; includeReplies: boolean }
   ): Promise<RawDocument[]> {
-    // Build agent-reach CLI invocation for Twitter data
-    const { execa } = await import('child_process' as never as string).catch(() => ({
-      execa: null,
-    }));
-
-    // Use dynamic import of child_process via exec
     const { execSync } = await import('child_process');
 
     const cleanHandle = handle.replace(/^@/, '');
@@ -46,8 +40,8 @@ export class AgentReachAdapter extends BaseSourceAdapter {
       const cmd = [
         'agent-reach',
         'search',
-        '--platform twitter',
-        `--query "from:${cleanHandle}"`,
+        'search-twitter',
+        `"from:${cleanHandle}"`,
         `--limit ${options.limit}`,
         sinceFlag,
         repliesFlag,

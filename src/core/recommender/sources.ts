@@ -57,7 +57,7 @@ Target skill: ${targetSkill}`,
         .toISOString()
         .split('T')[0];
 
-      const cmd = `agent-reach search --platform twitter --query "from:${cleanHandle}" --since ${since} --limit 1 --format json`;
+      const cmd = `agent-reach search-twitter "from:${cleanHandle}" --since ${since} --limit 1 --format json`;
       const output = execSync(cmd, { timeout: 30_000 }).toString();
       const items = JSON.parse(output);
       return Array.isArray(items) && items.length > 0;

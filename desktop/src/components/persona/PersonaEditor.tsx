@@ -22,6 +22,14 @@ const DEFAULT_POLICY: PersonaConfig['update_policy'] = {
   strategy: 'incremental',
 };
 
+function slugifyPersonaName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'persona';
+}
+
 function makeSource(type: PersonaSource['type'] = 'social'): PersonaSource {
   return {
     id: crypto.randomUUID(),
@@ -234,6 +242,7 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
       if (mode === 'create') {
         await api.createPersona({
           name: name.trim(),
+          persona_slug: slugifyPersonaName(name),
           sources,
           update_policy: policy,
         });

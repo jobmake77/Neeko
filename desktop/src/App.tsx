@@ -1,14 +1,12 @@
 import { useEffect } from 'react';
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
-import { bootstrapWorkbench } from './lib/tauri';
 import * as api from './lib/api';
 import { AppShell } from './components/layout/AppShell';
 
 async function ensureWorkbenchReady() {
   const health = await api.checkHealth();
   if (!health.ok || !health.build_id || !health.server_version) {
-    await bootstrapWorkbench().catch(console.error);
-    return;
+    await api.ensureWorkbenchReachable(true);
   }
 }
 

@@ -17,8 +17,10 @@ import type {
   RuntimeSettingsPayload,
   ChatModelOverride,
 } from './types';
+import { bootstrapWorkbench } from './tauri';
 
 let _baseUrl = localStorage.getItem('neeko.apiBaseUrl') || 'http://127.0.0.1:4310';
+let bootstrapInFlight: Promise<boolean> | null = null;
 
 export function getBaseUrl(): string {
   return _baseUrl;
@@ -29,7 +31,15 @@ export function setBaseUrl(url: string) {
   localStorage.setItem('neeko.apiBaseUrl', url);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isLocalWorkbenchBaseUrl(): boolean {
+  return /^https?:\/\/127\.0\.0\.1:4310$/i.test(_baseUrl) || /^https?:\/\/localhost:4310$/i.test(_baseUrl);
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${_baseUrl}${path}`, {
     ...init,
     headers: {
@@ -46,10 +56,51 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+async function waitForWorkbenchHealth(maxAttempts = 8): Promise<boolean> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const res = await fetch(`${_baseUrl}/health`);
+      if (res.ok) {
+        const payload = await res.json() as HealthStatus;
+        if (payload.ok) return true;
+      }
+    } catch {
+      // Keep polling until the local service is ready.
+    }
+    await sleep(300 * (attempt + 1));
+  }
+  return false;
+}
+
+export async function ensureWorkbenchReachable(forceBootstrap = false): Promise<boolean> {
+  if (!isLocalWorkbenchBaseUrl()) return false;
+  if (!forceBootstrap && await waitForWorkbenchHealth(1)) return true;
+  if (!bootstrapInFlight) {
+    bootstrapInFlight = (async () => {
+      await bootstrapWorkbench().catch(() => undefined);
+      return waitForWorkbenchHealth();
+    })().finally(() => {
+      bootstrapInFlight = null;
+    });
+  }
+  return bootstrapInFlight;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  try {
+    return await fetchJson<T>(path, init);
+  } catch (error) {
+    if (!isLocalWorkbenchBaseUrl()) throw error;
+    const recovered = await ensureWorkbenchReachable(true);
+    if (!recovered) throw error;
+    return fetchJson<T>(path, init);
+  }
+}
+
 // ── Health ──────────────────────────────────────────────────
 export async function checkHealth(): Promise<HealthStatus> {
   try {
-    return await request<HealthStatus>('/health');
+    return await fetchJson<HealthStatus>('/health');
   } catch {
     return { ok: false };
   }

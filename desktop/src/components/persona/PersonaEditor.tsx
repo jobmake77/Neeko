@@ -30,19 +30,10 @@ function makeSource(type: PersonaSource['type'] = 'social'): PersonaSource {
     status: 'idle',
     platform: type === 'social' ? 'twitter' : type === 'chat_file' ? 'wechat' : type === 'article' ? 'web' : 'local',
     sync_strategy: type === 'social' ? 'deep_window' : 'incremental',
-    horizon_mode: type === 'social' ? 'recent_3y' : 'deep_archive',
-    horizon_years: type === 'social' ? 3 : undefined,
+    horizon_mode: 'deep_archive',
+    horizon_years: type === 'social' ? 8 : undefined,
     batch_limit: type === 'social' ? 100 : undefined,
   };
-}
-
-function buildSlug(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || `persona-${Date.now()}`;
 }
 
 function SourceEditor({
@@ -241,7 +232,6 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
       if (mode === 'create') {
         await api.createPersona({
           name: name.trim(),
-          persona_slug: buildSlug(name),
           sources,
           update_policy: policy,
         });

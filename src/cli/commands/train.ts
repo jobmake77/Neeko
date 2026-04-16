@@ -165,10 +165,10 @@ export function resolveTrackStageTimeoutMs(
   configuredTimeoutMs = TRACK_STAGE_TIMEOUT_MS
 ): number {
   if (corpusDocCount >= 500) {
-    return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 12 * 60_000 : 10 * 60_000);
+    return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 15 * 60_000 : 12 * 60_000);
   }
   if (corpusDocCount >= 200) {
-    return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 8 * 60_000 : 6 * 60_000);
+    return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 10 * 60_000 : 8 * 60_000);
   }
   if (corpusDocCount >= 80) {
     return Math.max(configuredTimeoutMs, track === 'persona_extract' ? 5 * 60_000 : 4 * 60_000);
@@ -185,6 +185,18 @@ export function resolveTrackBudgetMs(
   const stageTimeoutMs = resolveTrackStageTimeoutMs(corpusDocCount, track);
   const minimumBudgetMs = stageTimeoutMs * (Math.max(0, retries) + 1) + 60_000;
   return Math.max(configuredBudgetMs, minimumBudgetMs);
+}
+
+export function resolveInProcessRetryLimit(
+  tag: string,
+  configuredRetries: number,
+  corpusDocCount: number,
+  track: TrackType
+): number {
+  if (tag === 'generation_timeout' && corpusDocCount >= 80) {
+    return 0;
+  }
+  return retryLimitForTag(tag, configuredRetries);
 }
 
 export async function cmdTrain(
@@ -328,9 +340,10 @@ export async function cmdTrain(
   const assetPaths = getTrainingAssetPaths(dir);
   const replay = new ReplayBuffer(assetPaths.replayBufferPath);
   const checkpointStore = new CheckpointStore(assetPaths.checkpointIndexPath);
+  const resumeTrack = resolveResumeTrack(track, options.fromCheckpoint, checkpointStore);
   const errorLedger = readJsonFile<ErrorLedgerEntry[]>(assetPaths.errorLedgerPath, []);
 
-  spin.start(`继续培养 ${slug}（${rounds} 轮，profile=${profile}，track=${track}）...`);
+  spin.start(`继续培养 ${slug}（${rounds} 轮，profile=${profile}，track=${resumeTrack}）...`);
   if (inputRouting !== 'legacy') {
     spin.message(`输入路由策略已设置为 ${inputRouting}，当前训练链路不会重新摄取输入，保留现有 persona 数据。`);
   }
@@ -361,7 +374,7 @@ export async function cmdTrain(
     completed_rounds: soul.training_rounds_completed,
     updated_at: new Date().toISOString(),
     report_path: reportPath,
-    track,
+    track: resumeTrack,
     mode,
     prep_context: prepContext,
   });
@@ -398,7 +411,7 @@ export async function cmdTrain(
   try {
     const manifest = await runTrainingOrchestrator({
       slug,
-      track,
+      track: resumeTrack,
       mode,
       onTrackStart: ({ track: runningTrack }) => {
         console.log(`[TRACK] ${runningTrack} start`);
@@ -447,6 +460,7 @@ async function runTrackWithRecovery(
   retries: number,
   fromCheckpoint?: string
 ): Promise<{ rounds: number; errors: number; checkpoints: number; acceptance: { pass: boolean; [key: string]: number | boolean | undefined } }> {
+  const baselineRounds = readExistingRounds(runtime.reportPath);
   const runOnce = async () => {
     if (fromCheckpoint) {
       console.log(`[CHECKPOINT] requested resume from ${fromCheckpoint}`);
@@ -457,7 +471,7 @@ async function runTrackWithRecovery(
       console.log('[SKILL_STAGE] skill_expand');
       console.log('[SKILL_STAGE] skill_merge');
     }
-    return runTrackLoop(runtime, track);
+    return runTrackLoop(runtime, track, baselineRounds);
   };
 
   let lastError: unknown;
@@ -480,7 +494,7 @@ async function runTrackWithRecovery(
     } catch (error) {
       lastError = error;
       const resolution = classifyFailure(error);
-      const retryLimit = retryLimitForTag(resolution.tag, retries);
+      const retryLimit = resolveInProcessRetryLimit(resolution.tag, retries, runtime.corpusDocCount, track);
       const recovered = resolution.retryable && attempt <= retryLimit && Date.now() < deadline;
       runtime.errorLedger.push(
         createFailureLedgerEntry({
@@ -598,9 +612,10 @@ function restoreEnv(key: string, value: string | undefined): void {
 
 async function runTrackLoop(
   runtime: TrainRuntimeContext,
-  track: TrackType
+  track: TrackType,
+  baselineRounds: TrainingRoundSnapshot[] = readExistingRounds(runtime.reportPath)
 ): Promise<{ rounds: number; errors: number; checkpoints: number; acceptance: { pass: boolean; [key: string]: number | boolean | undefined } }> {
-  const existingRounds = readExistingRounds(runtime.reportPath);
+  const existingRounds = baselineRounds;
   const roundOffset = existingRounds.length;
   const incrementalRounds: TrainingRoundSnapshot[] = [];
 
@@ -636,7 +651,7 @@ async function runTrackLoop(
       );
       const snapshot = toRoundSnapshot(progress, roundOffset);
       upsertRoundSnapshot(incrementalRounds, snapshot);
-      persistPartialReport(runtime, existingRounds, incrementalRounds, perTrackProfile);
+      persistPartialReport(runtime, existingRounds, incrementalRounds, perTrackProfile, track);
       writeRuntimeArtifacts(runtime, track, progress, snapshot.round);
     },
   });
@@ -672,7 +687,11 @@ async function runTrackLoop(
   runtime.soul.updated_at = new Date().toISOString();
 
   try {
-    runtime.persona.memory_node_count = await runtime.store.count(runtime.persona.memory_collection);
+    runtime.persona.memory_node_count = await withTimeout(
+      runtime.store.count(runtime.persona.memory_collection),
+      5_000,
+      `memory count ${runtime.persona.memory_collection}`
+    );
   } catch {
     // Ignore count failure and keep previous value.
   }
@@ -842,7 +861,8 @@ function persistPartialReport(
   runtime: TrainRuntimeContext,
   existingRounds: TrainingRoundSnapshot[],
   incrementalRounds: TrainingRoundSnapshot[],
-  profile: TrainingProfile
+  profile: TrainingProfile,
+  track: TrackType,
 ): void {
   const partial = buildTrainingRunReportFromRounds(
     profile,
@@ -866,6 +886,7 @@ function persistPartialReport(
     completed_rounds: partial.total_rounds,
     updated_at: new Date().toISOString(),
     report_path: runtime.reportPath,
+    track,
     prep_context: runtime.prepContext,
   });
 }
@@ -943,6 +964,16 @@ function normalizeOptionalString(value?: string): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveResumeTrack(
+  requestedTrack: StartTrackType,
+  fromCheckpoint: string | undefined,
+  checkpointStore: CheckpointStore,
+): StartTrackType {
+  if (!fromCheckpoint || requestedTrack !== 'full_serial') return requestedTrack;
+  const latest = checkpointStore.latest();
+  return latest?.track ?? requestedTrack;
 }
 
 function retryLimitForTag(tag: string, configuredRetries: number): number {

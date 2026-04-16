@@ -356,7 +356,7 @@ function normalizePersonaSource(input: PersonaSourceInput): PersonaSource {
     local_path: input.local_path?.trim() || undefined,
     manifest_path: input.manifest_path?.trim() || undefined,
     sync_strategy: input.sync_strategy ?? 'deep_window',
-    horizon_mode: input.horizon_mode ?? (input.type === 'social' ? 'recent_3y' : 'deep_archive'),
+    horizon_mode: input.horizon_mode ?? 'deep_archive',
     horizon_years: Number.isFinite(input.horizon_years) ? Math.max(1, Math.min(10, Number(input.horizon_years))) : undefined,
     batch_limit: Number.isFinite(input.batch_limit) ? Math.max(10, Math.min(500, Number(input.batch_limit))) : undefined,
     enabled: input.enabled !== false,
@@ -387,8 +387,8 @@ function buildLegacySourceFromConfig(config: {
     local_path: config.source_path?.trim() || undefined,
     manifest_path: config.target_manifest_path?.trim() || undefined,
     sync_strategy: 'deep_window',
-    horizon_mode: config.source_type === 'social' ? 'recent_3y' : 'deep_archive',
-    horizon_years: config.source_type === 'social' ? 3 : undefined,
+    horizon_mode: 'deep_archive',
+    horizon_years: config.source_type === 'social' ? 8 : undefined,
     batch_limit: config.source_type === 'social' ? 100 : undefined,
     enabled: true,
     status: 'idle',
@@ -473,9 +473,12 @@ function mapTweetRowToRawDocument(handle: string, row: Record<string, any>): Raw
   if (!text || !id) return null;
   const cleanHandle = normalizeHandle(handle);
   const createdAt = typeof row.created_at === 'string' ? row.created_at : typeof row.date === 'string' ? row.date : undefined;
-  const url = typeof row.url === 'string' && row.url.trim()
+  const rawUrl = typeof row.url === 'string' && row.url.trim()
     ? row.url.trim()
-    : `https://x.com/${cleanHandle}/status/${id}`;
+    : '';
+  const url = /\/i\/status\//i.test(rawUrl)
+    ? `https://x.com/${cleanHandle}/status/${id}`
+    : rawUrl || `https://x.com/${cleanHandle}/status/${id}`;
   const rawAuthor = String(row.author ?? row.username ?? '').replace(/^@/, '').trim();
   const rawAuthorHandle = String(row.author_handle ?? row.handle ?? rawAuthor).replace(/^@/, '').trim();
   return {
@@ -1507,8 +1510,8 @@ export class WorkbenchService {
         manifest_path: undefined,
         platform: sourceType === 'social' ? 'x' : undefined,
         sync_strategy: 'deep_window',
-        horizon_mode: sourceType === 'social' ? 'recent_3y' : 'deep_archive',
-        horizon_years: sourceType === 'social' ? 3 : undefined,
+        horizon_mode: 'deep_archive',
+        horizon_years: sourceType === 'social' ? 8 : undefined,
         batch_limit: sourceType === 'social' ? 100 : undefined,
         enabled: true,
         status: 'idle',
@@ -2326,16 +2329,83 @@ export class WorkbenchService {
   async runCreatePersonaForeground(slug: string): Promise<{ run: WorkbenchRun | null; summary: string }> {
     const config = this.getPersonaConfig(slug);
     this.initializePersonaAssetsFromConfig(config);
-    const sourceSync = await this.runSourceSyncForeground(slug, 'deep_fetch');
-    const trainRun = sourceSync.run;
-    if (!trainRun) {
-      return { run: null, summary: sourceSync.summary };
+    let sourceSync = await this.runSourceSyncForeground(slug, 'deep_fetch');
+    while (!sourceSync.run) {
+      const continuation = this.ensureForegroundCollectionContinuation(slug, sourceSync.summary);
+      if (!continuation.shouldContinue) {
+        return { run: null, summary: continuation.summary };
+      }
+      await new Promise((resolve) => setTimeout(resolve, COLLECTION_CONTINUE_DELAY_MS));
+      sourceSync = await this.runSourceSyncForeground(slug, 'deep_fetch');
     }
+    const trainRun = sourceSync.run;
     const finalRun = await this.waitForRunCompletion(trainRun.id);
     if (!finalRun || finalRun.status !== 'completed') {
       throw new Error(finalRun?.summary ?? 'Initial training did not finish.');
     }
     return { run: finalRun, summary: finalRun.summary ?? 'Persona created from configured sources.' };
+  }
+
+  private ensureForegroundCollectionContinuation(slug: string, fallbackSummary: string): {
+    shouldContinue: boolean;
+    summary: string;
+  } {
+    const state = this.summarizeCollectionState(slug);
+    if (state.evaluationPassed === true) {
+      return { shouldContinue: false, summary: fallbackSummary };
+    }
+
+    const summary = state.cleanDocumentCount < state.threshold.training_threshold
+      ? state.threshold.summary
+      : state.evaluationPassed === false
+        ? '当前测评未通过，系统正在继续补充素材'
+        : fallbackSummary;
+    const decision = buildCollectionContinuationDecision({
+      cleanDocumentCount: state.cleanDocumentCount,
+      trainingThreshold: state.threshold.training_threshold,
+      evaluationPassed: state.evaluationPassed,
+      historyExhausted: state.historyExhausted,
+      providerExhausted: state.providerExhausted,
+      collectionCycle: state.collectionCycle,
+      hasActiveRun: false,
+    });
+    if (!decision.shouldContinue) {
+      if (decision.blockedReason === 'exhausted_retry_limit') {
+        const stopSummary = '历史窗口与 provider 多轮重试后仍未取得新增素材，当前轮次已暂停继续自动推进';
+        this.persistCollectionState(slug, {
+          current_operation: 'idle',
+          current_source_label: undefined,
+          collection_stop_reason: 'unable_to_progress',
+          history_exhausted: state.historyExhausted,
+          provider_exhausted: state.providerExhausted,
+          evaluation_passed: state.evaluationPassed,
+        }, stopSummary);
+        this.appendPersonaRunLog(slug, 'foreground create stopped after exhausted retries', stopSummary);
+        return { shouldContinue: false, summary: stopSummary };
+      }
+      return { shouldContinue: false, summary };
+    }
+
+    const nextCycle = Math.max(1, state.collectionCycle + 1);
+    this.persistCollectionState(slug, {
+      collection_cycle: nextCycle,
+      collection_stop_reason: (state.historyExhausted || state.providerExhausted)
+        ? 'retrying_after_exhaustion'
+        : state.cleanDocumentCount < state.threshold.training_threshold
+          ? 'below_training_threshold'
+          : 'evaluation_retry_pending',
+      history_exhausted: state.historyExhausted,
+      provider_exhausted: state.providerExhausted,
+      evaluation_passed: state.evaluationPassed,
+      current_operation: 'idle',
+      current_source_label: undefined,
+    }, summary);
+    this.appendPersonaRunLog(
+      slug,
+      `foreground create continuing collection cycle=${nextCycle} clean_docs=${state.cleanDocumentCount} threshold=${state.threshold.training_threshold}`,
+      summary,
+    );
+    return { shouldContinue: true, summary };
   }
 
   async runSourceSyncForeground(
@@ -2815,9 +2885,11 @@ export class WorkbenchService {
       if (source.type === 'social') {
         const author = String(doc.author ?? '').replace(/^@/, '').toLowerCase();
         const authorHandle = String(doc.author_handle ?? '').replace(/^@/, '').toLowerCase();
-        const urlHandle = /x\.com\/([^/?#]+)/i.exec(String(doc.source_url ?? ''))?.[1]?.replace(/^@/, '').toLowerCase();
-        const matches = [author, authorHandle, urlHandle].filter((value) => value === targetHandle).length;
-        if (matches >= 2) {
+        const rawUrlHandle = /x\.com\/([^/?#]+)/i.exec(String(doc.source_url ?? ''))?.[1]?.replace(/^@/, '').toLowerCase();
+        const urlHandle = rawUrlHandle === 'i' ? '' : rawUrlHandle;
+        const signals = [author, authorHandle, urlHandle].filter(Boolean);
+        const matches = signals.filter((value) => value === targetHandle).length;
+        if (matches >= Math.min(2, Math.max(1, signals.length))) {
           return createValidationResult({
             status: 'accepted',
             reason_code: 'social_author_match',
@@ -2979,6 +3051,9 @@ export class WorkbenchService {
     const target = inferTwitterTargetCount(source);
     const scriptPath = join(this.repoRoot, 'scripts', 'fetch-twitter-corpus.mjs');
     try {
+      const runQueryBudget = forceRemote
+        ? (horizonYears >= 8 ? '18' : '12')
+        : '18';
       execFileSync(process.execPath, [
         scriptPath,
         normalizeHandle(handle),
@@ -2994,7 +3069,7 @@ export class WorkbenchService {
         timeout: 12 * 60 * 1000,
         env: {
           ...process.env,
-          NEEKO_TWITTER_MAX_QUERIES_PER_RUN: forceRemote ? '6' : '18',
+          NEEKO_TWITTER_MAX_QUERIES_PER_RUN: runQueryBudget,
           NEEKO_TWITTER_QUERY_TIMEOUT_MS: '120000',
           NEEKO_TWITTER_FETCH_FALLBACK_PROVIDER: 'snscrape',
           NEEKO_TWITTER_PROVIDER_UNHEALTHY_FAILURES: '2',
@@ -3006,8 +3081,12 @@ export class WorkbenchService {
         .filter((item): item is RawDocument => Boolean(item));
       const dedupedDocs = dedupeRawDocuments(docs);
       if (dedupedDocs.length > 0) {
+        const supplementalDocs = forceRemote && dedupedDocs.length < Math.min(target, AUTO_TRAINING_THRESHOLD)
+          ? await this.fetchTwitterSupplementalDocuments(source, handle)
+          : [];
         return mergeDocumentCollections(
           dedupedDocs,
+          supplementalDocs,
           this.markCacheReusedDocuments(cachedDocs, handle),
         );
       }
@@ -3030,6 +3109,15 @@ export class WorkbenchService {
       merged.push(...this.markCacheReusedDocuments(cachedDocs, handle));
     }
 
+    merged.push(...await this.fetchTwitterSupplementalDocuments(source, handle));
+    return dedupeRawDocuments(merged);
+  }
+
+  private async fetchTwitterSupplementalDocuments(
+    source: PersonaSource,
+    handle: string,
+  ): Promise<RawDocument[]> {
+    const merged: RawDocument[] = [];
     const fallbackLimit = Math.max(inferTwitterBatchLimit(source), AUTO_TRAINING_THRESHOLD);
     const twitterAdapter = new TwitterAdapter();
     const openCliFallback = await twitterAdapter.fetch(handle, {
@@ -4708,6 +4796,9 @@ export class WorkbenchService {
 
       child.on('exit', (code) => {
         if (code === 0) {
+          if (type === 'train' && personaSlug) {
+            this.reconcileTrainingProgressState(personaSlug, 'completed');
+          }
           this.store.updateRun(runId, {
             status: 'completed',
             recovery_state: 'idle',
@@ -4731,6 +4822,9 @@ export class WorkbenchService {
         });
 
         if (recoveryPlan) {
+          if (type === 'train' && personaSlug) {
+            this.reconcileTrainingProgressState(personaSlug, 'recovering');
+          }
           this.store.updateRun(runId, {
             status: 'running',
             recovery_state: 'recovering',
@@ -4741,6 +4835,9 @@ export class WorkbenchService {
           return;
         }
 
+        if (type === 'train' && personaSlug) {
+          this.reconcileTrainingProgressState(personaSlug, 'failed');
+        }
         this.store.updateRun(runId, {
           status: 'failed',
           recovery_state: maxRecoveryAttempts > 0 ? 'exhausted' : 'idle',
@@ -4764,6 +4861,9 @@ export class WorkbenchService {
           args,
         });
         if (recoveryPlan) {
+          if (type === 'train' && personaSlug) {
+            this.reconcileTrainingProgressState(personaSlug, 'recovering');
+          }
           this.store.updateRun(runId, {
             status: 'running',
             recovery_state: 'recovering',
@@ -4771,6 +4871,9 @@ export class WorkbenchService {
           });
           setTimeout(() => launchAttempt(attemptNumber + 1, recoveryPlan.env, recoveryPlan.extraArgs), recoveryPlan.delayMs);
           return;
+        }
+        if (type === 'train' && personaSlug) {
+          this.reconcileTrainingProgressState(personaSlug, 'failed');
         }
         this.store.updateRun(runId, {
           status: 'failed',
@@ -4822,13 +4925,24 @@ export class WorkbenchService {
     if (input.attemptNumber > input.maxRecoveryAttempts) return null;
 
     const logTail = this.readLogTail(input.logPath, 120) ?? '';
-    const resolution = classifyFailure(logTail);
-    if (!resolution.retryable) return null;
-
     const personaDir = input.personaSlug ? settings.getPersonaDir(input.personaSlug) : undefined;
+    const latestLedgerEntry = personaDir ? this.readLatestErrorLedgerEntry(personaDir) : null;
+    const failureSignal = logTail.trim() || latestLedgerEntry?.message || '';
+    let resolution = classifyFailure(failureSignal);
+
     const checkpointPath = personaDir ? join(personaDir, 'checkpoint_index.json') : undefined;
     const checkpointStore = checkpointPath ? new CheckpointStore(checkpointPath) : null;
     const latestCheckpoint = checkpointStore?.latest() ?? null;
+    if (!resolution.retryable && latestCheckpoint) {
+      resolution = {
+        tag: resolution.tag === 'unknown' ? 'generation_timeout' : resolution.tag,
+        recoveryAction: 'resume_from_checkpoint',
+        retryable: true,
+        stageCanSkip: resolution.stageCanSkip,
+      };
+    }
+    if (!resolution.retryable) return null;
+
     const hasCheckpointArg = input.args.includes('--from-checkpoint');
     const extraArgs: string[] = [];
     if (latestCheckpoint?.track) {
@@ -4856,9 +4970,85 @@ export class WorkbenchService {
       extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
       delayMs: 1200 * input.attemptNumber,
       userSummary: latestCheckpoint
-        ? 'System is retrying from saved progress.'
+        ? `System is retrying from saved progress (${latestCheckpoint.track} round ${latestCheckpoint.round}).`
         : 'System is retrying automatically.',
     };
+  }
+
+  private readLatestErrorLedgerEntry(personaDir: string): { track?: string; message?: string } | null {
+    const path = join(personaDir, 'error_ledger.json');
+    if (!existsSync(path)) return null;
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf-8')) as Array<Record<string, unknown>>;
+      if (!Array.isArray(raw) || raw.length === 0) return null;
+      const latest = [...raw].sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))[0];
+      return {
+        track: typeof latest.track === 'string' ? latest.track : undefined,
+        message: typeof latest.message === 'string' ? latest.message : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private reconcileTrainingProgressState(
+    slug: string,
+    runStatus: 'completed' | 'failed' | 'recovering',
+  ): void {
+    const personaDir = settings.getPersonaDir(slug);
+    const contextPath = join(personaDir, 'training-context.json');
+    if (!existsSync(contextPath)) return;
+
+    const current = this.readTrainingContext(slug);
+    const report = this.readTrainingReport(slug);
+    const latestCheckpoint = this.readLatestTrainingCheckpoint(slug);
+    const latestLedgerEntry = this.readLatestErrorLedgerEntry(personaDir);
+    const nextCompletedRounds = Math.max(
+      current?.completed_rounds ?? 0,
+      report?.total_rounds ?? 0,
+      latestCheckpoint?.round ?? 0,
+    );
+    const requestedRounds = Math.max(current?.requested_rounds ?? 0, nextCompletedRounds);
+    const nextTrack = latestCheckpoint?.track ?? current?.track;
+    const raw = readJsonFile<Record<string, unknown>>(contextPath, {});
+    const nextState = runStatus === 'completed'
+      ? 'completed'
+      : runStatus === 'recovering'
+        ? 'running'
+        : 'interrupted';
+    writeFileSync(contextPath, JSON.stringify({
+      ...raw,
+      state: nextState,
+      slug,
+      requested_rounds: requestedRounds,
+      completed_rounds: nextCompletedRounds,
+      updated_at: new Date().toISOString(),
+      track: nextTrack,
+      last_error: runStatus === 'failed' ? (latestLedgerEntry?.message ?? raw.last_error ?? null) : null,
+      recovery: runStatus === 'recovering'
+        ? {
+          from_checkpoint: latestCheckpoint?.path,
+          track: nextTrack,
+          round: latestCheckpoint?.round,
+        }
+        : undefined,
+    }, null, 2), 'utf-8');
+  }
+
+  private readLatestTrainingCheckpoint(slug: string): { track?: string; round?: number; path?: string } | null {
+    const path = join(settings.getPersonaDir(slug), 'checkpoint_index.json');
+    if (!existsSync(path)) return null;
+    try {
+      const latest = new CheckpointStore(path).latest();
+      if (!latest) return null;
+      return {
+        track: latest.track,
+        round: latest.round,
+        path: latest.path,
+      };
+    } catch {
+      return null;
+    }
   }
 
   buildPersonaSummary(slug: string): PersonaSummary | null {
@@ -4911,18 +5101,50 @@ export class WorkbenchService {
     requested_rounds: number;
     completed_rounds: number;
     track?: string;
+    last_error?: string | null;
     acceptance?: { pass?: boolean; [key: string]: number | boolean | undefined };
   } | null {
     const path = join(settings.getPersonaDir(slug), 'training-context.json');
     if (!existsSync(path)) return null;
     try {
       const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      const latestCheckpoint = this.readLatestTrainingCheckpoint(slug);
+      const latestRun = this.store.listRuns(slug)
+        .filter((item) => item.type === 'train')
+        .sort((a, b) => b.started_at.localeCompare(a.started_at))[0];
+      const latestLedgerEntry = this.readLatestErrorLedgerEntry(settings.getPersonaDir(slug));
+      const report = this.readTrainingReport(slug);
+      const nextCompletedRounds = Math.max(
+        Number(raw.completed_rounds ?? 0),
+        report?.total_rounds ?? 0,
+        latestCheckpoint?.round ?? 0,
+      );
+      const nextTrack = latestCheckpoint?.track ?? (typeof raw.track === 'string' ? raw.track : undefined);
+      const staleRunning = raw.state === 'running' && latestRun && latestRun.status === 'failed';
+      const normalized = {
+        ...raw,
+        state: staleRunning ? 'interrupted' : String(raw.state ?? ''),
+        requested_rounds: Math.max(Number(raw.requested_rounds ?? 0), nextCompletedRounds),
+        completed_rounds: nextCompletedRounds,
+        track: nextTrack,
+        last_error: staleRunning ? (latestLedgerEntry?.message ?? null) : (typeof raw.last_error === 'string' ? raw.last_error : null),
+      };
+      if (
+        normalized.state !== raw.state ||
+        normalized.requested_rounds !== raw.requested_rounds ||
+        normalized.completed_rounds !== raw.completed_rounds ||
+        normalized.track !== raw.track ||
+        normalized.last_error !== raw.last_error
+      ) {
+        writeFileSync(path, JSON.stringify(normalized, null, 2), 'utf-8');
+      }
       const acceptanceRaw = raw.acceptance as Record<string, unknown> | undefined;
       return {
-        state: String(raw.state ?? ''),
-        requested_rounds: Number(raw.requested_rounds ?? 0),
-        completed_rounds: Number(raw.completed_rounds ?? 0),
-        track: typeof raw.track === 'string' ? raw.track : undefined,
+        state: String(normalized.state ?? ''),
+        requested_rounds: Number(normalized.requested_rounds ?? 0),
+        completed_rounds: Number(normalized.completed_rounds ?? 0),
+        track: typeof normalized.track === 'string' ? normalized.track : undefined,
+        last_error: typeof normalized.last_error === 'string' || normalized.last_error === null ? normalized.last_error as string | null : null,
         acceptance: acceptanceRaw
           ? {
             ...acceptanceRaw,

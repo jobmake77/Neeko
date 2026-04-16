@@ -36,6 +36,13 @@ const queryTimeoutMs = Math.max(15_000, parseInt(process.env.NEEKO_TWITTER_QUERY
 const env = {
   ...process.env,
   PATH: `/Users/a77/.npm-global/bin:/usr/local/bin:${process.env.PATH || ''}`,
+  OPENCLI_BROWSER_COMMAND_TIMEOUT: String(
+    Math.max(
+      parseInt(process.env.OPENCLI_BROWSER_COMMAND_TIMEOUT || '0', 10) || 0,
+      Math.ceil(queryTimeoutMs / 1000),
+      180,
+    )
+  ),
 };
 const maxRecentWindows = 12;
 let snscrapeBlockedInRun = false;
@@ -151,7 +158,8 @@ function authorFromUrl(value) {
   const text = String(value || '').trim();
   if (!text) return '';
   const match = text.match(/x\.com\/([^/?#]+)\/status\//i) || text.match(/twitter\.com\/([^/?#]+)\/status\//i);
-  return normalizeAuthor(match?.[1]);
+  const normalized = normalizeAuthor(match?.[1]);
+  return normalized === 'i' ? '' : normalized;
 }
 
 function validateFetchedRows(rows) {
@@ -211,7 +219,7 @@ function sanitizeSnscrapeError(error) {
 }
 
 function isSnscrapeBlockedError(message) {
-  return /blocked \(404\)|ScraperException: .*failed, giving up|Error retrieving .* blocked \(404\)/i.test(String(message || ''));
+  return /blocked \(404\)|ScraperException: .*failed, giving up|Error retrieving .* blocked \(404\)|snscrape\.base\.ScraperException|SearchTimeline\?variables=/i.test(String(message || ''));
 }
 
 function shouldRetryOpenCliError(message) {
@@ -314,7 +322,7 @@ function initializeRuntimeState(savedState, seenCount, queryCount) {
     out,
     phase: 'deep_fetching',
     source_label: `@${handle}`,
-    estimated_total_windows: Number(savedState?.estimated_total_windows) || estimatedTotalWindows,
+    estimated_total_windows: Math.max(Number(savedState?.estimated_total_windows) || 0, estimatedTotalWindows),
     completed_windows: Number(savedState?.completed_windows) || 0,
     providerStats: savedState?.providerStats ?? savedState?.provider_stats ?? {},
     consecutivePrimaryProviderFailures: Number(savedState?.consecutivePrimaryProviderFailures ?? savedState?.consecutive_primary_provider_failures) || 0,
@@ -448,7 +456,8 @@ async function runOpenCliSearchWindow(query, filter, limit, since, until) {
         try {
           const parsed = JSON.parse(execution.stdout || '[]');
           const rawRows = Array.isArray(parsed) ? parsed : [];
-          const validation = validateFetchedRows(rawRows);
+          const candidateRows = rawRows.filter((row) => withinWindow(row?.created_at, since, until));
+          const validation = validateFetchedRows(candidateRows);
           const rows = validation.windowFailed ? [] : validation.rows;
           const summary = createWindowSummary({
             since,

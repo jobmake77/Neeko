@@ -275,8 +275,13 @@ function openCliEnv(): NodeJS.ProcessEnv {
     join(homedir(), '.npm-global', 'bin'),
     currentPath,
   ].filter(Boolean);
+  const browserCommandTimeoutSeconds = Math.max(
+    parseInt(process.env.OPENCLI_BROWSER_COMMAND_TIMEOUT || '0', 10) || 0,
+    180,
+  );
   return {
     ...process.env,
     PATH: pathParts.join(':'),
+    OPENCLI_BROWSER_COMMAND_TIMEOUT: String(browserCommandTimeoutSeconds),
   };
 }

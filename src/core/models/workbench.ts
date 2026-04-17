@@ -281,6 +281,11 @@ export const CultivationSummarySchema = z.object({
     training_block_reason: z.string().optional(),
     clean_document_count: z.number().int().min(0).optional(),
     evaluation_passed: z.boolean().optional(),
+    last_training_prep_count: z.number().int().min(0).optional(),
+    retrain_delta_count: z.number().int().min(0).optional(),
+    retrain_required_delta: z.number().int().min(0).optional(),
+    retrain_progress_ratio: z.number().min(0).optional(),
+    retrain_ready: z.boolean().optional(),
     collection_cycle: z.number().int().min(0).optional(),
     collection_stop_reason: z.string().optional(),
     history_exhausted: z.boolean().optional(),
@@ -315,6 +320,9 @@ export const PersonaConfigSchema = z.object({
     collection_stop_reason: z.string().optional(),
     history_exhausted: z.boolean().optional(),
     provider_exhausted: z.boolean().optional(),
+    last_training_prep_count: z.number().int().min(0).optional(),
+    last_training_baseline_clean_count: z.number().int().min(0).optional(),
+    last_training_prep_id: z.string().optional(),
   }).default({
     auto_check_remote: true,
     check_interval_minutes: 60,
@@ -404,6 +412,11 @@ export interface CultivationDetail {
   training_threshold_met?: boolean;
   training_block_reason?: string;
   evaluation_passed?: boolean;
+  last_training_prep_count?: number;
+  retrain_delta_count?: number;
+  retrain_required_delta?: number;
+  retrain_progress_ratio?: number;
+  retrain_ready?: boolean;
   collection_cycle?: number;
   collection_stop_reason?: string;
   history_exhausted?: boolean;

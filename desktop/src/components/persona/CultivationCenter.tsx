@@ -392,9 +392,15 @@ function TrainingCard({
   const threshold = detail?.training_threshold ?? detail?.source_summary?.training_threshold;
   const thresholdMet = detail?.training_threshold_met ?? detail?.source_summary?.training_threshold_met;
   const evaluationPassed = detail?.evaluation_passed ?? detail?.source_summary?.evaluation_passed;
+  const lastTrainingPrepCount = detail?.last_training_prep_count ?? detail?.source_summary?.last_training_prep_count;
+  const retrainDeltaCount = detail?.retrain_delta_count ?? detail?.source_summary?.retrain_delta_count ?? 0;
+  const retrainRequiredDelta = detail?.retrain_required_delta ?? detail?.source_summary?.retrain_required_delta;
+  const retrainReady = detail?.retrain_ready ?? detail?.source_summary?.retrain_ready;
   const rawDocumentCount = detail?.raw_document_count ?? detail?.source_summary?.document_count ?? 0;
   const cleanDocumentCount = detail?.clean_document_count ?? detail?.source_summary?.clean_document_count ?? detail?.source_summary?.document_count ?? 0;
-  const displayPhaseLabel = evaluationPassed === false && thresholdMet ? '继续培养中' : formatPhaseLabel(detail?.phase);
+  const displayPhaseLabel = evaluationPassed === false && thresholdMet
+    ? (retrainReady ? '准备进入下一轮训练' : '继续培养中')
+    : formatPhaseLabel(detail?.phase);
   const meta = statusMeta(phase);
   const operationLabel = pendingOperation === 'deep_fetch'
     ? '深抓取中'
@@ -421,10 +427,15 @@ function TrainingCard({
     : threshold && thresholdMet
       ? `已达到自动训练门槛`
       : null;
+  const retrainProgressLabel = evaluationPassed === false && retrainRequiredDelta
+    ? `新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}`
+    : null;
   const evaluationHint = evaluationPassed === true
     ? '测评已通过'
     : evaluationPassed === false
-      ? '测评未通过，系统会继续补充素材'
+      ? retrainReady
+        ? '测评未通过，已达到下一轮训练条件'
+        : '测评未通过，系统会继续补充素材'
       : null;
 
   return (
@@ -471,6 +482,7 @@ function TrainingCard({
             <span>原始 {rawDocumentCount}</span>
             <span>纳入 {cleanDocumentCount}</span>
             {thresholdLabel ? <span>门槛 {thresholdLabel}</span> : null}
+            {retrainProgressLabel ? <span>重训进度 {retrainProgressLabel}</span> : null}
             {typeof collectionCycle === 'number' && collectionCycle > 0 ? <span>循环 {collectionCycle}</span> : null}
             {evaluationHint ? <span>{evaluationHint}</span> : null}
             {cacheReuse?.active ? <span>缓存复用 {cacheReuse.reused_document_count}</span> : null}
@@ -479,6 +491,13 @@ function TrainingCard({
           {thresholdHint ? (
             <div style={{ marginTop: 8, fontSize: 11, color: thresholdMet ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
               {thresholdHint}
+            </div>
+          ) : null}
+          {retrainProgressLabel ? (
+            <div style={{ marginTop: 8, fontSize: 11, color: retrainReady ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
+              {retrainReady
+                ? `${retrainProgressLabel}，已达到下一轮训练条件`
+                : `${retrainProgressLabel}，达到后自动进入下一轮训练`}
             </div>
           ) : null}
           {collectionStopReason || historyExhausted || providerExhausted ? (
@@ -510,6 +529,8 @@ function TrainingCard({
               <InfoStat label="自动训练门槛" value={detail.training_threshold ?? '未配置'} />
               <InfoStat label="达训条件" value={detail.training_threshold_met ? '已达到' : '未达到'} />
               <InfoStat label="测评结果" value={evaluationPassed === true ? '已通过' : evaluationPassed === false ? '未通过' : '待测评'} />
+              <InfoStat label="上一轮训练素材" value={lastTrainingPrepCount ?? '未记录'} />
+              <InfoStat label="重训新增进度" value={retrainRequiredDelta ? `${retrainDeltaCount} / ${retrainRequiredDelta}` : '未启用'} />
               <InfoStat label="抓取循环轮次" value={collectionCycle ?? 0} />
               <InfoStat label="最近成功推进" value={formatDate(detail.last_success_at)} />
               <InfoStat label="最近活动心跳" value={formatRelativeTime(detail.last_heartbeat_at)} />
@@ -527,6 +548,13 @@ function TrainingCard({
             {collectionStopReason ? (
               <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
                 当前收口原因：{collectionStopReason}
+              </div>
+            ) : null}
+            {evaluationPassed === false && retrainRequiredDelta ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
+                {retrainReady
+                  ? `上一轮训练素材 ${lastTrainingPrepCount ?? 0} 条，新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}，已达到下一轮训练条件。`
+                  : `上一轮训练素材 ${lastTrainingPrepCount ?? 0} 条，新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}，达到后自动进入下一轮训练。`}
               </div>
             ) : null}
           </div>
@@ -638,11 +666,21 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
     const autoSync = setInterval(() => {
       if (cultivating.length === 0) return;
       cultivating.forEach((persona) => {
+        const detail = details[persona.slug];
+        const shouldDeepFetch =
+          detail?.evaluation_passed === false
+          || detail?.source_summary?.evaluation_passed === false
+          || detail?.collection_stop_reason === 'evaluation_retry_pending'
+          || detail?.source_summary?.collection_stop_reason === 'evaluation_retry_pending';
+        if (shouldDeepFetch) {
+          void api.continueCultivation(persona.slug).catch(() => undefined);
+          return;
+        }
         void api.checkPersonaUpdates(persona.slug).catch(() => undefined);
       });
     }, 10 * 60 * 1000);
     return () => clearInterval(autoSync);
-  }, [cultivating]);
+  }, [cultivating, details]);
 
   async function handleCheckUpdates(slug: string) {
     setPendingOps((prev) => ({ ...prev, [slug]: 'incremental_sync' }));

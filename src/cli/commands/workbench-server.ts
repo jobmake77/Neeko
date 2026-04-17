@@ -110,7 +110,9 @@ export async function cmdWorkbenchServer(
   cliEntryPath = process.argv[1]
 ): Promise<void> {
   const port = Number(options.port ?? process.env.NEEKO_WORKBENCH_PORT ?? 4310);
-  const service = new WorkbenchService(undefined, cliEntryPath, process.cwd());
+  const service = new WorkbenchService(undefined, cliEntryPath, process.cwd(), {
+    resumeCollectionContinuationsOnInit: true,
+  });
   const buildInfo = resolveServerBuildInfo(process.cwd());
 
   const server = createServer(async (req, res) => {

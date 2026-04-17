@@ -68,6 +68,11 @@ export interface CultivationDetail {
   training_threshold_met?: boolean;
   training_block_reason?: string;
   evaluation_passed?: boolean;
+  last_training_prep_count?: number;
+  retrain_delta_count?: number;
+  retrain_required_delta?: number;
+  retrain_progress_ratio?: number;
+  retrain_ready?: boolean;
   collection_cycle?: number;
   collection_stop_reason?: string;
   history_exhausted?: boolean;
@@ -231,6 +236,9 @@ export interface PersonaConfig {
     collection_stop_reason?: string;
     history_exhausted?: boolean;
     provider_exhausted?: boolean;
+    last_training_prep_count?: number;
+    last_training_baseline_clean_count?: number;
+    last_training_prep_id?: string;
   };
 }
 
@@ -348,6 +356,11 @@ export interface CultivationSummary {
     training_block_reason?: string;
     clean_document_count?: number;
     evaluation_passed?: boolean;
+    last_training_prep_count?: number;
+    retrain_delta_count?: number;
+    retrain_required_delta?: number;
+    retrain_progress_ratio?: number;
+    retrain_ready?: boolean;
     collection_cycle?: number;
     collection_stop_reason?: string;
     history_exhausted?: boolean;

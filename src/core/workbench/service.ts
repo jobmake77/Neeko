@@ -415,6 +415,14 @@ function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { 
         current_source_label: input.update_policy?.current_source_label,
         last_checked_at: input.update_policy?.last_checked_at,
         latest_result: input.update_policy?.latest_result,
+        evaluation_passed: input.update_policy?.evaluation_passed,
+        collection_cycle: input.update_policy?.collection_cycle,
+        collection_stop_reason: input.update_policy?.collection_stop_reason,
+        history_exhausted: input.update_policy?.history_exhausted,
+        provider_exhausted: input.update_policy?.provider_exhausted,
+        last_training_prep_count: input.update_policy?.last_training_prep_count,
+        last_training_baseline_clean_count: input.update_policy?.last_training_baseline_clean_count,
+        last_training_prep_id: input.update_policy?.last_training_prep_id,
       },
     };
   }
@@ -440,6 +448,14 @@ function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { 
       current_source_label: input.update_policy?.current_source_label,
       last_checked_at: input.update_policy?.last_checked_at,
       latest_result: input.update_policy?.latest_result,
+      evaluation_passed: input.update_policy?.evaluation_passed,
+      collection_cycle: input.update_policy?.collection_cycle,
+      collection_stop_reason: input.update_policy?.collection_stop_reason,
+      history_exhausted: input.update_policy?.history_exhausted,
+      provider_exhausted: input.update_policy?.provider_exhausted,
+      last_training_prep_count: input.update_policy?.last_training_prep_count,
+      last_training_baseline_clean_count: input.update_policy?.last_training_baseline_clean_count,
+      last_training_prep_id: input.update_policy?.last_training_prep_id,
     },
   };
 }
@@ -1159,6 +1175,7 @@ function buildCollectionContinuationDecision(input: {
   cleanDocumentCount: number;
   trainingThreshold: number;
   evaluationPassed?: boolean;
+  retrainReady?: boolean;
   historyExhausted: boolean;
   providerExhausted: boolean;
   collectionCycle: number;
@@ -1181,6 +1198,9 @@ function buildCollectionContinuationDecision(input: {
     return { shouldContinue: true };
   }
   if (input.evaluationPassed === false) {
+    if (input.retrainReady) {
+      return { shouldContinue: false, blockedReason: 'retrain_ready' };
+    }
     if ((input.historyExhausted || input.providerExhausted) && input.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT) {
       return { shouldContinue: false, blockedReason: 'exhausted_retry_limit' };
     }
@@ -1431,8 +1451,17 @@ export class WorkbenchService {
   constructor(
     private readonly store = new WorkbenchStore(),
     private readonly cliEntryPath = process.argv[1],
-    private readonly repoRoot = process.cwd()
-  ) {}
+    private readonly repoRoot = process.cwd(),
+    options?: {
+      resumeCollectionContinuationsOnInit?: boolean;
+    },
+  ) {
+    if (options?.resumeCollectionContinuationsOnInit) {
+      setTimeout(() => {
+        void this.resumePendingCollectionContinuations().catch(() => undefined);
+      }, 250);
+    }
+  }
 
   listPersonas(): PersonaSummary[] {
     return this.listAllPersonaSummaries();
@@ -1450,6 +1479,45 @@ export class WorkbenchService {
       .map((entry) => this.buildPersonaSummary(entry.name))
       .filter((item): item is PersonaSummary => Boolean(item))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  private async resumePendingCollectionContinuations(): Promise<void> {
+    const personas = this.listAllPersonaSummaries();
+    for (const persona of personas) {
+      const slug = persona.slug;
+      if (this.getActivePersonaRun(slug)) continue;
+      const config = this.store.getPersonaConfig(slug);
+      if (!config) continue;
+      const state = this.summarizeCollectionState(slug);
+      if (state.evaluationPassed === true) continue;
+      const shouldResume =
+        (state.evaluationPassed === false && state.cleanDocumentCount >= state.threshold.training_threshold)
+        || (state.cleanDocumentCount > 0 && state.cleanDocumentCount < state.threshold.training_threshold)
+        ||
+        state.stopReason === 'evaluation_retry_pending'
+        || state.stopReason === 'continuing_collection'
+        || state.stopReason === 'retrying_after_exhaustion'
+        || state.stopReason === 'below_training_threshold'
+        || state.stopReason === 'provider_retry_pending'
+        || state.stopReason === 'history_retry_pending';
+      if (!shouldResume) continue;
+      const decision = buildCollectionContinuationDecision({
+        cleanDocumentCount: state.cleanDocumentCount,
+        trainingThreshold: state.threshold.training_threshold,
+        evaluationPassed: state.evaluationPassed,
+        retrainReady: state.retrain.retrainReady,
+        historyExhausted: state.historyExhausted,
+        providerExhausted: state.providerExhausted,
+        collectionCycle: state.collectionCycle,
+        hasActiveRun: false,
+      });
+      if (!decision.shouldContinue) continue;
+      const summary = state.cleanDocumentCount < state.threshold.training_threshold
+        ? state.threshold.summary
+        : '当前测评未通过，系统正在继续补充素材';
+      this.appendPersonaRunLog(slug, 'resuming collection continuation after service restart', summary);
+      this.startSourceSyncRun(slug, 'deep_fetch');
+    }
   }
 
   private isPersonaReady(summary: PersonaSummary): boolean {
@@ -2348,6 +2416,10 @@ export class WorkbenchService {
   }
 
   async checkPersonaUpdates(slug: string): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
+    const state = this.summarizeCollectionState(slug);
+    if (state.evaluationPassed === false && state.cleanDocumentCount >= state.threshold.training_threshold) {
+      return this.startSourceSyncRun(slug, 'deep_fetch');
+    }
     return this.startSourceSyncRun(slug, 'incremental_sync');
   }
 
@@ -2387,12 +2459,13 @@ export class WorkbenchService {
     const summary = state.cleanDocumentCount < state.threshold.training_threshold
       ? state.threshold.summary
       : state.evaluationPassed === false
-        ? '当前测评未通过，系统正在继续补充素材'
+        ? this.buildFailedEvaluationSummary(state.retrain)
         : fallbackSummary;
     const decision = buildCollectionContinuationDecision({
       cleanDocumentCount: state.cleanDocumentCount,
       trainingThreshold: state.threshold.training_threshold,
       evaluationPassed: state.evaluationPassed,
+      retrainReady: state.retrain.retrainReady,
       historyExhausted: state.historyExhausted,
       providerExhausted: state.providerExhausted,
       collectionCycle: state.collectionCycle,
@@ -3491,6 +3564,13 @@ export class WorkbenchService {
     cleanDocumentCount: number;
     threshold: ReturnType<typeof buildTrainingThresholdSummary>;
     evaluationPassed?: boolean;
+    retrain: {
+      lastTrainingPrepCount?: number;
+      retrainDeltaCount?: number;
+      retrainRequiredDelta?: number;
+      retrainProgressRatio?: number;
+      retrainReady?: boolean;
+    };
     collectionCycle: number;
     historyExhausted: boolean;
     providerExhausted: boolean;
@@ -3500,9 +3580,10 @@ export class WorkbenchService {
     const cleanDocumentCount = dedupeRawDocuments(
       this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
     ).length;
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config ?? undefined));
     const trainingContext = this.readTrainingContext(slug);
     const evaluationPassed = deriveEvaluationPassed(trainingContext);
+    const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
     const progressStates = config.sources
       .filter((source) => source.enabled && source.type === 'social')
       .map((source) => this.readSourceSyncProgress(source))
@@ -3517,11 +3598,79 @@ export class WorkbenchService {
       cleanDocumentCount,
       threshold,
       evaluationPassed,
+      retrain,
       collectionCycle: Math.max(0, config.update_policy.collection_cycle ?? 0),
       historyExhausted,
       providerExhausted,
       stopReason,
     };
+  }
+
+  private getDocumentCountFromPath(documentsPath?: string): number | undefined {
+    if (!documentsPath || !existsSync(documentsPath)) return undefined;
+    try {
+      const docs = JSON.parse(readFileSync(documentsPath, 'utf-8')) as RawDocument[];
+      return Array.isArray(docs) ? docs.length : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private computeRetrainState(
+    slug: string,
+    config = this.getPersonaConfig(slug),
+    cleanDocumentCount = dedupeRawDocuments(
+      this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
+    ).length,
+    evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug)),
+  ): {
+    lastTrainingPrepCount?: number;
+    retrainDeltaCount?: number;
+    retrainRequiredDelta?: number;
+    retrainProgressRatio?: number;
+    retrainReady?: boolean;
+  } {
+    const threshold = resolveTrainingThreshold(config);
+    const storedPrepCount = Number(config.update_policy.last_training_prep_count);
+    const lastTrainingPrepCount = Number.isFinite(storedPrepCount) && storedPrepCount > 0
+      ? Math.max(0, Math.round(storedPrepCount))
+      : this.getLatestPrepDocumentCount(slug);
+    if (!lastTrainingPrepCount || lastTrainingPrepCount <= 0) {
+      return {};
+    }
+    const storedBaselineCount = Number(config.update_policy.last_training_baseline_clean_count);
+    const fallbackBaseline = lastTrainingPrepCount;
+    const baselineCleanCount = Number.isFinite(storedBaselineCount) && storedBaselineCount >= 0
+      ? Math.max(0, Math.round(storedBaselineCount))
+      : fallbackBaseline;
+    const retrainRequiredDelta = Math.max(threshold, lastTrainingPrepCount);
+    const retrainDeltaCount = Math.max(0, cleanDocumentCount - baselineCleanCount);
+    return {
+      lastTrainingPrepCount,
+      retrainDeltaCount,
+      retrainRequiredDelta,
+      retrainProgressRatio: retrainRequiredDelta > 0 ? retrainDeltaCount / retrainRequiredDelta : undefined,
+      retrainReady: evaluationPassed === false ? retrainDeltaCount >= retrainRequiredDelta : false,
+    };
+  }
+
+  private buildFailedEvaluationSummary(
+    retrain: {
+      lastTrainingPrepCount?: number;
+      retrainDeltaCount?: number;
+      retrainRequiredDelta?: number;
+      retrainReady?: boolean;
+    },
+    fallback = '当前测评未通过，系统正在继续补充素材',
+  ): string {
+    if (!retrain.lastTrainingPrepCount || !retrain.retrainRequiredDelta) {
+      return fallback;
+    }
+    const delta = retrain.retrainDeltaCount ?? 0;
+    const required = retrain.retrainRequiredDelta;
+    return retrain.retrainReady
+      ? `当前测评未通过，新增素材 ${delta} / ${required}，已达到下一轮训练条件`
+      : `当前测评未通过，新增素材 ${delta} / ${required}，系统正在继续补充素材`;
   }
 
   private persistCollectionState(
@@ -3607,6 +3756,24 @@ export class WorkbenchService {
       const activeRun = this.getActivePersonaRun(slug);
       if (activeRun?.type === 'train') {
         this.scheduleCollectionReview(slug, activeRun.id, 'train');
+        return;
+      }
+      if (state.evaluationPassed === false) {
+        const summary = this.buildFailedEvaluationSummary(state.retrain);
+        this.persistCollectionState(slug, {
+          current_operation: 'idle',
+          current_source_label: undefined,
+          evaluation_passed: false,
+          collection_stop_reason: state.retrain.retrainReady ? 'retrain_ready' : 'waiting_retrain_delta',
+          history_exhausted: state.historyExhausted,
+          provider_exhausted: state.providerExhausted,
+        }, summary);
+        this.appendPersonaRunLog(
+          slug,
+          `source sync review scheduling continuation after failed evaluation clean_docs=${state.cleanDocumentCount}`,
+          summary,
+        );
+        this.scheduleCollectionContinuation(slug, summary, state);
       }
       return;
     }
@@ -3626,12 +3793,12 @@ export class WorkbenchService {
 
     const summary = state.cleanDocumentCount < state.threshold.training_threshold
       ? state.threshold.summary
-      : '当前测评未通过，系统正在继续补充素材';
+      : this.buildFailedEvaluationSummary(state.retrain);
     this.persistCollectionState(slug, {
       current_operation: 'idle',
       current_source_label: undefined,
       evaluation_passed: false,
-      collection_stop_reason: 'evaluation_retry_pending',
+      collection_stop_reason: state.retrain.retrainReady ? 'retrain_ready' : 'waiting_retrain_delta',
       history_exhausted: state.historyExhausted,
       provider_exhausted: state.providerExhausted,
     }, summary);
@@ -3650,6 +3817,7 @@ export class WorkbenchService {
       cleanDocumentCount: state.cleanDocumentCount,
       trainingThreshold: state.threshold.training_threshold,
       evaluationPassed: state.evaluationPassed,
+      retrainReady: state.retrain.retrainReady,
       historyExhausted: state.historyExhausted,
       providerExhausted: state.providerExhausted,
       collectionCycle: state.collectionCycle,
@@ -3675,7 +3843,11 @@ export class WorkbenchService {
     const nextCycle = Math.max(1, state.collectionCycle + 1);
     this.persistCollectionState(slug, {
       collection_cycle: nextCycle,
-      collection_stop_reason: exhaustionRetry ? 'retrying_after_exhaustion' : 'continuing_collection',
+      collection_stop_reason: exhaustionRetry
+        ? 'retrying_after_exhaustion'
+        : state.evaluationPassed === false
+          ? 'waiting_retrain_delta'
+          : 'continuing_collection',
       history_exhausted: state.historyExhausted,
       provider_exhausted: state.providerExhausted,
       evaluation_passed: state.evaluationPassed,
@@ -3719,15 +3891,20 @@ export class WorkbenchService {
     imports: WorkbenchEvidenceImport[],
     fallbackSummary: string
   ): { imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string } {
+    const allImports = this.store.listEvidenceImports(slug);
     const cleanDocumentCount = dedupeRawDocuments(
-      this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
+      allImports.flatMap((item) => this.readImportDocuments(item))
     ).length;
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config ?? undefined));
+    const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
+    const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
     this.reconcilePersonaDocumentCount(slug, cleanDocumentCount);
 
     if (imports.length === 0) {
       const summary = cleanDocumentCount > 0 && !threshold.training_threshold_met
         ? threshold.summary
+        : evaluationPassed === false
+          ? this.buildFailedEvaluationSummary(retrain, fallbackSummary)
         : fallbackSummary;
       const nextConfig: PersonaConfig = {
         ...config,
@@ -3735,10 +3912,28 @@ export class WorkbenchService {
           ...config.update_policy,
           last_checked_at: new Date().toISOString(),
           latest_result: summary,
-          evaluation_passed: deriveEvaluationPassed(this.readTrainingContext(slug)),
+          evaluation_passed: evaluationPassed,
+          collection_stop_reason: evaluationPassed === false && !retrain.retrainReady
+            ? 'waiting_retrain_delta'
+            : config.update_policy.collection_stop_reason,
         },
       };
       this.store.savePersonaConfig(nextConfig);
+      if (evaluationPassed === false && retrain.retrainReady) {
+        const prep = this.createTrainingPrepFromEvidenceImports(slug, allImports);
+        const run = this.startTraining({
+          slug,
+          mode: 'quick',
+          rounds: 1,
+          track: 'full_serial',
+          prepDocumentsPath: prep.documents_path,
+          prepEvidencePath: prep.evidence_index_path,
+          prepArtifactId: prep.id,
+        });
+        const trainSummary = this.buildFailedEvaluationSummary(retrain);
+        this.appendPersonaRunLog(slug, 'training restarted after failed evaluation delta reached threshold', trainSummary);
+        return { imports, run, summary: trainSummary };
+      }
       this.appendPersonaRunLog(slug, 'source sync completed with no new accepted content', summary);
       return { imports, run: null, summary };
     }
@@ -3752,7 +3947,7 @@ export class WorkbenchService {
           current_source_label: undefined,
           last_checked_at: new Date().toISOString(),
           latest_result: threshold.summary,
-          evaluation_passed: deriveEvaluationPassed(this.readTrainingContext(slug)),
+          evaluation_passed: evaluationPassed,
         },
         updated_at: new Date().toISOString(),
       };
@@ -3769,7 +3964,31 @@ export class WorkbenchService {
       };
     }
 
-    const prep = this.createTrainingPrepFromEvidenceImports(slug, imports);
+    if (evaluationPassed === false && !retrain.retrainReady) {
+      const summary = this.buildFailedEvaluationSummary(retrain);
+      const nextConfig: PersonaConfig = {
+        ...config,
+        update_policy: {
+          ...config.update_policy,
+          current_operation: 'idle',
+          current_source_label: undefined,
+          last_checked_at: new Date().toISOString(),
+          latest_result: summary,
+          evaluation_passed: false,
+          collection_stop_reason: 'waiting_retrain_delta',
+        },
+        updated_at: new Date().toISOString(),
+      };
+      this.store.savePersonaConfig(nextConfig);
+      this.appendPersonaRunLog(
+        slug,
+        `source sync completed after failed evaluation delta=${retrain.retrainDeltaCount ?? 0}/${retrain.retrainRequiredDelta ?? 0}`,
+        summary,
+      );
+      return { imports, run: null, summary };
+    }
+
+    const prep = this.createTrainingPrepFromEvidenceImports(slug, allImports);
     const run = this.startTraining({
       slug,
       mode: 'quick',
@@ -3779,7 +3998,13 @@ export class WorkbenchService {
       prepEvidencePath: prep.evidence_index_path,
       prepArtifactId: prep.id,
     });
-    this.appendPersonaRunLog(slug, `training started from ${imports.length} source batches`, '素材已完成整理，正在进入人格收敛');
+    this.appendPersonaRunLog(
+      slug,
+      evaluationPassed === false
+        ? `training restarted after failed evaluation delta=${retrain.retrainDeltaCount ?? 0}/${retrain.retrainRequiredDelta ?? 0}`
+        : `training started from ${allImports.length} source batches`,
+      '素材已完成整理，正在进入人格收敛',
+    );
     return {
       imports,
       run,
@@ -4017,6 +4242,30 @@ export class WorkbenchService {
   startTraining(input: WorkbenchTrainingInput): WorkbenchRun {
     const isSmoke = input.smoke === true;
     const inferredPrep = !isSmoke ? this.resolveTrainingPrepInput(input) : null;
+    if (!isSmoke && inferredPrep) {
+      const config = this.store.getPersonaConfig(input.slug);
+      if (config) {
+        const prepArtifact = inferredPrep.prepArtifactId
+          ? this.store.getTrainingPrepArtifact(inferredPrep.prepArtifactId)
+          : null;
+        const prepDocumentCount = prepArtifact?.item_count ?? this.getDocumentCountFromPath(inferredPrep.prepDocumentsPath);
+        if (prepDocumentCount && prepDocumentCount > 0) {
+          const cleanDocumentCount = dedupeRawDocuments(
+            this.store.listEvidenceImports(input.slug).flatMap((item) => this.readImportDocuments(item))
+          ).length;
+          this.store.savePersonaConfig({
+            ...config,
+            update_policy: {
+              ...config.update_policy,
+              last_training_prep_count: prepDocumentCount,
+              last_training_baseline_clean_count: cleanDocumentCount,
+              last_training_prep_id: inferredPrep.prepArtifactId,
+            },
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
     const args = ['train', input.slug];
     args.push('--mode', isSmoke ? 'quick' : (input.mode ?? 'quick'));
     args.push('--rounds', String(isSmoke ? 1 : (typeof input.rounds === 'number' ? input.rounds : 1)));
@@ -4258,6 +4507,7 @@ export class WorkbenchService {
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
     const threshold = buildTrainingThresholdSummary(uniqueDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
+    const retrain = this.computeRetrainState(slug, config, uniqueDocumentCount, evaluationPassed);
     const progressStates = config.sources
       .filter((item) => item.enabled && item.type === 'social')
       .map((item) => this.readSourceSyncProgress(item))
@@ -4291,6 +4541,11 @@ export class WorkbenchService {
           : undefined,
         clean_document_count: uniqueDocumentCount,
         evaluation_passed: evaluationPassed,
+        last_training_prep_count: retrain.lastTrainingPrepCount,
+        retrain_delta_count: retrain.retrainDeltaCount,
+        retrain_required_delta: retrain.retrainRequiredDelta,
+        retrain_progress_ratio: retrain.retrainProgressRatio,
+        retrain_ready: retrain.retrainReady,
         collection_cycle: config.update_policy.collection_cycle,
         collection_stop_reason: config.update_policy.collection_stop_reason,
         history_exhausted: historyExhausted,
@@ -4380,13 +4635,7 @@ export class WorkbenchService {
   private getLatestPrepDocumentCount(slug: string): number | undefined {
     const context = this.readTrainingContext(slug) as { prep_context?: { prep_documents_path?: string } } | null;
     const prepPath = context?.prep_context?.prep_documents_path;
-    if (!prepPath || !existsSync(prepPath)) return undefined;
-    try {
-      const docs = JSON.parse(readFileSync(prepPath, 'utf-8')) as RawDocument[];
-      return Array.isArray(docs) ? docs.length : undefined;
-    } catch {
-      return undefined;
-    }
+    return this.getDocumentCountFromPath(prepPath);
   }
 
   private getCultivationCacheReuse(
@@ -4514,15 +4763,20 @@ export class WorkbenchService {
     if (this.isPersonaReady(persona)) {
       return '已完成培养，可开始对话';
     }
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const threshold = buildTrainingThresholdSummary(
+      cleanDocumentCount,
+      resolveTrainingThreshold(config ?? undefined),
+    );
     const trainingContext = this.readTrainingContext(persona.slug);
     const report = this.readTrainingReport(persona.slug);
     const evaluationPassed = deriveEvaluationPassed(trainingContext);
+    const retrain = this.computeRetrainState(persona.slug, config, cleanDocumentCount, evaluationPassed);
     if (evaluationPassed === false && threshold.training_threshold_met) {
+      const retrainSummary = this.buildFailedEvaluationSummary(retrain);
       if ((report?.total_rounds ?? 0) > 0) {
-        return `已完成第 ${report?.total_rounds ?? 0} 轮训练，当前测评未通过，系统正在继续补充素材`;
+        return `已完成第 ${report?.total_rounds ?? 0} 轮训练，${retrainSummary}`;
       }
-      return '当前测评未通过，系统正在继续补充素材';
+      return retrainSummary;
     }
     const runningWindow = sourceItems
       .map((item) => ({ item, window: item.active_window }))
@@ -4609,7 +4863,10 @@ export class WorkbenchService {
       return '培养已完成，可开始对话';
     }
     if (evaluationPassed === false && threshold.training_threshold_met) {
-      return '当前测评未通过，系统正在继续补充素材';
+      const cleanDocumentCount = dedupeRawDocuments(
+        this.store.listEvidenceImports(persona.slug).flatMap((item) => this.readImportDocuments(item))
+      ).length;
+      return this.buildFailedEvaluationSummary(this.computeRetrainState(persona.slug, config, cleanDocumentCount, evaluationPassed));
     }
     if (!threshold.training_threshold_met && threshold.training_block_reason) {
       return threshold.summary;
@@ -4627,7 +4884,10 @@ export class WorkbenchService {
     const trainingContext = this.readTrainingContext(persona.slug);
     const trainingReport = this.readTrainingReport(persona.slug);
     const evaluationPassed = deriveEvaluationPassed(trainingContext);
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const threshold = buildTrainingThresholdSummary(
+      cleanDocumentCount,
+      resolveTrainingThreshold(config ?? undefined),
+    );
     const hasTrainingArtifacts = (trainingReport?.total_rounds ?? 0) > 0
       || (trainingContext?.completed_rounds ?? 0) > 0
       || persona.training_rounds > 0
@@ -5208,10 +5468,17 @@ export class WorkbenchService {
     }
     const config = this.store.getPersonaConfig(slug);
     const stage = this.resolveStage(base.status, trainingContext, trainingReport);
+    const evidenceImports = this.store.listEvidenceImports(slug);
     const cleanDocumentCount = dedupeRawDocuments(
-      this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
+      evidenceImports.flatMap((item) => this.readImportDocuments(item))
     ).length;
-    const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
+    const sourceItems = config ? this.buildCultivationSourceItems(config, evidenceImports) : [];
+    const realtimeDocumentCount = sourceItems.reduce((sum, item) => sum + Math.max(0, item.clean_count), 0);
+    const effectiveDocumentCount = Math.max(base.doc_count ?? 0, cleanDocumentCount, realtimeDocumentCount);
+    const threshold = buildTrainingThresholdSummary(
+      cleanDocumentCount,
+      resolveTrainingThreshold(config ?? undefined),
+    );
     const thresholdBlockedStage = !threshold.training_threshold_met
       && cleanDocumentCount > 0
       && stage === 'training'
@@ -5231,6 +5498,7 @@ export class WorkbenchService {
 
     return {
       ...base,
+      doc_count: effectiveDocumentCount,
       is_ready: this.isPersonaReady(base),
       current_stage: effectiveStage,
       current_round: currentRound,
@@ -5482,6 +5750,7 @@ export class WorkbenchService {
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
     const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
+    const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
     const collectionCycle = Math.max(0, config.update_policy.collection_cycle ?? 0);
     const showThresholdBlock = cleanDocumentCount > 0 && !threshold.training_threshold_met;
     const lastSuccessAt = [
@@ -5518,6 +5787,11 @@ export class WorkbenchService {
       training_threshold: threshold.training_threshold,
       training_threshold_met: threshold.training_threshold_met,
       evaluation_passed: evaluationPassed,
+      last_training_prep_count: retrain.lastTrainingPrepCount,
+      retrain_delta_count: retrain.retrainDeltaCount,
+      retrain_required_delta: retrain.retrainRequiredDelta,
+      retrain_progress_ratio: retrain.retrainProgressRatio,
+      retrain_ready: retrain.retrainReady,
       collection_cycle: collectionCycle,
       collection_stop_reason: config.update_policy.collection_stop_reason,
       history_exhausted: config.update_policy.history_exhausted,
@@ -5580,6 +5854,11 @@ export class WorkbenchService {
         training_block_reason: showThresholdBlock ? threshold.training_block_reason : undefined,
         clean_document_count: cleanDocumentCount,
         evaluation_passed: evaluationPassed,
+        last_training_prep_count: retrain.lastTrainingPrepCount,
+        retrain_delta_count: retrain.retrainDeltaCount,
+        retrain_required_delta: retrain.retrainRequiredDelta,
+        retrain_progress_ratio: retrain.retrainProgressRatio,
+        retrain_ready: retrain.retrainReady,
         collection_cycle: collectionCycle,
         collection_stop_reason: config.update_policy.collection_stop_reason,
         history_exhausted: config.update_policy.history_exhausted,

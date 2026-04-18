@@ -10,6 +10,18 @@ import { createEmptySoul } from '../../core/models/soul.js';
 import { MemoryStore } from '../../core/memory/store.js';
 import { TrainingLoop } from '../../core/training/loop.js';
 import { ExperimentSummaryRow, evaluateGate } from '../../core/training/ab-report.js';
+import {
+  buildBenchmarkContext,
+  buildEvaluationScorecard,
+  buildJudgeProvenance,
+  classifyEvaluationRun,
+  type BenchmarkContext,
+  type EvaluationContamination,
+  type EvaluationRunQuality,
+  type EvaluationScorecard,
+  type JudgeProvenance,
+  type RuntimeFallbackSummary,
+} from '../../core/training/evaluation-v2.js';
 import { TrainingProfile } from '../../core/training/types.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
 import {
@@ -81,6 +93,11 @@ interface InputRoutingComparisonRow {
   contradictionRate: number;
   duplicationRate: number;
   coverage: number;
+  run_quality: EvaluationRunQuality;
+  contamination: EvaluationContamination;
+  scorecard: EvaluationScorecard;
+  judge_provenance: JudgeProvenance;
+  benchmark_context: BenchmarkContext;
   observability: InputRoutingObservability;
   scaling_observability?: {
     pack_count: number;
@@ -96,12 +113,8 @@ interface InputRoutingComparisonRow {
     dynamic_scaling_confidence: number;
     dynamic_scaling_reason: string;
   };
-  runtime_observability: {
+  runtime_observability: RuntimeFallbackSummary & {
     kimi_stability_mode: string;
-    trainer_fallbacks: number;
-    persona_fallbacks: number;
-    evaluator_fallbacks: number;
-    director_fallbacks: number;
   };
 }
 
@@ -136,6 +149,33 @@ interface CurrentGrayPathRecommendation {
 
 const EXPERIMENT_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_PROFILE_TIMEOUT_MS ?? 90_000);
 const EXPERIMENT_COMPARISON_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_COMPARISON_TIMEOUT_MS ?? 0);
+
+function selectOfficialRows<T extends { run_quality?: EvaluationRunQuality }>(rows: T[]): T[] {
+  const cleanRows = rows.filter((row) => row.run_quality === 'clean');
+  return cleanRows.length > 0 ? cleanRows : rows;
+}
+
+function computeObservedBestProfile(rows: ExperimentSummaryRow[]): TrainingProfile | null {
+  return [...rows].sort((a, b) => {
+    const scoreA = a.avgQuality - a.contradictionRate * 0.2 - a.duplicationRate * 0.1;
+    const scoreB = b.avgQuality - b.contradictionRate * 0.2 - b.duplicationRate * 0.1;
+    return scoreB - scoreA;
+  })[0]?.profile ?? null;
+}
+
+function toRuntimeObservabilitySnapshot(input: {
+  trainerFallbacks: number;
+  personaFallbacks: number;
+  evaluatorFallbacks: number;
+  directorFallbacks: number;
+}): RuntimeFallbackSummary {
+  return {
+    trainer_fallbacks: input.trainerFallbacks,
+    persona_fallbacks: input.personaFallbacks,
+    evaluator_fallbacks: input.evaluatorFallbacks,
+    director_fallbacks: input.directorFallbacks,
+  };
+}
 
 export async function runExperimentProfiles(
   slug: string,
@@ -193,13 +233,15 @@ export async function runExperimentProfiles(
       rounds,
       explicitKimiStabilityMode: options?.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
+    const questionsPerRound = Math.max(1, options?.questionsPerRound ?? 5);
     let result: Awaited<ReturnType<TrainingLoop['run']>> | null = null;
+    snapshotAndResetAgentFallbackMetrics();
     try {
       result = await withTimeout(
         loop.run({
           maxRounds: rounds,
           profile,
-          questionsPerRound: Math.max(1, options?.questionsPerRound ?? 5),
+          questionsPerRound,
           trainingSeedHints: trainingSeedSelection.hints,
           runtimePreset: executionSettings.runtimePreset,
           runtimeOverrides: executionSettings.runtimeOverrides,
@@ -213,6 +255,19 @@ export async function runExperimentProfiles(
       );
     } catch (error) {
       const message = String(error);
+      const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
+      const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
+      const judgeProvenance = buildJudgeProvenance({
+        layeredMode: executionSettings.evaluatorLayered,
+        dualReviewRequested: executionSettings.evaluatorDualReview,
+        evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
+      });
+      const contamination = classifyEvaluationRun({
+        totalRounds: 0,
+        runtimeObservability: runtimeSnapshot,
+        judgeProvenance,
+        failureError: message,
+      });
       failures.push({ profile, error: message });
       roundHistories[profile] = [];
       rows.push({
@@ -222,6 +277,26 @@ export async function runExperimentProfiles(
         contradictionRate: 1,
         duplicationRate: 1,
         coverage: 0,
+        run_quality: contamination.status,
+        contamination,
+        scorecard: buildEvaluationScorecard({
+          avgQuality: 0,
+          contradictionRate: 1,
+          duplicationRate: 1,
+          coverage: 0,
+          runQuality: contamination.status,
+          runtimeObservability: runtimeSnapshot,
+        }),
+        judge_provenance: judgeProvenance,
+        benchmark_context: buildBenchmarkContext({
+          slug,
+          suiteType: 'profile_sweep',
+          profile,
+          rounds,
+          questionsPerRound,
+          smokeMode: rounds === 1 && questionsPerRound === 1,
+        }),
+        runtime_observability: runtimeSnapshot,
       });
       console.log(
         chalk.yellow(
@@ -230,6 +305,13 @@ export async function runExperimentProfiles(
       );
       continue;
     }
+    const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
+    const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
+    const judgeProvenance = buildJudgeProvenance({
+      layeredMode: executionSettings.evaluatorLayered,
+      dualReviewRequested: executionSettings.evaluatorDualReview,
+      evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
+    });
     const history = result.history;
     roundHistories[profile] = history.map((h) => ({
       round: h.round,
@@ -247,6 +329,11 @@ export async function runExperimentProfiles(
     const duplicationRate = history.length === 0
       ? 0
       : history.reduce((sum, h) => sum + h.observability.duplicationRate, 0) / history.length;
+    const contamination = classifyEvaluationRun({
+      totalRounds: result.totalRounds,
+      runtimeObservability: runtimeSnapshot,
+      judgeProvenance,
+    });
 
     rows.push({
       profile,
@@ -255,6 +342,26 @@ export async function runExperimentProfiles(
       contradictionRate,
       duplicationRate,
       coverage: result.soul.coverage_score,
+      run_quality: contamination.status,
+      contamination,
+      scorecard: buildEvaluationScorecard({
+        avgQuality,
+        contradictionRate,
+        duplicationRate,
+        coverage: result.soul.coverage_score,
+        runQuality: contamination.status,
+        runtimeObservability: runtimeSnapshot,
+      }),
+      judge_provenance: judgeProvenance,
+      benchmark_context: buildBenchmarkContext({
+        slug,
+        suiteType: 'profile_sweep',
+        profile,
+        rounds,
+        questionsPerRound,
+        smokeMode: rounds === 1 && questionsPerRound === 1,
+      }),
+      runtime_observability: runtimeSnapshot,
     });
 
     console.log(
@@ -262,7 +369,8 @@ export async function runExperimentProfiles(
       `quality=${(avgQuality * 100).toFixed(1).padStart(5)}% ` +
       `contra=${(contradictionRate * 100).toFixed(1).padStart(5)}% ` +
       `dup=${(duplicationRate * 100).toFixed(1).padStart(5)}% ` +
-      `coverage=${(result.soul.coverage_score * 100).toFixed(1).padStart(5)}%`
+      `coverage=${(result.soul.coverage_score * 100).toFixed(1).padStart(5)}% ` +
+      `status=${contamination.status}`
     );
   }
 
@@ -345,18 +453,21 @@ export async function cmdExperiment(
       )
     : { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
 
-  const best = [...rows].sort((a, b) => {
+  const officialSummaryRows = selectOfficialRows(rows);
+  const officialComparisonRows = selectOfficialRows(inputRoutingComparison.rows);
+  const best = [...officialSummaryRows].sort((a, b) => {
     const scoreA = a.avgQuality - a.contradictionRate * 0.2 - a.duplicationRate * 0.1;
     const scoreB = b.avgQuality - b.contradictionRate * 0.2 - b.duplicationRate * 0.1;
     return scoreB - scoreA;
   })[0];
-  const primaryComparisonRow = rows.length === 0 && inputRoutingComparison.rows.length === 1
-    ? inputRoutingComparison.rows[0]
+  const primaryComparisonRow = rows.length === 0 && officialComparisonRows.length === 1
+    ? officialComparisonRows[0]
     : null;
   const effectiveInputRouting = primaryComparisonRow?.input_routing ?? inputRouting;
   const effectiveTrainingSeedMode = primaryComparisonRow?.training_seed_mode ?? trainingSeedMode;
   const effectiveBestProfile = best?.profile ?? primaryComparisonRow?.profile ?? null;
   const currentGrayPathRecommendation = buildCurrentGrayPathRecommendation(inputRoutingComparison.rows);
+  const observedBestProfile = computeObservedBestProfile(rows);
 
   const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
   mkdirSync(outputDir, { recursive: true });
@@ -374,14 +485,16 @@ export async function cmdExperiment(
   });
 
   const report = {
-    schema_version: 1,
+    schema_version: 2,
     generated_at: new Date().toISOString(),
     slug,
     rounds_per_profile: rounds,
     profiles,
     questions_per_round: questionsPerRound,
     summary_rows: rows,
+    official_summary_rows: officialSummaryRows,
     best_profile: effectiveBestProfile,
+    observed_best_profile: observedBestProfile,
     round_histories: roundHistories,
     failures: failures ?? [],
     input_routing_strategy: effectiveInputRouting,
@@ -389,10 +502,28 @@ export async function cmdExperiment(
     kimi_stability_mode: kimiStabilityMode ?? 'auto',
     training_seed_mode: effectiveTrainingSeedMode,
     input_routing_comparison: inputRoutingComparison.rows,
+    official_input_routing_comparison: officialComparisonRows,
     input_routing_recommendation: inputRoutingComparison.recommendation,
     dynamic_scaling_recommendation: inputRoutingComparison.dynamicScalingRecommendation,
     routing_decision_record: inputRoutingComparison.routingDecisionRecord,
     current_gray_path_recommendation: currentGrayPathRecommendation,
+    evaluation_v2: {
+      version: 'evaluation-v2-p0',
+      smoke_mode: rounds === 1 && questionsPerRound === 1,
+      official_best_profile: effectiveBestProfile,
+      observed_best_profile: observedBestProfile,
+      official_run_count:
+        officialSummaryRows.length + officialComparisonRows.length,
+      contaminated_run_count:
+        rows.filter((row) => row.run_quality === 'contaminated').length +
+        inputRoutingComparison.rows.filter((row) => row.run_quality === 'contaminated').length,
+      failed_run_count:
+        rows.filter((row) => row.run_quality === 'failed').length +
+        inputRoutingComparison.rows.filter((row) => row.run_quality === 'failed').length,
+      inconclusive_run_count:
+        rows.filter((row) => row.run_quality === 'inconclusive').length +
+        inputRoutingComparison.rows.filter((row) => row.run_quality === 'inconclusive').length,
+    },
     gate_result: gateResult,
   };
   writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf-8');
@@ -426,7 +557,8 @@ export async function cmdExperiment(
           `scale=${row.scaling_observability?.dynamic_scaling_state ?? 'n/a'}/${row.scaling_observability?.dynamic_scaling_action ?? 'n/a'} ` +
           `seed=${row.requested_training_seed_mode === row.training_seed_mode ? row.training_seed_mode : `${row.requested_training_seed_mode}->${row.training_seed_mode}`} ` +
           `soul=${row.soul_source} preset=${row.runtime_preset} opt=${row.optimization_mode} ` +
-          `fb(e/d)=${row.runtime_observability.evaluator_fallbacks}/${row.runtime_observability.director_fallbacks}`
+          `fb(e/d)=${row.runtime_observability.evaluator_fallbacks}/${row.runtime_observability.director_fallbacks} ` +
+          `status=${row.run_quality}`
         )
       );
     }
@@ -620,84 +752,199 @@ async function runInputRoutingComparison(
 
     const loop = new TrainingLoop(soul, persona, store);
     snapshotAndResetAgentFallbackMetrics();
-    const result = await withTimeout(
-      loop.run({
-        maxRounds: rounds,
-        profile,
-        questionsPerRound: Math.max(1, questionsPerRound),
-        trainingSeedHints: trainingSeedSelection.hints,
-        runtimePreset: executionSettings.runtimePreset,
-        runtimeOverrides: executionSettings.runtimeOverrides,
-        evaluatorLayered: executionSettings.evaluatorLayered,
-        evaluatorDualReview: executionSettings.evaluatorDualReview,
-        directorReviewInterval: executionSettings.directorReviewInterval,
-        directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
-      }),
-      comparisonTimeoutMs,
-      `input routing ${strategy}/${trainingSeedMode}`
-    );
-    const fallbackMetrics = snapshotAndResetAgentFallbackMetrics();
-    const history = result.history;
-    const avgQuality = history.length === 0 ? 0 : history.reduce((sum, item) => sum + item.avgQualityScore, 0) / history.length;
-    const contradictionRate = history.length === 0
-      ? 0
-      : history.reduce((sum, item) => sum + item.observability.contradictionRate, 0) / history.length;
-    const duplicationRate = history.length === 0
-      ? 0
-      : history.reduce((sum, item) => sum + item.observability.duplicationRate, 0) / history.length;
+    try {
+      const result = await withTimeout(
+        loop.run({
+          maxRounds: rounds,
+          profile,
+          questionsPerRound: Math.max(1, questionsPerRound),
+          trainingSeedHints: trainingSeedSelection.hints,
+          runtimePreset: executionSettings.runtimePreset,
+          runtimeOverrides: executionSettings.runtimeOverrides,
+          evaluatorLayered: executionSettings.evaluatorLayered,
+          evaluatorDualReview: executionSettings.evaluatorDualReview,
+          directorReviewInterval: executionSettings.directorReviewInterval,
+          directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
+        }),
+        comparisonTimeoutMs,
+        `input routing ${strategy}/${trainingSeedMode}`
+      );
+      const fallbackMetrics = snapshotAndResetAgentFallbackMetrics();
+      const judgeProvenance = buildJudgeProvenance({
+        layeredMode: executionSettings.evaluatorLayered,
+        dualReviewRequested: executionSettings.evaluatorDualReview,
+        evaluatorFallbacks: fallbackMetrics.evaluatorFallbacks,
+      });
+      const history = result.history;
+      const avgQuality = history.length === 0 ? 0 : history.reduce((sum, item) => sum + item.avgQualityScore, 0) / history.length;
+      const contradictionRate = history.length === 0
+        ? 0
+        : history.reduce((sum, item) => sum + item.observability.contradictionRate, 0) / history.length;
+      const duplicationRate = history.length === 0
+        ? 0
+        : history.reduce((sum, item) => sum + item.observability.duplicationRate, 0) / history.length;
+      const contamination = classifyEvaluationRun({
+        totalRounds: result.totalRounds,
+        runtimeObservability: fallbackMetrics,
+        judgeProvenance,
+      });
 
-    rows.push({
-      label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
-      profile,
-      input_routing: strategy,
-      requested_training_seed_mode: trainingSeedMode,
-      training_seed_mode: trainingSeedSelection.mode,
-      training_seed_gate: {
-        applied: trainingSeedSelection.gate.applied,
-        ready: trainingSeedSelection.gate.ready,
-        readiness_score: trainingSeedSelection.gate.readiness_score,
-        fallback_mode: trainingSeedSelection.gate.fallback_mode,
-        summary: trainingSeedSelection.gate.summary,
-      },
-      soul_source: soulSource,
-      runtime_preset: strategyDecision.runtimePreset,
-      optimization_mode: strategyDecision.optimizationMode,
-      corpus_segment: strategyDecision.corpusSegment,
-      decision_reason: strategyDecision.reason,
-      totalRounds: result.totalRounds,
-      avgQuality,
-      contradictionRate,
-      duplicationRate,
-      coverage: result.soul.coverage_score,
-      observability: routed.observability,
-      scaling_observability: {
-        pack_count: packBuild.packs.length,
-        avg_pack_tokens: packBuild.stats.avg_tokens_per_pack,
-        stable_topic_growth: packBuild.metrics.stable_topic_growth,
-        duplication_pressure: packBuild.metrics.duplication_pressure,
-        seed_maturity: packBuild.metrics.seed_maturity,
-        adaptive_shard_count: adaptiveShardPlan.totals.shard_count,
-        adaptive_avg_pack_per_shard:
-          adaptiveShardPlan.totals.shard_count === 0
-            ? 0
-            : adaptiveShardPlan.totals.pack_count / adaptiveShardPlan.totals.shard_count,
-        adaptive_avg_tokens_per_shard:
-          adaptiveShardPlan.totals.shard_count === 0
-            ? 0
-            : adaptiveShardPlan.totals.estimated_tokens / adaptiveShardPlan.totals.shard_count,
-        dynamic_scaling_state: dynamicScalingRecommendation.state,
-        dynamic_scaling_action: dynamicScalingRecommendation.recommended_action,
-        dynamic_scaling_confidence: dynamicScalingRecommendation.confidence,
-        dynamic_scaling_reason: dynamicScalingRecommendation.reason,
-      },
-      runtime_observability: {
-        kimi_stability_mode: executionSettings.kimiStabilityMode,
-        trainer_fallbacks: fallbackMetrics.trainerFallbacks,
-        persona_fallbacks: fallbackMetrics.personaFallbacks,
-        evaluator_fallbacks: fallbackMetrics.evaluatorFallbacks,
-        director_fallbacks: fallbackMetrics.directorFallbacks,
-      },
-    });
+      rows.push({
+        label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
+        profile,
+        input_routing: strategy,
+        requested_training_seed_mode: trainingSeedMode,
+        training_seed_mode: trainingSeedSelection.mode,
+        training_seed_gate: {
+          applied: trainingSeedSelection.gate.applied,
+          ready: trainingSeedSelection.gate.ready,
+          readiness_score: trainingSeedSelection.gate.readiness_score,
+          fallback_mode: trainingSeedSelection.gate.fallback_mode,
+          summary: trainingSeedSelection.gate.summary,
+        },
+        soul_source: soulSource,
+        runtime_preset: strategyDecision.runtimePreset,
+        optimization_mode: strategyDecision.optimizationMode,
+        corpus_segment: strategyDecision.corpusSegment,
+        decision_reason: strategyDecision.reason,
+        totalRounds: result.totalRounds,
+        avgQuality,
+        contradictionRate,
+        duplicationRate,
+        coverage: result.soul.coverage_score,
+        run_quality: contamination.status,
+        contamination,
+        scorecard: buildEvaluationScorecard({
+          avgQuality,
+          contradictionRate,
+          duplicationRate,
+          coverage: result.soul.coverage_score,
+          runQuality: contamination.status,
+          runtimeObservability: fallbackMetrics,
+        }),
+        judge_provenance: judgeProvenance,
+        benchmark_context: buildBenchmarkContext({
+          slug,
+          suiteType: 'routing_compare',
+          variant: `${strategy}:${trainingSeedSelection.mode}`,
+          rounds,
+          questionsPerRound,
+          smokeMode: rounds === 1 && questionsPerRound === 1,
+        }),
+        observability: routed.observability,
+        scaling_observability: {
+          pack_count: packBuild.packs.length,
+          avg_pack_tokens: packBuild.stats.avg_tokens_per_pack,
+          stable_topic_growth: packBuild.metrics.stable_topic_growth,
+          duplication_pressure: packBuild.metrics.duplication_pressure,
+          seed_maturity: packBuild.metrics.seed_maturity,
+          adaptive_shard_count: adaptiveShardPlan.totals.shard_count,
+          adaptive_avg_pack_per_shard:
+            adaptiveShardPlan.totals.shard_count === 0
+              ? 0
+              : adaptiveShardPlan.totals.pack_count / adaptiveShardPlan.totals.shard_count,
+          adaptive_avg_tokens_per_shard:
+            adaptiveShardPlan.totals.shard_count === 0
+              ? 0
+              : adaptiveShardPlan.totals.estimated_tokens / adaptiveShardPlan.totals.shard_count,
+          dynamic_scaling_state: dynamicScalingRecommendation.state,
+          dynamic_scaling_action: dynamicScalingRecommendation.recommended_action,
+          dynamic_scaling_confidence: dynamicScalingRecommendation.confidence,
+          dynamic_scaling_reason: dynamicScalingRecommendation.reason,
+        },
+        runtime_observability: {
+          kimi_stability_mode: executionSettings.kimiStabilityMode,
+          trainer_fallbacks: fallbackMetrics.trainerFallbacks,
+          persona_fallbacks: fallbackMetrics.personaFallbacks,
+          evaluator_fallbacks: fallbackMetrics.evaluatorFallbacks,
+          director_fallbacks: fallbackMetrics.directorFallbacks,
+        },
+      });
+    } catch (error) {
+      const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
+      const judgeProvenance = buildJudgeProvenance({
+        layeredMode: executionSettings.evaluatorLayered,
+        dualReviewRequested: executionSettings.evaluatorDualReview,
+        evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
+      });
+      const contamination = classifyEvaluationRun({
+        totalRounds: 0,
+        runtimeObservability,
+        judgeProvenance,
+        failureError: String(error),
+      });
+      rows.push({
+        label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
+        profile,
+        input_routing: strategy,
+        requested_training_seed_mode: trainingSeedMode,
+        training_seed_mode: trainingSeedSelection.mode,
+        training_seed_gate: {
+          applied: trainingSeedSelection.gate.applied,
+          ready: trainingSeedSelection.gate.ready,
+          readiness_score: trainingSeedSelection.gate.readiness_score,
+          fallback_mode: trainingSeedSelection.gate.fallback_mode,
+          summary: trainingSeedSelection.gate.summary,
+        },
+        soul_source: soulSource,
+        runtime_preset: strategyDecision.runtimePreset,
+        optimization_mode: strategyDecision.optimizationMode,
+        corpus_segment: strategyDecision.corpusSegment,
+        decision_reason: strategyDecision.reason,
+        totalRounds: 0,
+        avgQuality: 0,
+        contradictionRate: 1,
+        duplicationRate: 1,
+        coverage: 0,
+        run_quality: contamination.status,
+        contamination,
+        scorecard: buildEvaluationScorecard({
+          avgQuality: 0,
+          contradictionRate: 1,
+          duplicationRate: 1,
+          coverage: 0,
+          runQuality: contamination.status,
+          runtimeObservability,
+        }),
+        judge_provenance: judgeProvenance,
+        benchmark_context: buildBenchmarkContext({
+          slug,
+          suiteType: 'routing_compare',
+          variant: `${strategy}:${trainingSeedSelection.mode}`,
+          rounds,
+          questionsPerRound,
+          smokeMode: rounds === 1 && questionsPerRound === 1,
+        }),
+        observability: routed.observability,
+        scaling_observability: {
+          pack_count: packBuild.packs.length,
+          avg_pack_tokens: packBuild.stats.avg_tokens_per_pack,
+          stable_topic_growth: packBuild.metrics.stable_topic_growth,
+          duplication_pressure: packBuild.metrics.duplication_pressure,
+          seed_maturity: packBuild.metrics.seed_maturity,
+          adaptive_shard_count: adaptiveShardPlan.totals.shard_count,
+          adaptive_avg_pack_per_shard:
+            adaptiveShardPlan.totals.shard_count === 0
+              ? 0
+              : adaptiveShardPlan.totals.pack_count / adaptiveShardPlan.totals.shard_count,
+          adaptive_avg_tokens_per_shard:
+            adaptiveShardPlan.totals.shard_count === 0
+              ? 0
+              : adaptiveShardPlan.totals.estimated_tokens / adaptiveShardPlan.totals.shard_count,
+          dynamic_scaling_state: dynamicScalingRecommendation.state,
+          dynamic_scaling_action: dynamicScalingRecommendation.recommended_action,
+          dynamic_scaling_confidence: dynamicScalingRecommendation.confidence,
+          dynamic_scaling_reason: dynamicScalingRecommendation.reason,
+        },
+        runtime_observability: {
+          kimi_stability_mode: executionSettings.kimiStabilityMode,
+          trainer_fallbacks: runtimeObservability.trainer_fallbacks,
+          persona_fallbacks: runtimeObservability.persona_fallbacks,
+          evaluator_fallbacks: runtimeObservability.evaluator_fallbacks,
+          director_fallbacks: runtimeObservability.director_fallbacks,
+        },
+      });
+    }
   }
 
   const recommendation = recommendInputRoutingStrategy({
@@ -737,7 +984,8 @@ function resolveComparisonTimeoutMs(rawDocCount: number, rounds: number): number
 }
 
 function buildCurrentGrayPathRecommendation(rows: InputRoutingComparisonRow[]): CurrentGrayPathRecommendation {
-  const observedBest = [...rows].sort((left, right) =>
+  const sourceRows = selectOfficialRows(rows);
+  const observedBest = [...sourceRows].sort((left, right) =>
     right.avgQuality - left.avgQuality ||
     right.coverage - left.coverage ||
     left.contradictionRate - right.contradictionRate ||

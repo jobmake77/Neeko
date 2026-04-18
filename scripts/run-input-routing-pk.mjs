@@ -91,7 +91,7 @@ for (const variant of variants) {
       lastExitCode = result.status ?? null;
       latestReport = findLatestJson(runDir);
       const parsed = latestReport ? JSON.parse(fs.readFileSync(latestReport, 'utf8')) : null;
-      row = parsed?.input_routing_comparison?.[0] ?? null;
+      row = findComparisonRow(parsed, variant);
       routingDecisionRecord = parsed?.routing_decision_record ?? null;
 
       if ((result.status ?? 1) === 0 && row && typeof row.avgQuality === 'number') {
@@ -117,6 +117,11 @@ for (const variant of variants) {
       duplicationRate: row?.duplicationRate ?? null,
       inputRouting: row?.input_routing ?? null,
       trainingSeedMode: row?.training_seed_mode ?? null,
+      runQuality: row?.run_quality ?? null,
+      contamination: row?.contamination ?? null,
+      scorecard: row?.scorecard ?? null,
+      judgeProvenance: row?.judge_provenance ?? null,
+      benchmarkContext: row?.benchmark_context ?? null,
       runtimeObservability: row?.runtime_observability ?? null,
       observability: row?.observability ?? null,
       scalingObservability: row?.scaling_observability ?? null,
@@ -133,6 +138,7 @@ const aggregateSummary = buildPkAggregateSummary({
 
 const summary = {
   slug,
+  suite_type: 'smoke_pk',
   repeats,
   rounds,
   questions,
@@ -167,6 +173,16 @@ function findLatestJson(dir) {
   const files = fs.readdirSync(dir).filter((name) => name.endsWith('.json') && name.startsWith('experiment-')).sort();
   if (files.length === 0) return null;
   return path.join(dir, files[files.length - 1]);
+}
+
+function findComparisonRow(parsed, variant) {
+  const rows = Array.isArray(parsed?.input_routing_comparison) ? parsed.input_routing_comparison : [];
+  if (rows.length === 0) return null;
+  const [strategyRaw, seedRaw = 'off'] = String(variant).split(':');
+  return rows.find((item) =>
+    item?.input_routing === strategyRaw &&
+    (item?.training_seed_mode === seedRaw || item?.requested_training_seed_mode === seedRaw)
+  ) ?? rows[0];
 }
 
 function sleep(ms) {

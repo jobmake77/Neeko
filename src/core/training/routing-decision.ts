@@ -1,5 +1,6 @@
 import type { DynamicScalingRecommendation } from '../pipeline/dynamic-scaling-recommendation.js';
 import type { InputRoutingStrategy } from '../pipeline/evidence-routing.js';
+import type { EvaluationContamination, EvaluationRunQuality } from './evaluation-v2.js';
 import type { CorpusShape, InputRoutingRecommendation } from './strategy-resolver.js';
 import type { TrainingSeedMode } from './training-seed.js';
 
@@ -40,6 +41,8 @@ export interface RoutingDecisionRow {
   coverage: number;
   contradictionRate: number;
   duplicationRate: number;
+  run_quality?: EvaluationRunQuality;
+  contamination?: EvaluationContamination | null;
   observability: {
     raw_docs: number;
     clean_docs: number;
@@ -177,6 +180,14 @@ function detectExcludedRuns(rows: RoutingDecisionRow[]): RoutingDecisionExcluded
   const medianCoverage = median(coverages);
 
   return rows.flatMap((row) => {
+    if (row.run_quality && row.run_quality !== 'clean') {
+      return [{
+        label: row.label,
+        reason: row.contamination?.summary ?? `run marked ${row.run_quality}`,
+        quality: row.avgQuality,
+        coverage: row.coverage,
+      }];
+    }
     const fallbackCount =
       (row.runtime_observability.trainer_fallbacks ?? 0) +
       (row.runtime_observability.persona_fallbacks ?? 0) +

@@ -5,6 +5,15 @@ import {
   type RoutingDecisionRow,
 } from './routing-decision.js';
 import type { InputRoutingStrategy } from '../pipeline/evidence-routing.js';
+import {
+  buildEvaluationScorecard,
+  isOfficialCleanRun,
+  type BenchmarkContext,
+  type EvaluationContamination,
+  type EvaluationRunQuality,
+  type EvaluationScorecard,
+  type JudgeProvenance,
+} from './evaluation-v2.js';
 import type { TrainingSeedMode } from './training-seed.js';
 import path from 'node:path';
 
@@ -21,6 +30,11 @@ export interface PkRunSummary {
   duplicationRate: number | null;
   inputRouting: InputRoutingStrategy | null;
   trainingSeedMode: TrainingSeedMode | null;
+  runQuality?: EvaluationRunQuality | null;
+  contamination?: EvaluationContamination | null;
+  scorecard?: EvaluationScorecard | null;
+  judgeProvenance?: JudgeProvenance | null;
+  benchmarkContext?: BenchmarkContext | null;
   runtimeObservability?: RoutingDecisionRow['runtime_observability'] | null;
   observability?: RoutingDecisionRow['observability'] | null;
   scalingObservability?: RoutingDecisionRow['scaling_observability'] | null;
@@ -41,6 +55,7 @@ export interface PkVariantAggregate {
   runs: number;
   clean_runs: number;
   excluded_runs: number;
+  run_quality_counts: Record<string, number>;
   mean_quality: number | null;
   clean_mean_quality: number | null;
   mean_coverage: number | null;
@@ -53,6 +68,8 @@ export interface PkVariantAggregate {
   clean_qualities: number[];
   coverages: number[];
   clean_coverages: number[];
+  observed_scorecard: EvaluationScorecard | null;
+  official_scorecard: EvaluationScorecard | null;
   excluded_run_details: PkExcludedRun[];
   excluded_reason_counts: Record<string, number>;
   routing_record_counts: {
@@ -68,6 +85,7 @@ export interface PkRoutingDecisionAggregate {
   overall_record: RoutingDecisionRecord | null;
   clean_run_count: number;
   excluded_run_count: number;
+  run_quality_counts: Record<string, number>;
   excluded_runs: PkExcludedRun[];
   excluded_reason_counts: Record<string, number>;
   account_type_counts: Record<string, number>;
@@ -106,6 +124,7 @@ export function buildPkAggregateSummary(options: {
       runs: variantRuns.length,
       clean_runs: cleanRuns.length,
       excluded_runs: excludedForVariant.length,
+      run_quality_counts: countBy(variantRuns.map((run) => run.runQuality ?? 'unknown')),
       mean_quality: mean(variantRuns.map((run) => run.quality)),
       clean_mean_quality: mean(cleanRuns.map((run) => run.quality)),
       mean_coverage: mean(variantRuns.map((run) => run.coverage)),
@@ -118,6 +137,8 @@ export function buildPkAggregateSummary(options: {
       clean_qualities: compactNumbers(cleanRuns.map((run) => run.quality)),
       coverages: compactNumbers(variantRuns.map((run) => run.coverage)),
       clean_coverages: compactNumbers(cleanRuns.map((run) => run.coverage)),
+      observed_scorecard: buildAggregateScorecard(variantRuns),
+      official_scorecard: buildAggregateScorecard(cleanRuns),
       excluded_run_details: excludedForVariant,
       excluded_reason_counts: countBy(excludedForVariant.map((run) => run.reason)),
       routing_record_counts: summarizeRoutingRecords(cleanRuns),
@@ -145,6 +166,7 @@ export function buildPkAggregateSummary(options: {
       overall_record: overallRecord,
       clean_run_count: aggregateRows.reduce((sum, row) => sum + row.clean_runs, 0),
       excluded_run_count: excludedRuns.length,
+      run_quality_counts: countBy(successfulRuns.map((run) => run.runQuality ?? 'unknown')),
       excluded_runs: excludedRuns,
       excluded_reason_counts: countBy(excludedRuns.map((run) => run.reason)),
       account_type_counts: mergeCountMaps(aggregateRows.map((row) => row.routing_record_counts.account_type)),
@@ -178,6 +200,16 @@ function detectExcludedRunsForVariant(runs: PkRunSummary[]): PkExcludedRun[] {
   const medianCoverage = median(compactNumbers(runs.map((run) => run.coverage)));
 
   return runs.flatMap((run) => {
+    if (run.runQuality && !isOfficialCleanRun(run.runQuality)) {
+      return [{
+        variant: run.variant,
+        repeat: run.repeat,
+        label: runLabel(run),
+        reason: run.contamination?.summary ?? `run marked ${run.runQuality}`,
+        quality: run.quality ?? 0,
+        coverage: run.coverage ?? 0,
+      }];
+    }
     const fallbackCount = runtimeFallbackCount(run.runtimeObservability);
     const quality = run.quality ?? 0;
     const coverage = run.coverage ?? 0;
@@ -227,6 +259,8 @@ function buildRepresentativeRows(
       coverage: aggregate.clean_mean_coverage ?? aggregate.mean_coverage ?? 0,
       contradictionRate: aggregate.clean_mean_contradiction_rate ?? aggregate.mean_contradiction_rate ?? 0,
       duplicationRate: aggregate.clean_mean_duplication_rate ?? aggregate.mean_duplication_rate ?? 0,
+      run_quality: cleanRuns.length > 0 ? 'clean' : firstRun.runQuality ?? 'clean',
+      contamination: cleanRuns.length > 0 ? null : firstRun.contamination ?? null,
       observability,
       scaling_observability: scalingObservability,
       runtime_observability: runtimeObservability,
@@ -345,6 +379,41 @@ function maxNumber(values: Array<number | null | undefined>): number {
 function roundedMean(values: Array<number | null | undefined>): number {
   const value = mean(values);
   return value === null ? 0 : Math.round(value);
+}
+
+function buildAggregateScorecard(runs: PkRunSummary[]): EvaluationScorecard | null {
+  if (runs.length === 0) return null;
+  const avgQuality = mean(runs.map((run) => run.quality)) ?? 0;
+  const contradictionRate = mean(runs.map((run) => run.contradictionRate)) ?? 0;
+  const duplicationRate = mean(runs.map((run) => run.duplicationRate)) ?? 0;
+  const coverage = mean(runs.map((run) => run.coverage)) ?? 0;
+  const fallbackCounts = runs.map((run) => ({
+    trainer: run.runtimeObservability?.trainer_fallbacks ?? 0,
+    persona: run.runtimeObservability?.persona_fallbacks ?? 0,
+    evaluator: run.runtimeObservability?.evaluator_fallbacks ?? 0,
+    director: run.runtimeObservability?.director_fallbacks ?? 0,
+  }));
+  const runQuality = runs.every((run) => run.runQuality === 'clean')
+    ? 'clean'
+    : runs.some((run) => run.runQuality === 'failed')
+      ? 'failed'
+      : runs.some((run) => run.runQuality === 'inconclusive')
+        ? 'inconclusive'
+        : 'contaminated';
+
+  return buildEvaluationScorecard({
+    avgQuality,
+    contradictionRate,
+    duplicationRate,
+    coverage,
+    runQuality,
+    runtimeObservability: {
+      trainer_fallbacks: roundedMean(fallbackCounts.map((item) => item.trainer)),
+      persona_fallbacks: roundedMean(fallbackCounts.map((item) => item.persona)),
+      evaluator_fallbacks: roundedMean(fallbackCounts.map((item) => item.evaluator)),
+      director_fallbacks: roundedMean(fallbackCounts.map((item) => item.director)),
+    },
+  });
 }
 
 function countBy(values: string[]): Record<string, number> {

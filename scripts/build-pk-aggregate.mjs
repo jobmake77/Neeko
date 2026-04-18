@@ -31,6 +31,8 @@ const aggregateSummary = buildPkAggregateSummary({
 const overallRecord = aggregateSummary.routing_decision_aggregate.overall_record;
 const report = {
   slug,
+  schema_version: 2,
+  suite_type: 'smoke_pk',
   generated_at: new Date().toISOString(),
   source_summaries: summaryPaths,
   aggregate: aggregateSummary.aggregate_by_variant,
@@ -42,7 +44,7 @@ const report = {
       ? `${overallRecord.recommended_routing.input_routing} + ${overallRecord.recommended_routing.training_seed_mode}`
       : 'unknown',
     signals_status: 'keep gated',
-    runtime_governance:
+      runtime_governance:
       aggregateSummary.routing_decision_aggregate.excluded_run_count > 0
         ? 'provider/runtime noise was detected and isolated via excluded-run handling in the PK aggregate layer'
         : 'no excluded runs were detected in the supplied summaries; current PK aggregate is clean under the new routing-decision-aware report layer',
@@ -78,6 +80,11 @@ function hydrateRunFromReport(run) {
 
     return {
       ...run,
+      runQuality: run.runQuality ?? comparisonRow?.run_quality ?? null,
+      contamination: run.contamination ?? comparisonRow?.contamination ?? null,
+      scorecard: run.scorecard ?? comparisonRow?.scorecard ?? null,
+      judgeProvenance: run.judgeProvenance ?? comparisonRow?.judge_provenance ?? null,
+      benchmarkContext: run.benchmarkContext ?? comparisonRow?.benchmark_context ?? null,
       runtimeObservability: run.runtimeObservability ?? comparisonRow?.runtime_observability ?? null,
       observability: run.observability ?? comparisonRow?.observability ?? null,
       scalingObservability: run.scalingObservability ?? comparisonRow?.scaling_observability ?? null,

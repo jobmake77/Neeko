@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
-import { basename, extname, isAbsolute, join } from 'path';
+import { basename, dirname, extname, isAbsolute, join } from 'path';
 import { execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { generateText } from 'ai';
@@ -4587,6 +4587,18 @@ export class WorkbenchService {
     return this.startCliRun('experiment', input.slug, args, join(outputDir, 'experiment-report.json'));
   }
 
+  private resolveExperimentReportPath(reportPath?: string | null): string | null {
+    if (!reportPath) return null;
+    if (existsSync(reportPath)) return reportPath;
+    const baseDir = dirname(reportPath);
+    if (!existsSync(baseDir)) return null;
+    const candidates = readdirSync(baseDir)
+      .filter((name) => name.startsWith('experiment-') && name.endsWith('.json'))
+      .sort();
+    if (candidates.length === 0) return null;
+    return join(baseDir, candidates[candidates.length - 1]);
+  }
+
   exportPersona(input: WorkbenchExportInput): WorkbenchRun {
     const outputDir = input.outputDir ?? join(this.store.baseDir, 'exports', `${input.slug}-${Date.now()}`);
     const args = ['export', input.slug, '--to', input.format ?? 'openclaw', '--output-dir', outputDir];
@@ -4598,14 +4610,19 @@ export class WorkbenchService {
     if (!run) return null;
     if (run.status === 'running' && run.pid && !this.isPidAlive(run.pid)) {
       let inferredStatus: 'completed' | 'failed' = 'failed';
+      let resolvedReportPath = run.report_path;
       if (run.type === 'train' && run.persona_slug) {
         const trainingContext = this.readTrainingContext(run.persona_slug);
         inferredStatus = trainingContext?.state === 'completed' ? 'completed' : 'failed';
+      } else if (run.type === 'experiment') {
+        resolvedReportPath = this.resolveExperimentReportPath(run.report_path);
+        inferredStatus = resolvedReportPath ? 'completed' : 'failed';
       } else {
         inferredStatus = run.report_path && existsSync(run.report_path) ? 'completed' : 'failed';
       }
       return this.store.updateRun(run.id, {
         status: inferredStatus,
+        report_path: resolvedReportPath ?? run.report_path,
         finished_at: new Date().toISOString(),
         summary: inferExitedRunSummary(run.summary, inferredStatus),
       });
@@ -4645,11 +4662,14 @@ export class WorkbenchService {
     let report: unknown;
     let context: unknown;
     let contextPath: string | undefined;
-    if (run.report_path && existsSync(run.report_path)) {
-      if (run.report_path.endsWith('.json')) {
-        report = readJsonFile(run.report_path, null);
-      } else if (existsSync(run.report_path) && !run.report_path.endsWith('.json')) {
-        report = { path: run.report_path };
+    const resolvedReportPath = run.type === 'experiment'
+      ? this.resolveExperimentReportPath(run.report_path)
+      : run.report_path;
+    if (resolvedReportPath && existsSync(resolvedReportPath)) {
+      if (resolvedReportPath.endsWith('.json')) {
+        report = readJsonFile(resolvedReportPath, null);
+      } else if (existsSync(resolvedReportPath) && !resolvedReportPath.endsWith('.json')) {
+        report = { path: resolvedReportPath };
       }
     }
     if (run.type === 'train') {

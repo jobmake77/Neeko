@@ -1,4 +1,11 @@
 import { TrainingProfile } from './types.js';
+import type {
+  BenchmarkContext,
+  EvaluationContamination,
+  EvaluationRunQuality,
+  EvaluationScorecard,
+  JudgeProvenance,
+} from './evaluation-v2.js';
 
 export interface ExperimentSummaryRow {
   profile: TrainingProfile;
@@ -7,6 +14,17 @@ export interface ExperimentSummaryRow {
   contradictionRate: number;
   duplicationRate: number;
   coverage: number;
+  run_quality?: EvaluationRunQuality;
+  contamination?: EvaluationContamination;
+  scorecard?: EvaluationScorecard;
+  judge_provenance?: JudgeProvenance;
+  benchmark_context?: BenchmarkContext;
+  runtime_observability?: {
+    trainer_fallbacks: number;
+    persona_fallbacks: number;
+    evaluator_fallbacks: number;
+    director_fallbacks: number;
+  };
 }
 
 export interface GateThresholds {
@@ -30,7 +48,7 @@ export interface GateResult {
 }
 
 export interface AbComparisonReport {
-  schema_version: 1;
+  schema_version: 2;
   generated_at: string;
   report_quality: 'complete' | 'timeout_limited';
   group_a: TrainingProfile;
@@ -50,6 +68,18 @@ export interface AbComparisonReport {
     contradiction_rate: number;
     duplication_rate: number;
     coverage: number;
+  };
+  run_quality: {
+    a: EvaluationRunQuality;
+    b: EvaluationRunQuality;
+  };
+  contamination: {
+    a: EvaluationContamination | null;
+    b: EvaluationContamination | null;
+  };
+  scorecards: {
+    a: EvaluationScorecard | null;
+    b: EvaluationScorecard | null;
   };
   gate_result: GateResult;
 }
@@ -85,6 +115,26 @@ export function evaluateGate(
       enabled: true,
       passed: false,
       reason: `${baselineProfile}/${compareProfile} rows missing`,
+      baseline_profile: baselineProfile,
+      compare_profile: compareProfile,
+    };
+  }
+
+  if (baseline.run_quality && baseline.run_quality !== 'clean') {
+    return {
+      enabled: true,
+      passed: false,
+      reason: `${baselineProfile} row is not clean (${baseline.run_quality})`,
+      baseline_profile: baselineProfile,
+      compare_profile: compareProfile,
+    };
+  }
+
+  if (compare.run_quality && compare.run_quality !== 'clean') {
+    return {
+      enabled: true,
+      passed: false,
+      reason: `${compareProfile} row is not clean (${compare.run_quality})`,
       baseline_profile: baselineProfile,
       compare_profile: compareProfile,
     };
@@ -150,7 +200,7 @@ export function buildAbComparisonReport(
   }
 
   return {
-    schema_version: 1,
+    schema_version: 2,
     generated_at: new Date().toISOString(),
     report_quality: options?.reportQuality ?? 'complete',
     group_a: groupA,
@@ -170,6 +220,18 @@ export function buildAbComparisonReport(
       contradiction_rate: b.contradictionRate - a.contradictionRate,
       duplication_rate: b.duplicationRate - a.duplicationRate,
       coverage: b.coverage - a.coverage,
+    },
+    run_quality: {
+      a: a.run_quality ?? 'clean',
+      b: b.run_quality ?? 'clean',
+    },
+    contamination: {
+      a: a.contamination ?? null,
+      b: b.contamination ?? null,
+    },
+    scorecards: {
+      a: a.scorecard ?? null,
+      b: b.scorecard ?? null,
     },
     gate_result: gateResult,
   };
@@ -215,6 +277,8 @@ export function toAbComparisonMarkdown(report: AbComparisonReport): string {
     `- Group A: \`${report.group_a}\``,
     `- Group B: \`${report.group_b}\``,
     `- Report quality: \`${report.report_quality}\``,
+    `- Group A run quality: \`${report.run_quality.a}\``,
+    `- Group B run quality: \`${report.run_quality.b}\``,
     `- Elapsed: ${report.execution.elapsed_ms} ms`,
     `- Generated: ${report.generated_at}`,
     report.execution.fast_failures.length > 0

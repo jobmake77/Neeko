@@ -22,7 +22,7 @@ interface StandaloneEvidenceOptions {
 
 interface ChatEvidenceOptions {
   manifest: TargetManifest;
-  sourceType: 'wechat' | 'feishu';
+  sourceType: 'wechat' | 'feishu' | 'custom';
   sourceUrl: string;
 }
 

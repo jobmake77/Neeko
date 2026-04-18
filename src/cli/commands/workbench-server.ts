@@ -284,7 +284,7 @@ export async function cmdWorkbenchServer(
         const body = await readBody(req);
         writeJson(res, 200, await service.updatePersona(slug, {
           name: getString(body.name) ?? '',
-          source_type: (getString(body.source_type) as 'social' | 'chat_file' | 'video_file' | 'article' | undefined) ?? undefined,
+          source_type: (getString(body.source_type) as 'social' | 'chat_file' | 'video_file' | 'audio_file' | 'article' | undefined) ?? undefined,
           source_target: getString(body.source_target),
           source_path: getString(body.source_path),
           target_manifest_path: getString(body.target_manifest_path),
@@ -367,10 +367,10 @@ export async function cmdWorkbenchServer(
         writeJson(res, 200, await service.importEvidence({
           personaSlug: decodeURIComponent(personaEvidenceImportsMatch[1]),
           conversationId: getString(body.conversationId),
-          sourceKind: (getString(body.sourceKind) as 'chat' | 'video' | undefined) ?? 'chat',
+          sourceKind: (getString(body.sourceKind) as 'chat' | 'video' | 'audio' | undefined) ?? 'chat',
           sourcePath,
           targetManifestPath,
-          chatPlatform: getString(body.chatPlatform) as 'wechat' | 'feishu' | undefined,
+          chatPlatform: getString(body.chatPlatform) as 'wechat' | 'feishu' | 'custom' | undefined,
         }));
         return;
       }
@@ -398,7 +398,7 @@ export async function cmdWorkbenchServer(
           writeJson(res, 200, service.createPersonaFromConfig({
             persona_slug: getString(body.persona_slug),
             name: getString(body.name) ?? '',
-            source_type: sourceType as 'social' | 'chat_file' | 'video_file' | 'article' | undefined,
+            source_type: sourceType as 'social' | 'chat_file' | 'video_file' | 'audio_file' | 'article' | undefined,
             source_target: getString(body.source_target),
             source_path: getString(body.source_path),
             target_manifest_path: getString(body.target_manifest_path),

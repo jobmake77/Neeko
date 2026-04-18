@@ -91,8 +91,11 @@ export interface PersonaConfigInput {
     mode?: PersonaSource['mode'];
     platform?: string;
     handle_or_url?: string;
+    links?: string[];
     local_path?: string;
     manifest_path?: string;
+    target_label?: string;
+    target_aliases?: string[];
     sync_strategy?: PersonaSource['sync_strategy'];
     horizon_mode?: PersonaSource['horizon_mode'];
     horizon_years?: number;
@@ -160,10 +163,10 @@ export interface WorkbenchExportInput {
 export interface WorkbenchEvidenceImportInput {
   personaSlug: string;
   conversationId?: string;
-  sourceKind: 'chat' | 'video';
+  sourceKind: 'chat' | 'video' | 'audio';
   sourcePath: string;
   targetManifestPath: string;
-  chatPlatform?: 'wechat' | 'feishu';
+  chatPlatform?: 'wechat' | 'feishu' | 'custom';
 }
 
 export interface PersonaResponseMeta {
@@ -336,6 +339,7 @@ function detectConfigSourceType(source: string | undefined): PersonaConfig['sour
   if (!isAbsolute(source)) return 'social';
   const extension = extname(source).toLowerCase();
   if (['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'].includes(extension)) return 'video_file';
+  if (['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac'].includes(extension)) return 'audio_file';
   return 'chat_file';
 }
 
@@ -343,7 +347,17 @@ function createSourceId(): string {
   return crypto.randomUUID();
 }
 
+function normalizeStringArray(values: Array<string | undefined> | undefined): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(new Set(
+    values
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+  ));
+}
+
 function normalizePersonaSource(input: PersonaSourceInput): PersonaSource {
+  const links = normalizeStringArray(input.links);
   return {
     id: input.id?.trim() || createSourceId(),
     type: input.type,
@@ -354,8 +368,11 @@ function normalizePersonaSource(input: PersonaSourceInput): PersonaSource {
     ),
     platform: input.platform?.trim() || undefined,
     handle_or_url: input.handle_or_url?.trim() || undefined,
+    links,
     local_path: input.local_path?.trim() || undefined,
     manifest_path: input.manifest_path?.trim() || undefined,
+    target_label: input.target_label?.trim() || undefined,
+    target_aliases: normalizeStringArray(input.target_aliases),
     sync_strategy: input.sync_strategy ?? 'deep_window',
     horizon_mode: input.horizon_mode ?? 'deep_archive',
     horizon_years: Number.isFinite(input.horizon_years) ? Math.max(1, Math.min(10, Number(input.horizon_years))) : undefined,
@@ -385,8 +402,11 @@ function buildLegacySourceFromConfig(config: {
       : (config.source_path?.trim() ? 'local_file' : 'remote_url'),
     platform: config.platform?.trim() || undefined,
     handle_or_url: config.source_target?.trim() || undefined,
+    links: [],
     local_path: config.source_path?.trim() || undefined,
     manifest_path: config.target_manifest_path?.trim() || undefined,
+    target_label: undefined,
+    target_aliases: [],
     sync_strategy: 'deep_window',
     horizon_mode: 'deep_archive',
     horizon_years: config.source_type === 'social' ? 8 : undefined,
@@ -399,7 +419,7 @@ function buildLegacySourceFromConfig(config: {
 function normalizePersonaConfigInput(input: PersonaConfigInput, now: string): { name: string; sources: PersonaSource[]; update_policy: PersonaConfig['update_policy'] } {
   const normalizedSources = (input.sources ?? [])
     .map((item) => normalizePersonaSource(item))
-    .filter((item) => Boolean(item.handle_or_url || item.local_path));
+    .filter((item) => Boolean(item.handle_or_url || item.local_path || item.links?.length));
   if (normalizedSources.length > 0) {
     return {
       name: input.name.trim(),
@@ -571,6 +591,7 @@ function formatSourceTypeLabel(type: string): string {
   if (type === 'social') return 'X/Twitter';
   if (type === 'chat_file') return '聊天资料';
   if (type === 'video_file') return '视频资料';
+  if (type === 'audio_file') return '音频资料';
   if (type === 'article') return '网页文章';
   return type;
 }
@@ -590,11 +611,12 @@ function computeSourceWeight(source: PersonaSource): number {
   if (source.type === 'social') return 1;
   if (source.type === 'chat_file') return 0.98;
   if (source.type === 'video_file') return source.mode === 'channel_url' || source.mode === 'single_url' ? 0.9 : 0.95;
+  if (source.type === 'audio_file') return 0.9;
   return 0.72;
 }
 
 function describeSourceLabel(source: PersonaSource): string {
-  return source.handle_or_url ?? source.local_path ?? source.platform ?? source.type;
+  return source.handle_or_url ?? source.links?.[0] ?? source.local_path ?? source.platform ?? source.type;
 }
 
 function normalizeHostTokens(value: string): string[] {
@@ -1587,9 +1609,11 @@ export class WorkbenchService {
         type: sourceType,
         mode: sourceType === 'social' ? 'handle' : 'local_file',
         handle_or_url: sourceType === 'social' ? primarySource : undefined,
+        links: [],
         local_path: sourceType === 'social' ? undefined : primarySource,
         manifest_path: undefined,
         platform: sourceType === 'social' ? 'x' : undefined,
+        target_aliases: [],
         sync_strategy: 'deep_window',
         horizon_mode: 'deep_archive',
         horizon_years: sourceType === 'social' ? 8 : undefined,
@@ -2336,6 +2360,29 @@ export class WorkbenchService {
         });
       }
 
+      if (sourceKind === 'audio') {
+        if (tokenMatches > 0) {
+          return createValidationResult({
+            status: 'accepted',
+            reason_code: 'audio_identity_match',
+            summary: '音频转写内容已通过身份一致性校验。',
+            confidence: 0.8,
+            identity_match: Math.min(1, tokenMatches / 2),
+            source_integrity: 0.8,
+            evidence: [doc.author ?? '', basename(sourcePath)].filter(Boolean),
+          });
+        }
+        return createValidationResult({
+          status: 'quarantined',
+          reason_code: 'audio_identity_weak',
+          summary: '音频转写归属不足，已进入隔离区，不进入正式培养。',
+          confidence: 0.34,
+          identity_match: 0.2,
+          source_integrity: 0.6,
+          evidence: [doc.author ?? '', basename(sourcePath)].filter(Boolean),
+        });
+      }
+
       return createValidationResult({
         status: 'accepted',
         reason_code: 'default_accept',
@@ -2381,6 +2428,16 @@ export class WorkbenchService {
         const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
         sourceDocs = await adapter.fetch(input.sourcePath);
       }
+      if (input.sourceKind === 'audio') {
+        sourceDocs = sourceDocs.map((doc) => ({
+          ...doc,
+          source_platform: 'audio_transcript',
+          metadata: {
+            ...(doc.metadata ?? {}),
+            media_kind: 'audio',
+          },
+        }));
+      }
       batch = buildVideoTranscriptEvidenceBatch(sourceDocs, manifest);
     }
 
@@ -2396,7 +2453,11 @@ export class WorkbenchService {
       persona_slug: input.personaSlug,
       conversation_id: input.conversationId,
       source_kind: input.sourceKind,
-      source_platform: input.sourceKind === 'chat' ? input.chatPlatform : 'video_transcript',
+      source_platform: input.sourceKind === 'chat'
+        ? input.chatPlatform
+        : input.sourceKind === 'audio'
+          ? 'audio_transcript'
+          : 'video_transcript',
       source_path: input.sourcePath,
       target_manifest_path: input.targetManifestPath,
       status: validation.accepted.length > 0 ? 'completed' : 'quarantined',
@@ -2929,6 +2990,8 @@ export class WorkbenchService {
         mode: 'channel_url',
         platform: 'youtube',
         handle_or_url: candidate.url_or_handle,
+        links: [],
+        target_aliases: [],
         enabled: true,
         status: 'idle',
         sync_strategy: 'deep_window',
@@ -2942,6 +3005,22 @@ export class WorkbenchService {
         mode: 'single_url',
         platform: 'youtube',
         handle_or_url: candidate.url_or_handle,
+        links: [],
+        target_aliases: [],
+        enabled: true,
+        status: 'idle',
+        sync_strategy: 'incremental',
+        horizon_mode: 'deep_archive',
+      };
+    }
+    if (candidate.type === 'podcast_episode_page') {
+      return {
+        id: createSourceId(),
+        type: 'audio_file',
+        mode: 'remote_url',
+        platform: 'podcast',
+        links: [candidate.url_or_handle],
+        target_aliases: [],
         enabled: true,
         status: 'idle',
         sync_strategy: 'incremental',
@@ -2954,6 +3033,8 @@ export class WorkbenchService {
       mode: 'remote_url',
       platform: candidate.platform || 'web',
       handle_or_url: candidate.url_or_handle,
+      links: [],
+      target_aliases: [],
       enabled: true,
       status: 'idle',
       sync_strategy: 'incremental',
@@ -2968,6 +3049,8 @@ export class WorkbenchService {
   ): DocumentValidationOutcome {
     const identityTokens = Array.from(new Set([
       personaName,
+      source.target_label ?? '',
+      ...(source.target_aliases ?? []),
       source.handle_or_url ?? '',
       source.platform ?? '',
     ].flatMap((value) => String(value).split(/[^a-zA-Z0-9@._-]+/)).map((item) => item.trim().toLowerCase()).filter((item) => item.length >= 3 || item.startsWith('@'))));
@@ -3069,6 +3152,30 @@ export class WorkbenchService {
           confidence: 0.34,
           identity_match: identityMatchScore,
           source_integrity: 0.48,
+          evidence,
+        });
+      }
+
+      if (source.type === 'audio_file') {
+        const firstParty = targetHandle && haystack.includes(targetHandle);
+        if (firstParty || identityMatchScore >= 0.45) {
+          return createValidationResult({
+            status: 'accepted',
+            reason_code: firstParty ? 'audio_first_party_match' : 'audio_identity_match',
+            summary: firstParty ? '音频来源与目标身份存在直接匹配。' : '音频内容与目标身份存在稳定匹配。',
+            confidence: firstParty ? 0.88 : 0.72,
+            identity_match: firstParty ? 0.92 : identityMatchScore,
+            source_integrity: firstParty ? 0.88 : 0.7,
+            evidence,
+          });
+        }
+        return createValidationResult({
+          status: 'quarantined',
+          reason_code: 'audio_identity_weak',
+          summary: '音频来源归属不足，已隔离，不进入正式训练。',
+          confidence: 0.32,
+          identity_match: identityMatchScore,
+          source_integrity: 0.46,
           evidence,
         });
       }
@@ -3281,6 +3388,54 @@ export class WorkbenchService {
     };
   }
 
+  private resolveSourceTargets(source: PersonaSource): string[] {
+    const links = normalizeStringArray(source.links);
+    if (links.length > 0) return links;
+    if (source.handle_or_url?.trim()) return [source.handle_or_url.trim()];
+    return [];
+  }
+
+  private buildSourceTargetManifest(config: PersonaConfig, source: PersonaSource): {
+    target_name: string;
+    target_aliases: string[];
+    self_aliases: string[];
+    known_other_aliases: string[];
+  } {
+    const aliases = normalizeStringArray([
+      config.name,
+      source.target_label,
+      ...(source.target_aliases ?? []),
+      ...(source.type === 'social' && source.handle_or_url
+        ? [source.handle_or_url.replace(/^@/, ''), source.handle_or_url]
+        : []),
+    ]);
+    return {
+      target_name: config.name,
+      target_aliases: aliases,
+      self_aliases: [],
+      known_other_aliases: [],
+    };
+  }
+
+  private ensureGeneratedSourceManifest(
+    slug: string,
+    config: PersonaConfig,
+    source: PersonaSource,
+  ): string {
+    const manifestDir = join(settings.getPersonaDir(slug), 'generated-manifests');
+    mkdirSync(manifestDir, { recursive: true });
+    const manifestPath = join(manifestDir, `${source.id}.json`);
+    writeFileSync(manifestPath, JSON.stringify(this.buildSourceTargetManifest(config, source), null, 2), 'utf-8');
+    return manifestPath;
+  }
+
+  private inferSourceKind(source: PersonaSource): WorkbenchEvidenceImport['source_kind'] {
+    if (source.type === 'social' || source.type === 'chat_file') return 'chat';
+    if (source.type === 'article') return 'article';
+    if (source.type === 'audio_file') return 'audio';
+    return 'video';
+  }
+
   private async syncPersonaSources(
     slug: string,
     config: PersonaConfig,
@@ -3288,7 +3443,10 @@ export class WorkbenchService {
   ): Promise<WorkbenchEvidenceImport[]> {
     const imports: WorkbenchEvidenceImport[] = [];
     for (const source of config.sources.filter((item) => item.enabled)) {
-      if (source.type === 'chat_file' || (source.type === 'video_file' && source.mode === 'local_file')) {
+      if (
+        source.type === 'chat_file'
+        || ((source.type === 'video_file' || source.type === 'audio_file') && source.mode === 'local_file')
+      ) {
         if (!options.includeLocal) continue;
       }
       const imported = await this.syncSinglePersonaSource(slug, config, source, options);
@@ -3304,23 +3462,37 @@ export class WorkbenchService {
     options: { includeLocal: boolean; forceRemote: boolean }
   ): Promise<WorkbenchEvidenceImport | null> {
     if (source.type === 'chat_file') {
-      if (!source.local_path || !source.manifest_path) return null;
+      if (!source.local_path) return null;
       return this.importEvidence({
         personaSlug: slug,
         sourceKind: 'chat',
         sourcePath: source.local_path,
-        targetManifestPath: source.manifest_path,
-        chatPlatform: (source.platform as 'wechat' | 'feishu' | undefined) ?? 'wechat',
+        targetManifestPath: this.ensureGeneratedSourceManifest(slug, config, source),
+        chatPlatform: source.platform === 'feishu'
+          ? 'feishu'
+          : source.platform === 'wechat'
+            ? 'wechat'
+            : 'custom',
       });
     }
 
     if (source.type === 'video_file' && source.mode === 'local_file') {
-      if (!source.local_path || !source.manifest_path) return null;
+      if (!source.local_path) return null;
       return this.importEvidence({
         personaSlug: slug,
         sourceKind: 'video',
         sourcePath: source.local_path,
-        targetManifestPath: source.manifest_path,
+        targetManifestPath: this.ensureGeneratedSourceManifest(slug, config, source),
+      });
+    }
+
+    if (source.type === 'audio_file' && source.mode === 'local_file') {
+      if (!source.local_path) return null;
+      return this.importEvidence({
+        personaSlug: slug,
+        sourceKind: 'audio',
+        sourcePath: source.local_path,
+        targetManifestPath: this.ensureGeneratedSourceManifest(slug, config, source),
       });
     }
 
@@ -3345,22 +3517,84 @@ export class WorkbenchService {
 
     let docs: RawDocument[] = [];
     let sourcePlatform = source.platform ?? source.type;
+    const targets = this.resolveSourceTargets(source);
+    if (targets.length === 0) return null;
     this.touchSyncOperation(slug, config, source, forceRemote);
     this.appendPersonaRunLog(slug, `sync source ${describeSourceLabel(source)} started`, forceRemote ? '正在深抓取来源…' : '正在增量拉取来源…');
     try {
       if (source.type === 'social' && source.handle_or_url) {
         docs = await this.fetchTwitterSourceDocuments(source, forceRemote);
         sourcePlatform = source.platform ?? 'twitter';
-      } else if (source.type === 'video_file' && source.handle_or_url) {
-        const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
-        const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
-        const videoLimit = 1;
-        docs = await adapter.fetch(source.handle_or_url, { limit: videoLimit, since });
-        sourcePlatform = source.platform ?? docs[0]?.source_platform ?? 'video_remote';
-      } else if ((source.type === 'article' || source.mode === 'remote_url') && source.handle_or_url) {
-        const adapter = new AgentReachAdapter('article');
-        docs = await adapter.fetch(source.handle_or_url, { limit: 1 });
-        sourcePlatform = source.platform ?? 'web';
+      } else {
+        const mergedDocs: RawDocument[] = [];
+        for (const target of targets) {
+          if (source.type === 'video_file') {
+            const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+            const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
+            const remoteDocs = await adapter.fetch(target, {
+              limit: source.mode === 'channel_url' ? 12 : 1,
+              since,
+            });
+            mergedDocs.push(...remoteDocs.map((doc) => ({
+              ...doc,
+              metadata: {
+                ...(doc.metadata ?? {}),
+                source_target_url: target,
+              },
+            })));
+            sourcePlatform = source.platform ?? remoteDocs[0]?.source_platform ?? 'video_remote';
+            continue;
+          }
+
+          if (source.type === 'audio_file') {
+            const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+            let remoteDocs: RawDocument[] = [];
+            try {
+              remoteDocs = await adapter.fetch(target, { limit: 1 });
+            } catch {
+              remoteDocs = [];
+            }
+            if (remoteDocs.length === 0) {
+              const articleAdapter = new AgentReachAdapter('article');
+              remoteDocs = await articleAdapter.fetch(target, { limit: 1 });
+              remoteDocs = remoteDocs.map((doc) => ({
+                ...doc,
+                metadata: {
+                  ...(doc.metadata ?? {}),
+                  audio_link_fallback: true,
+                  source_target_url: target,
+                },
+              }));
+            } else {
+              remoteDocs = remoteDocs.map((doc) => ({
+                ...doc,
+                source_platform: source.platform ?? 'podcast',
+                metadata: {
+                  ...(doc.metadata ?? {}),
+                  media_kind: 'audio',
+                  source_target_url: target,
+                },
+              }));
+            }
+            mergedDocs.push(...remoteDocs);
+            sourcePlatform = source.platform ?? 'podcast';
+            continue;
+          }
+
+          if (source.type === 'article' || source.mode === 'remote_url') {
+            const adapter = new AgentReachAdapter('article');
+            const remoteDocs = await adapter.fetch(target, { limit: 1 });
+            mergedDocs.push(...remoteDocs.map((doc) => ({
+              ...doc,
+              metadata: {
+                ...(doc.metadata ?? {}),
+                source_target_url: target,
+              },
+            })));
+            sourcePlatform = source.platform ?? 'web';
+          }
+        }
+        docs = dedupeRawDocuments(mergedDocs);
       }
 
       if (docs.length === 0) {
@@ -3407,9 +3641,9 @@ export class WorkbenchService {
         return this.store.saveEvidenceImport({
           id: crypto.randomUUID(),
           persona_slug: slug,
-          source_kind: source.type === 'social' ? 'chat' : source.type === 'article' ? 'article' : 'video',
+          source_kind: this.inferSourceKind(source),
           source_platform: sourcePlatform,
-          source_path: source.handle_or_url ?? source.local_path ?? '',
+          source_path: source.handle_or_url ?? source.local_path ?? targets.join('\n'),
           target_manifest_path: source.manifest_path ?? '',
           status: 'quarantined',
           item_count: 0,
@@ -3453,12 +3687,7 @@ export class WorkbenchService {
         return null;
       }
 
-      const manifest = {
-        target_name: config.name,
-        target_aliases: source.type === 'social' && source.handle_or_url ? [source.handle_or_url.replace(/^@/, ''), source.handle_or_url] : [config.name],
-        self_aliases: [],
-        known_other_aliases: [],
-      };
+      const manifest = this.buildSourceTargetManifest(config, source);
       const batch = buildStandaloneEvidenceBatch(acceptedDocs, { manifest, sourceLabel: sourcePlatform });
       const importId = crypto.randomUUID();
       const importDir = join(this.store.getEvidenceImportsDir(), importId);
@@ -3471,9 +3700,9 @@ export class WorkbenchService {
       const imported = this.store.saveEvidenceImport({
         id: importId,
         persona_slug: slug,
-        source_kind: source.type === 'social' ? 'chat' : source.type === 'article' ? 'article' : 'video',
+        source_kind: this.inferSourceKind(source),
         source_platform: sourcePlatform,
-        source_path: source.handle_or_url ?? source.local_path ?? '',
+        source_path: source.handle_or_url ?? source.local_path ?? targets.join('\n'),
         target_manifest_path: source.manifest_path ?? '',
         status: 'completed',
         item_count: batch.items.length,
@@ -3522,6 +3751,9 @@ export class WorkbenchService {
         ...latestConfig.update_policy,
         current_operation: currentOperation,
         current_source_label: describeSourceLabel(source),
+        collection_stop_reason: undefined,
+        history_exhausted: false,
+        provider_exhausted: false,
         latest_result: currentOperation === 'deep_fetch'
           ? `正在深抓取 ${describeSourceLabel(source)}…`
           : `正在增量拉取 ${describeSourceLabel(source)}…`,
@@ -4103,6 +4335,9 @@ export class WorkbenchService {
           : config.update_policy.collection_cycle,
         current_operation: mode,
         current_source_label: config.name,
+        collection_stop_reason: undefined,
+        history_exhausted: false,
+        provider_exhausted: false,
         latest_result: mode === 'deep_fetch' ? '正在深抓取来源…' : '正在增量拉取来源…',
       },
       updated_at: new Date().toISOString(),
@@ -4434,20 +4669,18 @@ export class WorkbenchService {
     const enabledSources = config.sources.filter((item) => item.enabled);
     if (enabledSources.length === 0) throw new Error('at least one enabled source is required');
     for (const source of enabledSources) {
+      const targets = this.resolveSourceTargets(source);
       if (source.type === 'social' && !source.handle_or_url?.trim()) {
         throw new Error('social source requires handle_or_url');
       }
-      if ((source.type === 'chat_file' || source.type === 'video_file') && source.mode === 'local_file' && !source.local_path?.trim()) {
+      if ((source.type === 'chat_file' || source.type === 'video_file' || source.type === 'audio_file') && source.mode === 'local_file' && !source.local_path?.trim()) {
         throw new Error(`${source.type} local source requires local_path`);
       }
-      if ((source.type === 'chat_file' || source.type === 'video_file' || source.type === 'article') && source.mode !== 'local_file' && !source.handle_or_url?.trim()) {
-        throw new Error(`${source.type} remote source requires handle_or_url`);
+      if ((source.type === 'chat_file' || source.type === 'video_file' || source.type === 'audio_file') && source.mode === 'local_file' && !source.target_label?.trim()) {
+        throw new Error(`${source.type} local source requires target_label`);
       }
-      if (source.type === 'chat_file' && !source.manifest_path?.trim()) {
-        throw new Error('chat_file source requires manifest_path');
-      }
-      if (source.type === 'video_file' && source.mode === 'local_file' && !source.manifest_path?.trim()) {
-        throw new Error('video_file local source requires manifest_path');
+      if ((source.type === 'chat_file' || source.type === 'video_file' || source.type === 'audio_file' || source.type === 'article') && source.mode !== 'local_file' && targets.length === 0) {
+        throw new Error(`${source.type} remote source requires handle_or_url or links`);
       }
     }
   }
@@ -4677,6 +4910,7 @@ export class WorkbenchService {
     }
     const sourceKind =
       source.type === 'chat_file' ? 'chat'
+      : source.type === 'audio_file' ? 'audio'
       : source.type === 'video_file' ? 'video'
       : source.type === 'article' ? 'article'
       : 'chat';

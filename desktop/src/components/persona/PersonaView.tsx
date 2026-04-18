@@ -102,7 +102,7 @@ export function PersonaView() {
       {/* 内容区域 */}
       <div style={{ flex: 1, overflow: 'auto' }}>
         {activeTab === 'cultivation' ? (
-          <CultivationCenter onDelete={(p) => setDeleteTarget(p)} />
+          <CultivationCenter onDelete={(p) => setDeleteTarget(p)} onEdit={handleEdit} />
         ) : (
           <div style={{ padding: '0 28px 28px' }}>
             <div style={{ maxWidth: 1180, margin: '0 auto' }}>

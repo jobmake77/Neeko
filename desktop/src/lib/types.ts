@@ -186,12 +186,15 @@ export interface CultivationDetail {
 
 export interface PersonaSource {
   id: string;
-  type: 'social' | 'chat_file' | 'video_file' | 'article';
+  type: 'social' | 'chat_file' | 'video_file' | 'audio_file' | 'article';
   mode: 'handle' | 'remote_url' | 'channel_url' | 'single_url' | 'local_file';
   platform?: string;
   handle_or_url?: string;
+  links?: string[];
   local_path?: string;
   manifest_path?: string;
+  target_label?: string;
+  target_aliases?: string[];
   sync_strategy?: 'deep_window' | 'incremental';
   horizon_mode?: 'recent_3y' | 'deep_archive';
   horizon_years?: number;

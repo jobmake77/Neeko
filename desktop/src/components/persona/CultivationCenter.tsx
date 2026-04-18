@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Edit2, RefreshCw, Trash2 } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import type { CultivationDetail, PersonaSummary } from '@/lib/types';
 import { useCultivationStore } from '@/stores/cultivation';
@@ -61,6 +61,7 @@ function formatSourceType(type: string) {
   if (type === 'social') return '公开账号';
   if (type === 'chat_file') return '聊天资料';
   if (type === 'video_file') return '视频资料';
+  if (type === 'audio_file') return '音频资料';
   if (type === 'article') return '网页文章';
   return type;
 }
@@ -367,6 +368,7 @@ function TrainingCard({
   detail,
   expanded,
   onExpand,
+  onEdit,
   onDelete,
   onReload,
   onCheckUpdates,
@@ -378,6 +380,7 @@ function TrainingCard({
   detail?: CultivationDetail;
   expanded: boolean;
   onExpand: () => void;
+  onEdit: () => void;
   onDelete: () => void;
   onReload: () => void;
   onCheckUpdates: () => Promise<void>;
@@ -511,6 +514,9 @@ function TrainingCard({
       </div>
 
       <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 4 }}>
+        <button className="btn btn-icon" onClick={onEdit} title="编辑来源">
+          <Edit2 size={13} />
+        </button>
         <button className="btn btn-icon" onClick={onExpand}>{expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</button>
         <button className="btn btn-icon" onClick={onDelete} style={{ color: '#ef4444' }}><Trash2 size={13} /></button>
       </div>
@@ -603,6 +609,9 @@ function TrainingCard({
           )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+            <button className="btn btn-secondary" onClick={onEdit} style={{ fontSize: 12 }}>
+              编辑来源
+            </button>
             <button className="btn btn-secondary" onClick={() => void onCheckUpdates()} style={{ fontSize: 12 }} disabled={Boolean(pendingOperation)}>
               {pendingOperation === 'incremental_sync' ? '增量拉取中…' : '检查更新'}
             </button>
@@ -623,7 +632,13 @@ function TrainingCard({
   );
 }
 
-export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) => void }) {
+export function CultivationCenter({
+  onDelete,
+  onEdit,
+}: {
+  onDelete: (p: PersonaSummary) => void;
+  onEdit: (p: PersonaSummary) => void;
+}) {
   const { cultivating, load, reload, details, loadDetail } = useCultivationStore();
   const { setPersona } = useChatStore();
   const { setView } = useAppStore();
@@ -747,6 +762,7 @@ export function CultivationCenter({ onDelete }: { onDelete: (p: PersonaSummary) 
             expanded={expandedSlug === persona.slug}
             pendingOperation={pendingOps[persona.slug]}
             onExpand={() => setExpandedSlug((current) => current === persona.slug ? null : persona.slug)}
+            onEdit={() => onEdit(persona)}
             onDelete={() => onDelete(persona)}
             onReload={() => void reload()}
             onCheckUpdates={() => handleCheckUpdates(persona.slug)}

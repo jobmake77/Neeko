@@ -51,7 +51,7 @@ function buildCells(columns: number, rows: number): Cell[] {
   return cells;
 }
 
-export function PersonaGenesisAscii({ name, subtitle = '统一素材池正在同步、抽取并组织人格结构' }: Props) {
+export function PersonaGenesisAscii({ name, subtitle = '统一素材来源正在同步、抽取并组织人格结构' }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const label = useMemo(() => (name.trim() || 'N').slice(0, 1).toUpperCase(), [name]);

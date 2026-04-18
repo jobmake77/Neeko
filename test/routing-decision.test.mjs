@@ -160,3 +160,102 @@ test('routing decision record excludes fallback-contaminated outliers', () => {
   assert.match(record.excluded_runs[0].reason, /fallback-contaminated outlier/);
   assert.deepEqual(record.recommended_routing, { input_routing: 'legacy', training_seed_mode: 'off' });
 });
+
+test('routing decision confidence is reduced when rerun stability is weak', () => {
+  const stableRecord = buildRoutingDecisionRecord({
+    rows: [
+      row({
+        label: 'full+legacy+off',
+        rerun_stability: {
+          stability_label: 'stable',
+          stable: true,
+          replica_count: 3,
+          clean_replica_count: 3,
+          excluded_replica_count: 0,
+        },
+      }),
+      row({
+        label: 'full+v2+off',
+        input_routing: 'v2',
+        avgQuality: 0.923,
+        coverage: 0.5347,
+        rerun_stability: {
+          stability_label: 'stable',
+          stable: true,
+          replica_count: 3,
+          clean_replica_count: 3,
+          excluded_replica_count: 0,
+        },
+      }),
+    ],
+    routingRecommendation: {
+      recommendedStrategy: 'v2',
+      shape: 'balanced_mixed',
+      confidence: 0.74,
+      reason: 'v2 keeps a useful memory/discard lane at scale',
+      metrics: {
+        legacyChunkLoad: 1.24,
+        v2ChunkLoad: 1.03,
+        v2SoulRetention: 0.57,
+        v2MemoryRetention: 0.29,
+        v2DiscardRatio: 0.14,
+        v2ChunkCompression: 0.83,
+      },
+    },
+    dynamicScalingRecommendation: null,
+    currentGrayPathRecommendation: {
+      safe_default: { input_routing: 'legacy', training_seed_mode: 'off' },
+      recommended_gray_path: { input_routing: 'v2', training_seed_mode: 'off' },
+    },
+  });
+  const volatileRecord = buildRoutingDecisionRecord({
+    rows: [
+      row({
+        label: 'full+legacy+off',
+        rerun_stability: {
+          stability_label: 'insufficient_evidence',
+          stable: false,
+          replica_count: 1,
+          clean_replica_count: 1,
+          excluded_replica_count: 0,
+        },
+      }),
+      row({
+        label: 'full+v2+off',
+        input_routing: 'v2',
+        avgQuality: 0.923,
+        coverage: 0.5347,
+        rerun_stability: {
+          stability_label: 'volatile',
+          stable: false,
+          replica_count: 3,
+          clean_replica_count: 2,
+          excluded_replica_count: 1,
+        },
+      }),
+    ],
+    routingRecommendation: {
+      recommendedStrategy: 'v2',
+      shape: 'balanced_mixed',
+      confidence: 0.74,
+      reason: 'v2 keeps a useful memory/discard lane at scale',
+      metrics: {
+        legacyChunkLoad: 1.24,
+        v2ChunkLoad: 1.03,
+        v2SoulRetention: 0.57,
+        v2MemoryRetention: 0.29,
+        v2DiscardRatio: 0.14,
+        v2ChunkCompression: 0.83,
+      },
+    },
+    dynamicScalingRecommendation: null,
+    currentGrayPathRecommendation: {
+      safe_default: { input_routing: 'legacy', training_seed_mode: 'off' },
+      recommended_gray_path: { input_routing: 'v2', training_seed_mode: 'off' },
+    },
+  });
+
+  assert.ok(stableRecord.confidence > volatileRecord.confidence);
+  assert.equal(stableRecord.evidence.rerun_stability_label, 'stable');
+  assert.equal(volatileRecord.evidence.rerun_stability_label, 'volatile');
+});

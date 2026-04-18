@@ -325,6 +325,13 @@ The PK scripts now also preserve:
 - benchmark manifests collected from child runs
 - `rerun_stability_by_variant`
 
+Routing decision confidence now also reads rerun stability:
+
+- `stable` can increase confidence modestly,
+- `provisional` lowers confidence slightly,
+- `insufficient_evidence` lowers confidence more clearly,
+- `volatile` applies the strongest confidence penalty.
+
 ## Workbench compatibility
 
 Workbench experiments still start with a placeholder report path:
@@ -357,6 +364,21 @@ It does not yet provide:
 - automated benchmark-suite versioning,
 - formal significance testing,
 - benchmark governance UI.
+
+## Current surface behavior
+
+The current Web experiment list now recognizes:
+
+- `evaluation_v2.official_status`
+- suite tier derived from benchmark manifests
+
+The page still shows observed reports for audit, but the “set default” action is now gated:
+
+- it requires `official_status=available`,
+- it rejects `smoke`,
+- it rejects `regression`.
+
+This keeps smoke and regression artifacts visible without letting them silently become user-facing defaults.
 
 Those belong to later phases.
 

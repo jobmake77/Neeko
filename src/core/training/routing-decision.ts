@@ -1,6 +1,6 @@
 import type { DynamicScalingRecommendation } from '../pipeline/dynamic-scaling-recommendation.js';
 import type { InputRoutingStrategy } from '../pipeline/evidence-routing.js';
-import type { EvaluationContamination, EvaluationRunQuality } from './evaluation-v2.js';
+import type { EvaluationContamination, EvaluationRerunStability, EvaluationRunQuality } from './evaluation-v2.js';
 import type { CorpusShape, InputRoutingRecommendation } from './strategy-resolver.js';
 import type { TrainingSeedMode } from './training-seed.js';
 
@@ -54,6 +54,10 @@ export interface RoutingDecisionRow {
   };
   scaling_observability?: RoutingDecisionScalingObservability;
   runtime_observability: RoutingDecisionRuntimeObservability;
+  rerun_stability?: Pick<
+    EvaluationRerunStability,
+    'stability_label' | 'stable' | 'replica_count' | 'clean_replica_count' | 'excluded_replica_count'
+  >;
 }
 
 export interface GrayPathRecommendationLike {
@@ -97,6 +101,9 @@ export interface RoutingDecisionRecord {
     stable_topic_growth?: number;
     duplication_pressure?: number;
     seed_maturity?: number;
+    rerun_stability_label?: EvaluationRerunStability['stability_label'];
+    rerun_replica_count?: number;
+    rerun_clean_replica_count?: number;
   };
 }
 
@@ -134,6 +141,7 @@ export function buildRoutingDecisionRecord(options: {
     excludedRuns,
     recommendedRouting,
   });
+  const recommendedStability = findRecommendedStability(subjectRows, recommendedRouting);
   const reasons = buildDecisionReasons({
     rows: subjectRows,
     accountType,
@@ -141,6 +149,7 @@ export function buildRoutingDecisionRecord(options: {
     recommendedRouting,
     excludedRuns,
     routingRecommendation: options.routingRecommendation,
+    recommendedStability,
   });
 
   return {
@@ -165,6 +174,9 @@ export function buildRoutingDecisionRecord(options: {
       stable_topic_growth: subjectScale?.stable_topic_growth,
       duplication_pressure: subjectScale?.duplication_pressure,
       seed_maturity: subjectScale?.seed_maturity,
+      rerun_stability_label: recommendedStability?.stability_label,
+      rerun_replica_count: recommendedStability?.replica_count,
+      rerun_clean_replica_count: recommendedStability?.clean_replica_count,
     },
   };
 }
@@ -328,6 +340,9 @@ function estimateDecisionConfidence(input: {
   }
   if (input.stageType === 'dense_large_corpus') confidence += 0.08;
   if (input.stageType === 'mixed_growth') confidence += 0.04;
+  confidence += rerunStabilityConfidenceAdjustment(
+    findRecommendedStability(input.rows, input.recommendedRouting)
+  );
   confidence -= Math.min(0.18, input.excludedRuns.length * 0.08);
 
   return clamp(confidence);
@@ -340,6 +355,7 @@ function buildDecisionReasons(input: {
   recommendedRouting: { input_routing: InputRoutingStrategy; training_seed_mode: TrainingSeedMode };
   excludedRuns: RoutingDecisionExcludedRun[];
   routingRecommendation: InputRoutingRecommendation | null;
+  recommendedStability?: RoutingDecisionRow['rerun_stability'];
 }): string[] {
   const reasons: string[] = [];
   const legacyOff = findVariantRow(input.rows, 'legacy', 'off');
@@ -376,6 +392,13 @@ function buildDecisionReasons(input: {
     reasons.push(`best clean variant in this comparison was ${bestRow.label}`);
   }
 
+  if (input.recommendedStability) {
+    reasons.push(
+      `rerun stability for the recommended path is ${input.recommendedStability.stability_label} ` +
+      `(${input.recommendedStability.clean_replica_count}/${input.recommendedStability.replica_count} clean replicas)`
+    );
+  }
+
   if (input.routingRecommendation) {
     reasons.push(`routing observability shape=${input.routingRecommendation.shape} (${input.routingRecommendation.reason})`);
   }
@@ -389,6 +412,33 @@ function findVariantRow(
   trainingSeedMode: TrainingSeedMode
 ): RoutingDecisionRow | undefined {
   return rows.find((row) => row.input_routing === strategy && row.training_seed_mode === trainingSeedMode);
+}
+
+function findRecommendedStability(
+  rows: RoutingDecisionRow[],
+  recommendedRouting: { input_routing: InputRoutingStrategy; training_seed_mode: TrainingSeedMode }
+): RoutingDecisionRow['rerun_stability'] | undefined {
+  return rows.find((row) =>
+    row.input_routing === recommendedRouting.input_routing &&
+    row.training_seed_mode === recommendedRouting.training_seed_mode
+  )?.rerun_stability;
+}
+
+function rerunStabilityConfidenceAdjustment(
+  rerunStability?: RoutingDecisionRow['rerun_stability']
+): number {
+  switch (rerunStability?.stability_label) {
+    case 'stable':
+      return 0.04;
+    case 'provisional':
+      return -0.04;
+    case 'volatile':
+      return -0.16;
+    case 'insufficient_evidence':
+      return -0.1;
+    default:
+      return 0;
+  }
 }
 
 function compareRows(left: RoutingDecisionRow, right: RoutingDecisionRow): number {

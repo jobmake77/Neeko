@@ -99,18 +99,40 @@ interface ExperimentSummaryRow {
   contradictionRate: number;
   duplicationRate: number;
   coverage: number;
+  run_quality?: string;
+}
+
+type ExperimentSuiteTier = 'official' | 'regression' | 'smoke' | 'ad_hoc';
+
+interface ExperimentBenchmarkManifest {
+  suite_tier?: ExperimentSuiteTier;
+  suite_label?: string;
+}
+
+interface ExperimentEvaluationSummary {
+  official_status?: 'available' | 'unavailable';
+  official_best_profile?: string | null;
+  observed_best_profile?: string | null;
+  suite_tiers_present?: ExperimentSuiteTier[];
+  suite_types_present?: string[];
+  compatible_official_fallback_used?: boolean;
+}
+
+interface ExperimentReportData {
+  generated_at: string;
+  rounds_per_profile: number;
+  best_profile: string | null;
+  summary_rows: ExperimentSummaryRow[];
+  official_summary_rows?: ExperimentSummaryRow[];
+  benchmark_manifests?: ExperimentBenchmarkManifest[];
+  evaluation_v2?: ExperimentEvaluationSummary;
 }
 
 interface ExperimentHistoryItem {
   kind: 'experiment' | 'ab_regression';
   filename: string;
   report:
-    | {
-    generated_at: string;
-    rounds_per_profile: number;
-    best_profile: string;
-    summary_rows: ExperimentSummaryRow[];
-  }
+    | ExperimentReportData
     | {
     generated_at: string;
     report_quality?: 'complete' | 'timeout_limited';
@@ -179,12 +201,7 @@ function isExperimentHistory(
   item: ExperimentHistoryItem
 ): item is ExperimentHistoryItem & {
   kind: 'experiment';
-  report: {
-    generated_at: string;
-    rounds_per_profile: number;
-    best_profile: string;
-    summary_rows: ExperimentSummaryRow[];
-  };
+  report: ExperimentReportData;
 } {
   return item.kind === 'experiment';
 }
@@ -216,6 +233,66 @@ function isAbHistory(
   };
 } {
   return item.kind === 'ab_regression';
+}
+
+function getExperimentSuiteTier(report: ExperimentReportData): ExperimentSuiteTier {
+  return report.benchmark_manifests?.[0]?.suite_tier
+    ?? report.evaluation_v2?.suite_tiers_present?.[0]
+    ?? 'ad_hoc';
+}
+
+function getExperimentOfficialStatus(report: ExperimentReportData): 'available' | 'unavailable' {
+  return report.evaluation_v2?.official_status ?? 'unavailable';
+}
+
+function getExperimentPrimaryProfile(report: ExperimentReportData): string | null {
+  if (getExperimentOfficialStatus(report) === 'available') {
+    return report.evaluation_v2?.official_best_profile ?? report.best_profile ?? null;
+  }
+  return report.best_profile ?? null;
+}
+
+function getExperimentDisplayRows(report: ExperimentReportData): ExperimentSummaryRow[] {
+  if (getExperimentOfficialStatus(report) === 'available' && Array.isArray(report.official_summary_rows) && report.official_summary_rows.length > 0) {
+    return report.official_summary_rows;
+  }
+  return report.summary_rows;
+}
+
+function canUseExperimentAsDefault(report: ExperimentReportData): boolean {
+  const suiteTier = getExperimentSuiteTier(report);
+  return getExperimentOfficialStatus(report) === 'available' && suiteTier !== 'smoke' && suiteTier !== 'regression';
+}
+
+function getExperimentDefaultDisabledReason(report: ExperimentReportData): string {
+  const suiteTier = getExperimentSuiteTier(report);
+  if (getExperimentOfficialStatus(report) !== 'available') {
+    return '当前实验没有 strict official 结论';
+  }
+  if (suiteTier === 'smoke') {
+    return 'smoke 结果只用于冒烟验证，不能直接设为默认';
+  }
+  if (suiteTier === 'regression') {
+    return 'A/B regression 结果只用于回归判断，不能直接设为默认';
+  }
+  return '';
+}
+
+function formatExperimentSuiteTier(suiteTier: ExperimentSuiteTier): string {
+  switch (suiteTier) {
+    case 'official':
+      return 'official';
+    case 'regression':
+      return 'regression';
+    case 'smoke':
+      return 'smoke';
+    default:
+      return 'ad_hoc';
+  }
+}
+
+function formatExperimentOfficialStatus(report: ExperimentReportData): string {
+  return getExperimentOfficialStatus(report) === 'available' ? 'strict official available' : 'strict official unavailable';
 }
 
 export default function TrainingPage() {
@@ -510,12 +587,7 @@ export default function TrainingPage() {
 
   function downloadExperimentJson(item: ExperimentHistoryItem & {
     kind: 'experiment';
-    report: {
-      generated_at: string;
-      rounds_per_profile: number;
-      best_profile: string;
-      summary_rows: ExperimentSummaryRow[];
-    };
+    report: ExperimentReportData;
   }) {
     const blob = new Blob([JSON.stringify(item.report, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -528,16 +600,12 @@ export default function TrainingPage() {
 
   function downloadExperimentCsv(item: ExperimentHistoryItem & {
     kind: 'experiment';
-    report: {
-      generated_at: string;
-      rounds_per_profile: number;
-      best_profile: string;
-      summary_rows: ExperimentSummaryRow[];
-    };
+    report: ExperimentReportData;
   }) {
+    const displayRows = getExperimentDisplayRows(item.report);
     const lines = [
       'profile,total_rounds,avg_quality,avg_contradiction_rate,avg_duplication_rate,coverage',
-      ...item.report.summary_rows.map((r) =>
+      ...displayRows.map((r) =>
         [
           r.profile,
           r.totalRounds,
@@ -993,93 +1061,137 @@ export default function TrainingPage() {
             </span>
           </div>
           <div className="space-y-3">
-            {experimentReports.map((item) => (
-              <div
-                key={item.filename}
-                className="rounded-xl border border-[oklch(0.92_0_0)] bg-[oklch(0.985_0_0)] p-3"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[13px] font-medium text-[oklch(0.28_0_0)]">
-                      {new Date(item.report.generated_at).toLocaleString()}
-                    </p>
-                    <p className="text-[12px] text-[oklch(0.58_0_0)] mt-0.5">
-                      rounds/profile: {item.report.rounds_per_profile} · best: {item.report.best_profile}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() =>
-                        setExpandedExperiment((prev) =>
-                          prev === item.filename ? '' : item.filename
-                        )
-                      }
-                      className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
-                    >
-                      {expandedExperiment === item.filename ? '收起' : '展开'}
-                    </button>
-                    <button
-                      onClick={() => setAsDefaultTrainingProfile(item.report.best_profile)}
-                      disabled={savingProfile === item.report.best_profile}
-                      className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.85_0.03_142)] bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)] hover:bg-[oklch(0.93_0.03_142)] disabled:opacity-60"
-                    >
-                      设默认({item.report.best_profile})
-                    </button>
-                    <button
-                      onClick={() => downloadExperimentJson(item)}
-                      className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
-                    >
-                      <Download className="w-3.5 h-3.5" /> JSON
-                    </button>
-                    <button
-                      onClick={() => downloadExperimentCsv(item)}
-                      className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
-                    >
-                      <Download className="w-3.5 h-3.5" /> CSV
-                    </button>
-                  </div>
-                </div>
+            {experimentReports.map((item) => {
+              const suiteTier = getExperimentSuiteTier(item.report);
+              const officialStatus = getExperimentOfficialStatus(item.report);
+              const recommendedProfile = getExperimentPrimaryProfile(item.report);
+              const displayRows = getExperimentDisplayRows(item.report);
+              const canSetDefault = canUseExperimentAsDefault(item.report) && Boolean(recommendedProfile);
+              const disabledReason = getExperimentDefaultDisabledReason(item.report);
 
-                {expandedExperiment === item.filename && (
-                  <div className="mt-3 overflow-x-auto">
-                    <table className="w-full text-[12.5px]">
-                      <thead>
-                        <tr className="text-left text-[oklch(0.55_0_0)] border-b border-[oklch(0.92_0_0)]">
-                          <th className="py-2 pr-3">Profile</th>
-                          <th className="py-2 pr-3">Rounds</th>
-                          <th className="py-2 pr-3">质量</th>
-                          <th className="py-2 pr-3">矛盾率</th>
-                          <th className="py-2 pr-3">重复率</th>
-                          <th className="py-2 pr-3">Coverage</th>
-                          <th className="py-2">操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {item.report.summary_rows.map((r) => (
-                          <tr key={`${item.filename}-${r.profile}`} className="border-b border-[oklch(0.95_0_0)]">
-                            <td className="py-2 pr-3">{r.profile}</td>
-                            <td className="py-2 pr-3">{r.totalRounds}</td>
-                            <td className="py-2 pr-3">{(r.avgQuality * 100).toFixed(1)}%</td>
-                            <td className="py-2 pr-3">{(r.contradictionRate * 100).toFixed(1)}%</td>
-                            <td className="py-2 pr-3">{(r.duplicationRate * 100).toFixed(1)}%</td>
-                            <td className="py-2 pr-3">{(r.coverage * 100).toFixed(1)}%</td>
-                            <td className="py-2">
-                              <button
-                                onClick={() => setAsDefaultTrainingProfile(r.profile)}
-                                disabled={savingProfile === r.profile}
-                                className="text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)] disabled:opacity-60"
-                              >
-                                设为默认
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              return (
+                <div
+                  key={item.filename}
+                  className="rounded-xl border border-[oklch(0.92_0_0)] bg-[oklch(0.985_0_0)] p-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[13px] font-medium text-[oklch(0.28_0_0)]">
+                        {new Date(item.report.generated_at).toLocaleString()}
+                      </p>
+                      <p className="text-[12px] text-[oklch(0.58_0_0)] mt-0.5">
+                        rounds/profile: {item.report.rounds_per_profile} · best: {item.report.best_profile ?? '-'} · strict official: {recommendedProfile ?? '-'}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.02_240)] text-[oklch(0.36_0.1_240)]">
+                          suite: {formatExperimentSuiteTier(suiteTier)}
+                        </span>
+                        <span
+                          className={`text-[11px] px-2 py-0.5 rounded-full ${
+                            officialStatus === 'available'
+                              ? 'bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)]'
+                              : 'bg-[oklch(0.97_0.01_40)] text-[oklch(0.44_0.05_40)]'
+                          }`}
+                        >
+                          {formatExperimentOfficialStatus(item.report)}
+                        </span>
+                        {item.report.evaluation_v2?.compatible_official_fallback_used && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.97_0.01_40)] text-[oklch(0.44_0.05_40)]">
+                            observed fallback kept for compatibility
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() =>
+                          setExpandedExperiment((prev) =>
+                            prev === item.filename ? '' : item.filename
+                          )
+                        }
+                        className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
+                      >
+                        {expandedExperiment === item.filename ? '收起' : '展开'}
+                      </button>
+                      <button
+                        onClick={() => recommendedProfile && setAsDefaultTrainingProfile(recommendedProfile)}
+                        disabled={!canSetDefault || savingProfile === recommendedProfile}
+                        title={canSetDefault ? undefined : disabledReason}
+                        className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.85_0.03_142)] bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)] hover:bg-[oklch(0.93_0.03_142)] disabled:opacity-60"
+                      >
+                        {recommendedProfile ? `设默认(${recommendedProfile})` : '设默认不可用'}
+                      </button>
+                      <button
+                        onClick={() => downloadExperimentJson(item)}
+                        className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
+                      >
+                        <Download className="w-3.5 h-3.5" /> JSON
+                      </button>
+                      <button
+                        onClick={() => downloadExperimentCsv(item)}
+                        className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)]"
+                      >
+                        <Download className="w-3.5 h-3.5" /> CSV
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
+
+                  {disabledReason && (
+                    <p className="mt-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                      默认推荐限制：{disabledReason}
+                    </p>
+                  )}
+
+                  {expandedExperiment === item.filename && (
+                    <div className="mt-3 overflow-x-auto">
+                      <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                        当前表格展示：{officialStatus === 'available' ? 'strict official rows' : 'observed rows'}
+                      </p>
+                      <table className="w-full text-[12.5px]">
+                        <thead>
+                          <tr className="text-left text-[oklch(0.55_0_0)] border-b border-[oklch(0.92_0_0)]">
+                            <th className="py-2 pr-3">Profile</th>
+                            <th className="py-2 pr-3">Rounds</th>
+                            <th className="py-2 pr-3">质量</th>
+                            <th className="py-2 pr-3">矛盾率</th>
+                            <th className="py-2 pr-3">重复率</th>
+                            <th className="py-2 pr-3">Coverage</th>
+                            <th className="py-2 pr-3">状态</th>
+                            <th className="py-2">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {displayRows.map((r) => {
+                            const rowCanSetDefault = canSetDefault && r.profile === recommendedProfile;
+                            return (
+                              <tr key={`${item.filename}-${r.profile}`} className="border-b border-[oklch(0.95_0_0)]">
+                                <td className="py-2 pr-3">{r.profile}</td>
+                                <td className="py-2 pr-3">{r.totalRounds}</td>
+                                <td className="py-2 pr-3">{(r.avgQuality * 100).toFixed(1)}%</td>
+                                <td className="py-2 pr-3">{(r.contradictionRate * 100).toFixed(1)}%</td>
+                                <td className="py-2 pr-3">{(r.duplicationRate * 100).toFixed(1)}%</td>
+                                <td className="py-2 pr-3">{(r.coverage * 100).toFixed(1)}%</td>
+                                <td className="py-2 pr-3">{r.run_quality ?? 'n/a'}</td>
+                                <td className="py-2">
+                                  <button
+                                    onClick={() => setAsDefaultTrainingProfile(r.profile)}
+                                    disabled={!rowCanSetDefault || savingProfile === r.profile}
+                                    title={rowCanSetDefault ? undefined : disabledReason || '只有 strict official 推荐档位可以直接设为默认'}
+                                    className="text-[12px] px-2 py-1 rounded-md border border-[oklch(0.9_0_0)] hover:bg-[oklch(0.97_0_0)] disabled:opacity-60"
+                                  >
+                                    设为默认
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

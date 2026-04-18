@@ -293,6 +293,22 @@ function buildRepresentativeRows(
       observability,
       scaling_observability: scalingObservability,
       runtime_observability: runtimeObservability,
+      rerun_stability:
+        aggregate.official_rerun_stability.replica_count > 0
+          ? {
+            stability_label: aggregate.official_rerun_stability.stability_label,
+            stable: aggregate.official_rerun_stability.stable,
+            replica_count: aggregate.official_rerun_stability.replica_count,
+            clean_replica_count: aggregate.official_rerun_stability.clean_replica_count,
+            excluded_replica_count: aggregate.official_rerun_stability.excluded_replica_count,
+          }
+          : {
+            stability_label: aggregate.observed_rerun_stability.stability_label,
+            stable: aggregate.observed_rerun_stability.stable,
+            replica_count: aggregate.observed_rerun_stability.replica_count,
+            clean_replica_count: aggregate.observed_rerun_stability.clean_replica_count,
+            excluded_replica_count: aggregate.observed_rerun_stability.excluded_replica_count,
+          },
     }];
   });
 }

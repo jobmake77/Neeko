@@ -10,6 +10,7 @@ interface ExperimentSummaryRow {
   contradictionRate: number;
   duplicationRate: number;
   coverage: number;
+  run_quality?: string;
 }
 
 interface ExperimentReport {
@@ -19,7 +20,20 @@ interface ExperimentReport {
   rounds_per_profile: number;
   profiles: string[];
   summary_rows: ExperimentSummaryRow[];
-  best_profile: string;
+  official_summary_rows?: ExperimentSummaryRow[];
+  best_profile: string | null;
+  benchmark_manifests?: Array<{
+    suite_tier?: string;
+    suite_label?: string;
+  }>;
+  evaluation_v2?: {
+    official_status?: 'available' | 'unavailable';
+    official_best_profile?: string | null;
+    observed_best_profile?: string | null;
+    suite_tiers_present?: string[];
+    suite_types_present?: string[];
+    compatible_official_fallback_used?: boolean;
+  };
 }
 
 interface AbRegressionReport {
@@ -45,6 +59,26 @@ interface AbRegressionReport {
   };
 }
 
+function isExperimentReport(report: unknown): report is ExperimentReport {
+  return Boolean(
+    report &&
+    typeof report === 'object' &&
+    'generated_at' in report &&
+    'summary_rows' in report &&
+    Array.isArray((report as ExperimentReport).summary_rows)
+  );
+}
+
+function isAbRegressionReport(report: unknown): report is AbRegressionReport {
+  return Boolean(
+    report &&
+    typeof report === 'object' &&
+    'generated_at' in report &&
+    'group_a' in report &&
+    'group_b' in report
+  );
+}
+
 function getExperimentDir(slug: string) {
   return join(homedir(), '.neeko', 'personas', slug, 'experiments');
 }
@@ -61,14 +95,16 @@ export async function GET(
     .filter(
       (name) =>
         name.endsWith('.json') &&
+        !name.includes('.benchmark-manifest.') &&
         (name.startsWith('experiment-') || name.startsWith('ab-regression-'))
     )
     .map((name) => {
       const path = join(dir, name);
       try {
-        const report = JSON.parse(readFileSync(path, 'utf-8')) as
-          | ExperimentReport
-          | AbRegressionReport;
+        const report = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+        if (!isExperimentReport(report) && !isAbRegressionReport(report)) {
+          return null;
+        }
         const kind = name.startsWith('ab-regression-') ? 'ab_regression' : 'experiment';
         return {
           kind,

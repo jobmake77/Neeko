@@ -6,9 +6,11 @@ import {
 } from './routing-decision.js';
 import type { InputRoutingStrategy } from '../pipeline/evidence-routing.js';
 import {
+  buildRerunStabilitySummary,
   buildEvaluationScorecard,
   isOfficialCleanRun,
   type BenchmarkContext,
+  type EvaluationRerunStability,
   type EvaluationContamination,
   type EvaluationRunQuality,
   type EvaluationScorecard,
@@ -70,6 +72,8 @@ export interface PkVariantAggregate {
   clean_coverages: number[];
   observed_scorecard: EvaluationScorecard | null;
   official_scorecard: EvaluationScorecard | null;
+  observed_rerun_stability: EvaluationRerunStability;
+  official_rerun_stability: EvaluationRerunStability;
   excluded_run_details: PkExcludedRun[];
   excluded_reason_counts: Record<string, number>;
   routing_record_counts: {
@@ -101,6 +105,13 @@ export interface PkAggregateSummary {
   aggregate: PkVariantAggregate[];
   aggregate_by_variant: Record<string, PkVariantAggregate>;
   routing_decision_aggregate: PkRoutingDecisionAggregate;
+  rerun_stability_by_variant: Record<
+    string,
+    {
+      observed: EvaluationRerunStability;
+      official: EvaluationRerunStability;
+    }
+  >;
 }
 
 export function buildPkAggregateSummary(options: {
@@ -111,6 +122,7 @@ export function buildPkAggregateSummary(options: {
   const variants = Array.from(new Set(successfulRuns.map((run) => run.variant)));
   const aggregateRows: PkVariantAggregate[] = [];
   const aggregateByVariant: Record<string, PkVariantAggregate> = {};
+  const rerunStabilityByVariant: PkAggregateSummary['rerun_stability_by_variant'] = {};
   const excludedRuns: PkExcludedRun[] = [];
 
   for (const variant of variants) {
@@ -118,6 +130,16 @@ export function buildPkAggregateSummary(options: {
     const excludedForVariant = detectExcludedRunsForVariant(variantRuns);
     const excludedLabels = new Set(excludedForVariant.map((item) => item.label));
     const cleanRuns = variantRuns.filter((run) => !excludedLabels.has(runLabel(run)));
+    const observedRerunStability = buildRerunStabilitySummary({
+      runs: variantRuns.map(toStabilityRun),
+      cleanReplicaCount: cleanRuns.length,
+      totalReplicaCount: variantRuns.length,
+    });
+    const officialRerunStability = buildRerunStabilitySummary({
+      runs: cleanRuns.map(toStabilityRun),
+      cleanReplicaCount: cleanRuns.length,
+      totalReplicaCount: variantRuns.length,
+    });
 
     const aggregate = {
       variant,
@@ -139,6 +161,8 @@ export function buildPkAggregateSummary(options: {
       clean_coverages: compactNumbers(cleanRuns.map((run) => run.coverage)),
       observed_scorecard: buildAggregateScorecard(variantRuns),
       official_scorecard: buildAggregateScorecard(cleanRuns),
+      observed_rerun_stability: observedRerunStability,
+      official_rerun_stability: officialRerunStability,
       excluded_run_details: excludedForVariant,
       excluded_reason_counts: countBy(excludedForVariant.map((run) => run.reason)),
       routing_record_counts: summarizeRoutingRecords(cleanRuns),
@@ -146,6 +170,10 @@ export function buildPkAggregateSummary(options: {
 
     aggregateRows.push(aggregate);
     aggregateByVariant[variant] = aggregate;
+    rerunStabilityByVariant[variant] = {
+      observed: observedRerunStability,
+      official: officialRerunStability,
+    };
     excludedRuns.push(...excludedForVariant);
   }
 
@@ -179,6 +207,7 @@ export function buildPkAggregateSummary(options: {
         missing: aggregateRows.reduce((sum, row) => sum + row.routing_record_counts.missing, 0),
       },
     },
+    rerun_stability_by_variant: rerunStabilityByVariant,
   };
 }
 
@@ -351,6 +380,20 @@ function runLabel(run: PkRunSummary): string {
 
 function compactNumbers(values: Array<number | null | undefined>): number[] {
   return values.filter((value): value is number => isFiniteNumber(value));
+}
+
+function toStabilityRun(run: PkRunSummary): {
+  quality: number | null;
+  coverage: number | null;
+  contradictionRate: number | null;
+  duplicationRate: number | null;
+} {
+  return {
+    quality: run.quality,
+    coverage: run.coverage,
+    contradictionRate: run.contradictionRate,
+    duplicationRate: run.duplicationRate,
+  };
 }
 
 function isFiniteNumber(value: number | null | undefined): value is number {

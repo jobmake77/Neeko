@@ -12,7 +12,7 @@ const { classifyFailure } = __failureLoopTestables;
 
 function scorecard(overall) {
   return {
-    version: 'evaluation-v2-p0',
+    version: 'evaluation-v2-p1',
     summary: 'proxy scorecard',
     overall,
     axes: {},
@@ -73,7 +73,29 @@ test('buildAbComparisonReport computes delta as B-A', () => {
     maxContradictionRise: 0.03,
     maxDuplicationRise: 0.03,
   });
-  const report = buildAbComparisonReport(rows, 'baseline', 'full', gate);
+  const report = buildAbComparisonReport(rows, 'baseline', 'full', gate, {
+    benchmarkContext: {
+      pack_id: 'ab_regression:demo:baseline:10x5',
+      pack_type: 'ad_hoc',
+      suite_type: 'ab_regression',
+      suite_tier: 'regression',
+      case_count: 50,
+      rounds: 10,
+      questions_per_round: 5,
+      case_distribution: { generated_questions: 50 },
+      case_manifest: {
+        manifest_id: 'ab_regression:demo:baseline:manifest',
+        manifest_version: 'benchmark-case-manifest-v1',
+        pack_version: 'pack-v1-demo',
+        recipe_version: 'training-question-recipe-v1',
+        suite_label: 'ab_regression:baseline:full',
+        suite_tier: 'regression',
+        flavor: 'baseline:full',
+        replayable: false,
+        replay_mode: 'recipe_only',
+      },
+    },
+  });
 
   assert.ok(Math.abs(report.deltas.avg_quality - 0.05) < 1e-9);
   assert.ok(Math.abs(report.deltas.contradiction_rate - (-0.02)) < 1e-9);
@@ -82,8 +104,9 @@ test('buildAbComparisonReport computes delta as B-A', () => {
   assert.equal(report.schema_version, 2);
   assert.equal(report.run_quality.a, 'clean');
   assert.equal(report.run_quality.b, 'contaminated');
-  assert.equal(report.scorecards.a?.version, 'evaluation-v2-p0');
+  assert.equal(report.scorecards.a?.version, 'evaluation-v2-p1');
   assert.equal(report.contamination.b?.status, 'contaminated');
+  assert.equal(report.benchmark_context?.suite_type, 'ab_regression');
 });
 
 test('csv and markdown outputs include core metric rows', () => {
@@ -97,7 +120,29 @@ test('csv and markdown outputs include core metric rows', () => {
     maxContradictionRise: 0.03,
     maxDuplicationRise: 0.03,
   });
-  const report = buildAbComparisonReport(rows, 'baseline', 'full', gate);
+  const report = buildAbComparisonReport(rows, 'baseline', 'full', gate, {
+    benchmarkContext: {
+      pack_id: 'ab_regression:demo:baseline:10x5',
+      pack_type: 'ad_hoc',
+      suite_type: 'ab_regression',
+      suite_tier: 'regression',
+      case_count: 50,
+      rounds: 10,
+      questions_per_round: 5,
+      case_distribution: { generated_questions: 50 },
+      case_manifest: {
+        manifest_id: 'ab_regression:demo:baseline:manifest',
+        manifest_version: 'benchmark-case-manifest-v1',
+        pack_version: 'pack-v1-demo',
+        recipe_version: 'training-question-recipe-v1',
+        suite_label: 'ab_regression:baseline:full',
+        suite_tier: 'regression',
+        flavor: 'baseline:full',
+        replayable: false,
+        replay_mode: 'recipe_only',
+      },
+    },
+  });
   const csv = toAbComparisonCsv(report);
   const md = toAbComparisonMarkdown(report);
 
@@ -107,6 +152,7 @@ test('csv and markdown outputs include core metric rows', () => {
   assert.match(md, /A\/B Regression Report/);
   assert.match(md, /Group A run quality: `clean`/);
   assert.match(md, /Group B run quality: `clean`/);
+  assert.match(md, /Benchmark suite: `ab_regression` \(`regression`\)/);
 });
 
 test('ab report includes timeout_limited quality and fast-fail metadata', () => {

@@ -95,12 +95,15 @@ test('pk aggregate summary keeps raw mean and clean mean after excluding fallbac
   assert.equal(v2Off.mean_quality, 0.53);
   assert.equal(v2Off.clean_mean_quality, 0.91);
   assert.equal(v2Off.run_quality_counts.clean, 2);
-  assert.equal(v2Off.official_scorecard?.version, 'evaluation-v2-p0');
-  assert.equal(v2Off.observed_scorecard?.version, 'evaluation-v2-p0');
+  assert.equal(v2Off.official_scorecard?.version, 'evaluation-v2-p1');
+  assert.equal(v2Off.observed_scorecard?.version, 'evaluation-v2-p1');
+  assert.equal(v2Off.observed_rerun_stability.stability_label, 'volatile');
+  assert.equal(v2Off.official_rerun_stability.stability_label, 'insufficient_evidence');
   assert.match(v2Off.excluded_run_details[0].reason, /fallback-contaminated outlier/);
 
   assert.equal(summary.routing_decision_aggregate.excluded_run_count, 1);
   assert.equal(summary.routing_decision_aggregate.run_quality_counts.clean, 3);
+  assert.equal(summary.rerun_stability_by_variant['v2:off'].observed.stability_label, 'volatile');
   assert.equal(summary.routing_decision_aggregate.local_recommendation_counts['legacy+off'], 2);
   assert.equal(summary.routing_decision_aggregate.record_coverage.available, 2);
   assert.equal(summary.routing_decision_aggregate.record_coverage.missing, 0);
@@ -164,8 +167,10 @@ test('pk aggregate excludes explicitly contaminated runs before fallback-outlier
   assert.equal(aggregate.run_quality_counts.clean, 1);
   assert.equal(aggregate.run_quality_counts.contaminated, 1);
   assert.equal(aggregate.excluded_run_details[0].reason, 'run is contaminated: judge_fallback');
-  assert.equal(aggregate.official_scorecard?.version, 'evaluation-v2-p0');
-  assert.equal(aggregate.observed_scorecard?.version, 'evaluation-v2-p0');
+  assert.equal(aggregate.official_scorecard?.version, 'evaluation-v2-p1');
+  assert.equal(aggregate.observed_scorecard?.version, 'evaluation-v2-p1');
+  assert.equal(aggregate.observed_rerun_stability.stability_label, 'provisional');
+  assert.equal(aggregate.official_rerun_stability.stability_label, 'insufficient_evidence');
   assert.equal(summary.routing_decision_aggregate.run_quality_counts.contaminated, 1);
   assert.equal(summary.routing_decision_aggregate.excluded_reason_counts['run is contaminated: judge_fallback'], 1);
 });

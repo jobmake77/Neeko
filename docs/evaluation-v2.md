@@ -1,24 +1,27 @@
-# Evaluation V2 P0
+# Evaluation V2 P1
 
 Updated: 2026-04-18
-Status: Implemented for experiment and PK aggregation flows
+Status: Implemented for experiment, A/B, and PK aggregation flows
 
 ## Overview
 
-Evaluation V2 P0 is the first compatibility-safe upgrade of Neeko's experiment evaluation contract.
+Evaluation V2 P1 extends the P0 contract with benchmark identity and rerun stability metadata.
 
 It does not introduce a brand-new benchmark runner. Instead, it upgrades the existing experiment outputs so the system can:
 
 1. distinguish clean benchmark runs from contaminated or failed runs,
 2. keep degraded runs visible for debugging and audit,
 3. compute official recommendations only from clean runs,
-4. preserve the current downstream consumers that still expect `experiment-*.json` and existing top-level fields.
+4. preserve the current downstream consumers that still expect `experiment-*.json` and existing top-level fields,
+5. label smoke vs regression vs ad-hoc suites explicitly,
+6. summarize repeated-run stability instead of treating repeated execution as mere retries.
 
-The current implementation is intentionally narrow. It covers:
+The current implementation is still intentionally narrow. It covers:
 
 - `experiment` CLI report generation,
 - input-routing / training-seed comparison rows,
 - PK smoke summary and aggregate scripts,
+- A/B regression suite metadata,
 - routing decision aggregation,
 - workbench experiment report-path compatibility.
 
@@ -47,12 +50,14 @@ Evaluation V2 P0 adds an explicit run-quality layer so consumers can separate:
 
 ## Design goals
 
-P0 has four goals.
+P1 has six goals.
 
 1. Preserve compatibility with current report consumers.
 2. Add explicit contamination and provenance metadata without changing the core training loop.
 3. Make official decisions depend on clean runs only.
 4. Keep smoke PK and official benchmark semantics separate.
+5. Give every benchmark artifact a manifest-level identity.
+6. Surface rerun stability as a first-class aggregate signal.
 
 ## Compatibility contract
 
@@ -93,19 +98,25 @@ Experiment reports now also include:
 - `official_input_routing_comparison`
 - `observed_best_profile`
 - `evaluation_v2`
+- `benchmark_manifests`
+- `artifact_refs`
 
 The new `evaluation_v2` block is a compact summary of official vs observed counts:
 
 ```json
 {
-  "version": "evaluation-v2-p0",
+  "version": "evaluation-v2-p1",
   "smoke_mode": false,
+  "official_status": "available",
   "official_best_profile": "full",
   "observed_best_profile": "full",
   "official_run_count": 6,
   "contaminated_run_count": 1,
   "failed_run_count": 0,
-  "inconclusive_run_count": 0
+  "inconclusive_run_count": 0,
+  "compatible_official_fallback_used": false,
+  "suite_types_present": ["profile_sweep", "routing_compare"],
+  "suite_tiers_present": ["ad_hoc"]
 }
 ```
 
@@ -142,7 +153,7 @@ In the current implementation:
 
 ## Scorecard model
 
-P0 scorecards are proxy scorecards, not a new learned rubric.
+P1 scorecards are still proxy scorecards, not a new learned rubric.
 
 They derive six axes from already available metrics:
 
@@ -155,7 +166,7 @@ They derive six axes from already available metrics:
 
 Important limitation:
 
-- all P0 axes are proxies computed from existing quality, contradiction, duplication, coverage, and runtime fallback signals,
+- all P1 axes are proxies computed from existing quality, contradiction, duplication, coverage, and runtime fallback signals,
 - they are not direct labels from a new benchmark judge,
 - they are useful for trend comparison and gating, not for claiming final research-grade evaluation.
 
@@ -187,6 +198,12 @@ Official outputs filter to clean runs first:
 
 Gate evaluation also treats non-clean baseline or compare rows as a failure condition for official decision-making.
 
+P1 adds one important clarification:
+
+- `official_summary_rows` and `official_input_routing_comparison` are now strict clean-only views,
+- `best_profile` is still preserved as a compatibility field,
+- `evaluation_v2.official_status` tells consumers whether a strict official conclusion is actually available.
+
 ## Judge provenance
 
 Each V2 row can carry `judge_provenance`, which records the current evaluator configuration:
@@ -209,10 +226,12 @@ Each V2 row can also carry `benchmark_context`:
 - `pack_id`
 - `pack_type`
 - `suite_type`
+- `suite_tier`
 - `case_count`
 - `rounds`
 - `questions_per_round`
 - `case_distribution`
+- `case_manifest`
 
 Current suite types are:
 
@@ -222,6 +241,59 @@ Current suite types are:
 - `ab_regression`
 
 `smoke_pk` is explicitly labeled as smoke coverage and should not be treated as an official benchmark suite.
+
+The new `case_manifest` carries:
+
+- `manifest_id`
+- `manifest_version`
+- `pack_version`
+- `recipe_version`
+- `suite_label`
+- `suite_tier`
+- `flavor`
+- `replayable`
+- `replay_mode`
+- optional `replica_group`
+- optional `replica_id`
+
+This is still a recipe-level manifest, not a frozen benchmark dataset. It is meant to identify comparable runs, not to claim full dataset replay.
+
+## Artifact refs
+
+Experiment reports now write a sibling benchmark-manifest artifact and expose it through `artifact_refs`.
+
+Current experiment output therefore includes:
+
+- the main `experiment-*.json`,
+- the legacy `experiment-*.csv`,
+- a sibling `experiment-*.benchmark-manifest.json`.
+
+This keeps the main report backward-compatible while making suite identity explicit.
+
+## Rerun stability
+
+P1 adds rerun-stability summaries at the aggregate layer.
+
+The current stability labels are:
+
+- `stable`
+- `provisional`
+- `volatile`
+- `insufficient_evidence`
+
+PK aggregates now emit both:
+
+- `observed_rerun_stability`
+- `official_rerun_stability`
+
+They are derived from repeated-run spread on:
+
+- quality
+- coverage
+- contradiction rate
+- duplication rate
+
+P1 deliberately keeps rerun stability out of the single-run contamination classifier. A run does not become `rerun_mismatch` by itself. Instead, mismatch and volatility are summarized when multiple replicas are available.
 
 ## PK smoke aggregation changes
 
@@ -241,9 +313,17 @@ Variant aggregates now include:
 - `run_quality_counts`
 - `observed_scorecard`
 - `official_scorecard`
+- `observed_rerun_stability`
+- `official_rerun_stability`
 - explicit excluded-run details and reason counts
 
 Routing-decision aggregation also excludes any non-clean run before applying the older fallback-outlier heuristic.
+
+The PK scripts now also preserve:
+
+- `replica_group_id`
+- benchmark manifests collected from child runs
+- `rerun_stability_by_variant`
 
 ## Workbench compatibility
 
@@ -268,13 +348,12 @@ This keeps the existing workbench flow working without changing the CLI artifact
 
 ## Current limitations
 
-P0 is deliberately conservative.
+P1 is still deliberately conservative.
 
 It does not yet provide:
 
 - a calibrated human-labeled benchmark pack,
 - true paper-style multi-judge scoring,
-- rerun-consistency measurement across replicated seeds,
 - automated benchmark-suite versioning,
 - formal significance testing,
 - benchmark governance UI.
@@ -283,20 +362,14 @@ Those belong to later phases.
 
 ## Recommended next steps
 
-### P1
-
-- add benchmark-pack versioning and replayable case manifests,
-- measure rerun stability instead of only single-run contamination,
-- separate smoke, regression, and official benchmark suites at the artifact level.
-
 ### P2
+
+- move from recipe-level manifests to frozen benchmark case manifests,
+- add stronger homogeneity checks across suite identity, pack version, and provider/runtime freeze,
+- feed stability into routing-decision confidence rather than only surfacing it.
+
+### P3
 
 - add calibrated judge prompts and judge disagreement reporting,
 - separate proxy scorecards from benchmark scorecards,
 - add stronger benchmark context for provenance and replay.
-
-### P3
-
-- connect evaluation summaries into desktop-safe surfaces,
-- keep internal benchmark terminology hidden by default,
-- expose only user-safe states and audited drill-downs through the service layer.

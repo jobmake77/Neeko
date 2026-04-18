@@ -53,6 +53,7 @@ export interface AbComparisonReport {
   report_quality: 'complete' | 'timeout_limited';
   group_a: TrainingProfile;
   group_b: TrainingProfile;
+  benchmark_context?: BenchmarkContext;
   execution: {
     elapsed_ms: number;
     fast_failures: Array<{ profile: TrainingProfile; error: string }>;
@@ -191,6 +192,7 @@ export function buildAbComparisonReport(
     reportQuality?: 'complete' | 'timeout_limited';
     elapsedMs?: number;
     fastFailures?: Array<{ profile: TrainingProfile; error: string }>;
+    benchmarkContext?: BenchmarkContext;
   }
 ): AbComparisonReport {
   const a = rows.find((row) => row.profile === groupA);
@@ -205,6 +207,7 @@ export function buildAbComparisonReport(
     report_quality: options?.reportQuality ?? 'complete',
     group_a: groupA,
     group_b: groupB,
+    benchmark_context: options?.benchmarkContext,
     execution: {
       elapsed_ms: Math.max(0, options?.elapsedMs ?? 0),
       fast_failures: options?.fastFailures ?? [],
@@ -279,6 +282,9 @@ export function toAbComparisonMarkdown(report: AbComparisonReport): string {
     `- Report quality: \`${report.report_quality}\``,
     `- Group A run quality: \`${report.run_quality.a}\``,
     `- Group B run quality: \`${report.run_quality.b}\``,
+    report.benchmark_context
+      ? `- Benchmark suite: \`${report.benchmark_context.suite_type}\` (\`${report.benchmark_context.suite_tier}\`)`
+      : '- Benchmark suite: n/a',
     `- Elapsed: ${report.execution.elapsed_ms} ms`,
     `- Generated: ${report.generated_at}`,
     report.execution.fast_failures.length > 0

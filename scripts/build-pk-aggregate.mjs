@@ -16,9 +16,14 @@ const { buildPkAggregateSummary, defaultCurrentGrayPathRecommendation } = await 
   '../dist/testing/pk-aggregate-test-entry.js'
 );
 
+const parsedSummaries = summaryPaths.map((summaryPath) => ({
+  summaryPath,
+  parsed: JSON.parse(fs.readFileSync(summaryPath, 'utf8')),
+}));
+validateSummaryCompatibility(parsedSummaries);
+
 const allRuns = [];
-for (const summaryPath of summaryPaths) {
-  const parsed = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+for (const { parsed } of parsedSummaries) {
   const runs = Array.isArray(parsed.runs) ? parsed.runs : [];
   allRuns.push(...runs.map(hydrateRunFromReport));
 }
@@ -32,11 +37,14 @@ const overallRecord = aggregateSummary.routing_decision_aggregate.overall_record
 const report = {
   slug,
   schema_version: 2,
-  suite_type: 'smoke_pk',
+  suite_type: parsedSummaries[0]?.parsed?.suite_type ?? 'smoke_pk',
+  suite_tier: parsedSummaries[0]?.parsed?.suite_tier ?? 'smoke',
   generated_at: new Date().toISOString(),
   source_summaries: summaryPaths,
+  benchmark_manifests: collectBenchmarkManifests(allRuns),
   aggregate: aggregateSummary.aggregate_by_variant,
   routing_decision_aggregate: aggregateSummary.routing_decision_aggregate,
+  rerun_stability_by_variant: aggregateSummary.rerun_stability_by_variant,
   stage_conclusion: {
     safe_default: 'legacy + off',
     recommended_gray_path: 'v2 + off',
@@ -75,7 +83,7 @@ function hydrateRunFromReport(run) {
       ? parsed.input_routing_comparison.find((item) =>
           item?.input_routing === run.inputRouting &&
           item?.training_seed_mode === run.trainingSeedMode
-        ) ?? parsed.input_routing_comparison[0]
+        ) ?? null
       : null;
 
     return {
@@ -93,6 +101,45 @@ function hydrateRunFromReport(run) {
   } catch {
     return run;
   }
+}
+
+function validateSummaryCompatibility(summaries) {
+  if (summaries.length <= 1) return;
+  const expectedSuiteType = summaries[0].parsed?.suite_type ?? 'unknown';
+  const expectedTier = summaries[0].parsed?.suite_tier ?? 'unknown';
+  const expectedManifestIds = JSON.stringify(
+    normalizeManifestIds(summaries[0].parsed?.benchmark_manifests)
+  );
+
+  for (const { summaryPath, parsed } of summaries.slice(1)) {
+    const suiteType = parsed?.suite_type ?? 'unknown';
+    const suiteTier = parsed?.suite_tier ?? 'unknown';
+    const manifestIds = JSON.stringify(normalizeManifestIds(parsed?.benchmark_manifests));
+    if (suiteType !== expectedSuiteType || suiteTier !== expectedTier || manifestIds !== expectedManifestIds) {
+      throw new Error(
+        `incompatible PK summaries: ${summaryPath} does not match suite/manifest identity of the first summary`
+      );
+    }
+  }
+}
+
+function normalizeManifestIds(manifests) {
+  return Array.isArray(manifests)
+    ? manifests
+      .map((item) => item?.manifest_id)
+      .filter(Boolean)
+      .sort()
+    : [];
+}
+
+function collectBenchmarkManifests(runs) {
+  const manifests = new Map();
+  for (const run of runs) {
+    const manifest = run?.benchmarkContext?.case_manifest;
+    if (!manifest?.manifest_id) continue;
+    manifests.set(manifest.manifest_id, manifest);
+  }
+  return [...manifests.values()];
 }
 
 function buildStageNotes(summary) {
@@ -117,6 +164,12 @@ function buildStageNotes(summary) {
   if (v2signals) {
     notes.push(
       `v2/signals clean mean=${formatMetric(v2signals.clean_mean_quality)}/${formatMetric(v2signals.clean_mean_coverage)} and remains gated pending stable replication`
+    );
+  }
+
+  for (const [variant, stability] of Object.entries(summary.rerun_stability_by_variant ?? {})) {
+    notes.push(
+      `${variant} official rerun stability=${stability.official.stability_label} replicas=${stability.official.replica_count}`
     );
   }
 

@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 export type EvaluationAxisKey =
   | 'persona_fidelity'
   | 'groundedness'
@@ -23,7 +25,7 @@ export interface EvaluationAxisScore {
 }
 
 export interface EvaluationScorecard {
-  version: 'evaluation-v2-p0';
+  version: 'evaluation-v2-p0' | 'evaluation-v2-p1';
   summary: string;
   overall: number;
   axes: Record<EvaluationAxisKey, EvaluationAxisScore>;
@@ -54,14 +56,60 @@ export interface RuntimeFallbackSummary {
   director_fallbacks: number;
 }
 
+export type BenchmarkSuiteType = 'profile_sweep' | 'routing_compare' | 'smoke_pk' | 'ab_regression';
+
+export type BenchmarkSuiteTier = 'official' | 'regression' | 'smoke' | 'ad_hoc';
+
+export type BenchmarkReplayMode = 'recipe_only' | 'replica_summary';
+
+export interface BenchmarkCaseManifest {
+  manifest_id: string;
+  manifest_version: 'benchmark-case-manifest-v1';
+  pack_version: string;
+  recipe_version: 'training-question-recipe-v1';
+  suite_label: string;
+  suite_tier: BenchmarkSuiteTier;
+  flavor: string;
+  replayable: boolean;
+  replay_mode: BenchmarkReplayMode;
+  replica_group?: string;
+  replica_id?: string;
+}
+
 export interface BenchmarkContext {
   pack_id: string;
   pack_type: 'ad_hoc' | 'smoke';
-  suite_type: 'profile_sweep' | 'routing_compare' | 'smoke_pk' | 'ab_regression';
+  suite_type: BenchmarkSuiteType;
+  suite_tier: BenchmarkSuiteTier;
   case_count: number;
   rounds: number;
   questions_per_round: number;
   case_distribution: Record<string, number>;
+  case_manifest: BenchmarkCaseManifest;
+}
+
+export type EvaluationStabilityLabel = 'stable' | 'provisional' | 'volatile' | 'insufficient_evidence';
+
+export interface EvaluationMetricSpread {
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+  range: number | null;
+  stddev: number | null;
+}
+
+export interface EvaluationRerunStability {
+  version: 'evaluation-v2-p1';
+  replica_count: number;
+  clean_replica_count: number;
+  excluded_replica_count: number;
+  stability_label: EvaluationStabilityLabel;
+  stable: boolean;
+  reasons: string[];
+  quality: EvaluationMetricSpread;
+  coverage: EvaluationMetricSpread;
+  contradiction_rate: EvaluationMetricSpread;
+  duplication_rate: EvaluationMetricSpread;
 }
 
 export function buildJudgeProvenance(input: {
@@ -85,24 +133,122 @@ export function buildJudgeProvenance(input: {
 
 export function buildBenchmarkContext(input: {
   slug: string;
-  suiteType: BenchmarkContext['suite_type'];
+  suiteType: BenchmarkSuiteType;
   profile?: string;
   variant?: string;
   rounds: number;
   questionsPerRound: number;
   smokeMode?: boolean;
+  suiteTier?: BenchmarkSuiteTier;
+  replicaGroup?: string;
+  replicaId?: string;
 }): BenchmarkContext {
   const flavor = input.profile ?? input.variant ?? 'main';
+  const suiteTier = input.suiteTier ?? inferBenchmarkSuiteTier(input.suiteType, input.smokeMode);
+  const signature = stableDigest({
+    slug: input.slug,
+    suite_type: input.suiteType,
+    suite_tier: suiteTier,
+    flavor,
+    rounds: input.rounds,
+    questions_per_round: input.questionsPerRound,
+    smoke_mode: Boolean(input.smokeMode),
+  });
+  const packVersion = `pack-v1-${signature}`;
+  const manifestId = `${input.suiteType}:${input.slug}:${flavor}:${signature}`;
   return {
     pack_id: `${input.suiteType}:${input.slug}:${flavor}:${input.rounds}x${input.questionsPerRound}`,
-    pack_type: input.smokeMode ? 'smoke' : 'ad_hoc',
+    pack_type: suiteTier === 'smoke' ? 'smoke' : 'ad_hoc',
     suite_type: input.suiteType,
+    suite_tier: suiteTier,
     case_count: Math.max(1, input.rounds * input.questionsPerRound),
     rounds: input.rounds,
     questions_per_round: input.questionsPerRound,
     case_distribution: {
       generated_questions: Math.max(1, input.rounds * input.questionsPerRound),
     },
+    case_manifest: {
+      manifest_id: manifestId,
+      manifest_version: 'benchmark-case-manifest-v1',
+      pack_version: packVersion,
+      recipe_version: 'training-question-recipe-v1',
+      suite_label: `${input.suiteType}:${flavor}`,
+      suite_tier: suiteTier,
+      flavor,
+      replayable: Boolean(input.replicaGroup),
+      replay_mode: input.replicaGroup ? 'replica_summary' : 'recipe_only',
+      replica_group: input.replicaGroup,
+      replica_id: input.replicaId,
+    },
+  };
+}
+
+export function buildRerunStabilitySummary(input: {
+  runs: Array<{
+    quality?: number | null;
+    coverage?: number | null;
+    contradictionRate?: number | null;
+    duplicationRate?: number | null;
+  }>;
+  cleanReplicaCount?: number;
+  totalReplicaCount?: number;
+}): EvaluationRerunStability {
+  const measuredReplicaCount = input.runs.length;
+  const totalReplicaCount = Math.max(measuredReplicaCount, input.totalReplicaCount ?? measuredReplicaCount);
+  const cleanReplicaCount = Math.max(
+    0,
+    Math.min(totalReplicaCount, input.cleanReplicaCount ?? measuredReplicaCount)
+  );
+  const excludedReplicaCount = Math.max(0, totalReplicaCount - cleanReplicaCount);
+  const quality = summarizeSpread(input.runs.map((run) => run.quality));
+  const coverage = summarizeSpread(input.runs.map((run) => run.coverage));
+  const contradictionRate = summarizeSpread(input.runs.map((run) => run.contradictionRate));
+  const duplicationRate = summarizeSpread(input.runs.map((run) => run.duplicationRate));
+  const reasons: string[] = [];
+  let stabilityLabel: EvaluationStabilityLabel = 'insufficient_evidence';
+  let stable = false;
+
+  if (excludedReplicaCount > 0) {
+    reasons.push(`${excludedReplicaCount} replica(s) were excluded from official stability because they were not clean`);
+  }
+
+  if (measuredReplicaCount < 2) {
+    reasons.push('need at least 2 measured replicas for stability judgment');
+  } else {
+    const qualityStable = withinSpread(quality, 0.035, 0.08);
+    const coverageStable = withinSpread(coverage, 0.045, 0.1);
+    const contradictionStable = withinSpread(contradictionRate, 0.025, 0.06);
+    const duplicationStable = withinSpread(duplicationRate, 0.025, 0.06);
+    const allStable = qualityStable && coverageStable && contradictionStable && duplicationStable;
+
+    if (allStable && measuredReplicaCount >= 3) {
+      stabilityLabel = 'stable';
+      stable = true;
+      reasons.push('quality, coverage, contradiction, and duplication stayed within the P1 replica spread budget');
+    } else if (allStable) {
+      stabilityLabel = 'provisional';
+      reasons.push('replica spread is narrow, but there are fewer than 3 measured replicas');
+    } else {
+      stabilityLabel = 'volatile';
+      if (!qualityStable) reasons.push('quality spread exceeded the P1 stability budget');
+      if (!coverageStable) reasons.push('coverage spread exceeded the P1 stability budget');
+      if (!contradictionStable) reasons.push('contradiction spread exceeded the P1 stability budget');
+      if (!duplicationStable) reasons.push('duplication spread exceeded the P1 stability budget');
+    }
+  }
+
+  return {
+    version: 'evaluation-v2-p1',
+    replica_count: measuredReplicaCount,
+    clean_replica_count: cleanReplicaCount,
+    excluded_replica_count: excludedReplicaCount,
+    stability_label: stabilityLabel,
+    stable,
+    reasons,
+    quality,
+    coverage,
+    contradiction_rate: contradictionRate,
+    duplication_rate: duplicationRate,
   };
 }
 
@@ -238,8 +384,8 @@ export function buildEvaluationScorecard(input: {
   );
 
   return {
-    version: 'evaluation-v2-p0',
-    summary: 'P0 proxy scorecard derived from existing quality/coverage/contradiction/duplication/runtime signals.',
+    version: 'evaluation-v2-p1',
+    summary: 'P1 proxy scorecard derived from existing quality/coverage/contradiction/duplication/runtime signals.',
     overall,
     axes,
   };
@@ -265,6 +411,12 @@ export function normalizeRuntimeFallbackSummary(
   };
 }
 
+export const __evaluationV2Testables = {
+  buildBenchmarkContext,
+  buildRerunStabilitySummary,
+  inferBenchmarkSuiteTier,
+};
+
 function computeRuntimeReliability(runQuality: EvaluationRunQuality, fallbackCount: number): number {
   if (runQuality === 'failed') return 0.05;
   if (runQuality === 'inconclusive') return 0.35;
@@ -284,6 +436,49 @@ function proxyAxis(score: number, note: string): EvaluationAxisScore {
 
 function uniqueReasons(reasons: EvaluationContaminationReason[]): EvaluationContaminationReason[] {
   return Array.from(new Set(reasons));
+}
+
+function inferBenchmarkSuiteTier(suiteType: BenchmarkSuiteType, smokeMode?: boolean): BenchmarkSuiteTier {
+  if (suiteType === 'smoke_pk' || smokeMode) return 'smoke';
+  if (suiteType === 'ab_regression') return 'regression';
+  return 'ad_hoc';
+}
+
+function stableDigest(value: unknown): string {
+  return createHash('sha1')
+    .update(JSON.stringify(value))
+    .digest('hex')
+    .slice(0, 12);
+}
+
+function summarizeSpread(values: Array<number | null | undefined>): EvaluationMetricSpread {
+  const numeric = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  if (numeric.length === 0) {
+    return {
+      mean: null,
+      min: null,
+      max: null,
+      range: null,
+      stddev: null,
+    };
+  }
+
+  const mean = numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
+  const min = Math.min(...numeric);
+  const max = Math.max(...numeric);
+  const variance = numeric.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / numeric.length;
+  return {
+    mean,
+    min,
+    max,
+    range: max - min,
+    stddev: Math.sqrt(variance),
+  };
+}
+
+function withinSpread(spread: EvaluationMetricSpread, maxStddev: number, maxRange: number): boolean {
+  if (spread.stddev === null || spread.range === null) return true;
+  return spread.stddev <= maxStddev && spread.range <= maxRange;
 }
 
 function clamp01(value: number): number {

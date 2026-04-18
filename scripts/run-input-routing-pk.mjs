@@ -36,6 +36,13 @@ const { buildPkAggregateSummary, defaultCurrentGrayPathRecommendation } = await 
 );
 
 const allRuns = [];
+const replicaGroup = [
+  'smoke_pk',
+  slug,
+  `${rounds}x${questions}`,
+  variants.join(','),
+  kimiMode,
+].join(':');
 
 for (const variant of variants) {
   for (let repeat = 1; repeat <= repeats; repeat++) {
@@ -107,6 +114,7 @@ for (const variant of variants) {
     const runSummary = {
       variant,
       repeat,
+      rerunGroupId: replicaGroup,
       attempts: maxAttempts,
       successfulAttempt,
       exitCode: lastExitCode,
@@ -121,7 +129,7 @@ for (const variant of variants) {
       contamination: row?.contamination ?? null,
       scorecard: row?.scorecard ?? null,
       judgeProvenance: row?.judge_provenance ?? null,
-      benchmarkContext: row?.benchmark_context ?? null,
+      benchmarkContext: augmentBenchmarkContext(row?.benchmark_context, variant, repeat, replicaGroup),
       runtimeObservability: row?.runtime_observability ?? null,
       observability: row?.observability ?? null,
       scalingObservability: row?.scaling_observability ?? null,
@@ -139,6 +147,9 @@ const aggregateSummary = buildPkAggregateSummary({
 const summary = {
   slug,
   suite_type: 'smoke_pk',
+  suite_tier: 'smoke',
+  replica_group_id: replicaGroup,
+  benchmark_manifest_version: 'benchmark-case-manifest-v1',
   repeats,
   rounds,
   questions,
@@ -146,9 +157,11 @@ const summary = {
   max_attempts: maxAttempts,
   variants,
   runs: allRuns,
+  benchmark_manifests: collectBenchmarkManifests(allRuns),
   aggregate: aggregateSummary.aggregate,
   aggregate_by_variant: aggregateSummary.aggregate_by_variant,
   routing_decision_aggregate: aggregateSummary.routing_decision_aggregate,
+  rerun_stability_by_variant: aggregateSummary.rerun_stability_by_variant,
 };
 
 const summaryPath = path.join(outputDir, 'pk-summary.json');
@@ -182,7 +195,46 @@ function findComparisonRow(parsed, variant) {
   return rows.find((item) =>
     item?.input_routing === strategyRaw &&
     (item?.training_seed_mode === seedRaw || item?.requested_training_seed_mode === seedRaw)
-  ) ?? rows[0];
+  ) ?? null;
+}
+
+function augmentBenchmarkContext(context, variant, repeat, rerunGroupId) {
+  if (!context || typeof context !== 'object') return null;
+  const caseManifest = context.case_manifest && typeof context.case_manifest === 'object'
+    ? context.case_manifest
+    : {
+      manifest_id: `${context.pack_id || 'unknown'}:manifest`,
+      manifest_version: 'benchmark-case-manifest-v1',
+      pack_version: `pack-v1-${sanitizeVariant(String(variant)).slice(0, 16)}`,
+      recipe_version: 'training-question-recipe-v1',
+      suite_label: `${context.suite_type || 'smoke_pk'}:${variant}`,
+      suite_tier: context.suite_tier || 'smoke',
+      flavor: variant,
+      replayable: true,
+      replay_mode: 'replica_summary',
+    };
+  return {
+    ...context,
+    suite_tier: context.suite_tier || 'smoke',
+    case_manifest: {
+      ...caseManifest,
+      suite_tier: caseManifest.suite_tier || context.suite_tier || 'smoke',
+      replayable: true,
+      replay_mode: 'replica_summary',
+      replica_group: rerunGroupId,
+      replica_id: `${variant}#${String(repeat).padStart(2, '0')}`,
+    },
+  };
+}
+
+function collectBenchmarkManifests(runs) {
+  const manifests = new Map();
+  for (const run of runs) {
+    const manifest = run?.benchmarkContext?.case_manifest;
+    if (!manifest?.manifest_id) continue;
+    manifests.set(manifest.manifest_id, manifest);
+  }
+  return [...manifests.values()];
 }
 
 function sleep(ms) {

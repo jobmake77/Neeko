@@ -15,6 +15,7 @@ import {
   buildEvaluationScorecard,
   buildJudgeProvenance,
   classifyEvaluationRun,
+  type BenchmarkCaseManifest,
   type BenchmarkContext,
   type EvaluationContamination,
   type EvaluationRunQuality,
@@ -150,9 +151,13 @@ interface CurrentGrayPathRecommendation {
 const EXPERIMENT_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_PROFILE_TIMEOUT_MS ?? 90_000);
 const EXPERIMENT_COMPARISON_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_COMPARISON_TIMEOUT_MS ?? 0);
 
-function selectOfficialRows<T extends { run_quality?: EvaluationRunQuality }>(rows: T[]): T[] {
+function selectCompatibleOfficialRows<T extends { run_quality?: EvaluationRunQuality }>(rows: T[]): T[] {
   const cleanRows = rows.filter((row) => row.run_quality === 'clean');
   return cleanRows.length > 0 ? cleanRows : rows;
+}
+
+function selectStrictOfficialRows<T extends { run_quality?: EvaluationRunQuality }>(rows: T[]): T[] {
+  return rows.filter((row) => row.run_quality === 'clean');
 }
 
 function computeObservedBestProfile(rows: ExperimentSummaryRow[]): TrainingProfile | null {
@@ -161,6 +166,18 @@ function computeObservedBestProfile(rows: ExperimentSummaryRow[]): TrainingProfi
     const scoreB = b.avgQuality - b.contradictionRate * 0.2 - b.duplicationRate * 0.1;
     return scoreB - scoreA;
   })[0]?.profile ?? null;
+}
+
+function collectBenchmarkManifests(
+  rows: Array<{ benchmark_context?: BenchmarkContext | null }>
+): BenchmarkCaseManifest[] {
+  const manifests = new Map<string, BenchmarkCaseManifest>();
+  for (const row of rows) {
+    const manifest = row.benchmark_context?.case_manifest;
+    if (!manifest) continue;
+    manifests.set(manifest.manifest_id, manifest);
+  }
+  return [...manifests.values()];
 }
 
 function toRuntimeObservabilitySnapshot(input: {
@@ -453,27 +470,34 @@ export async function cmdExperiment(
       )
     : { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
 
-  const officialSummaryRows = selectOfficialRows(rows);
-  const officialComparisonRows = selectOfficialRows(inputRoutingComparison.rows);
-  const best = [...officialSummaryRows].sort((a, b) => {
+  const strictOfficialSummaryRows = selectStrictOfficialRows(rows);
+  const strictOfficialComparisonRows = selectStrictOfficialRows(inputRoutingComparison.rows);
+  const compatibleOfficialSummaryRows = selectCompatibleOfficialRows(rows);
+  const compatibleOfficialComparisonRows = selectCompatibleOfficialRows(inputRoutingComparison.rows);
+  const best = [...compatibleOfficialSummaryRows].sort((a, b) => {
     const scoreA = a.avgQuality - a.contradictionRate * 0.2 - a.duplicationRate * 0.1;
     const scoreB = b.avgQuality - b.contradictionRate * 0.2 - b.duplicationRate * 0.1;
     return scoreB - scoreA;
   })[0];
-  const primaryComparisonRow = rows.length === 0 && officialComparisonRows.length === 1
-    ? officialComparisonRows[0]
+  const primaryComparisonRow = rows.length === 0 && compatibleOfficialComparisonRows.length === 1
+    ? compatibleOfficialComparisonRows[0]
     : null;
   const effectiveInputRouting = primaryComparisonRow?.input_routing ?? inputRouting;
   const effectiveTrainingSeedMode = primaryComparisonRow?.training_seed_mode ?? trainingSeedMode;
   const effectiveBestProfile = best?.profile ?? primaryComparisonRow?.profile ?? null;
   const currentGrayPathRecommendation = buildCurrentGrayPathRecommendation(inputRoutingComparison.rows);
   const observedBestProfile = computeObservedBestProfile(rows);
+  const benchmarkManifests = collectBenchmarkManifests([...rows, ...inputRoutingComparison.rows]);
+  const strictOfficialAvailable =
+    strictOfficialSummaryRows.length > 0 ||
+    strictOfficialComparisonRows.length > 0;
 
   const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
   mkdirSync(outputDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const jsonPath = join(outputDir, `experiment-${slug}-${timestamp}.json`);
   const csvPath = join(outputDir, `experiment-${slug}-${timestamp}.csv`);
+  const manifestPath = join(outputDir, `experiment-${slug}-${timestamp}.benchmark-manifest.json`);
 
   const gateResult = evaluateGate(rows, {
     enabled: options.gate === true,
@@ -492,7 +516,7 @@ export async function cmdExperiment(
     profiles,
     questions_per_round: questionsPerRound,
     summary_rows: rows,
-    official_summary_rows: officialSummaryRows,
+    official_summary_rows: strictOfficialSummaryRows,
     best_profile: effectiveBestProfile,
     observed_best_profile: observedBestProfile,
     round_histories: roundHistories,
@@ -502,18 +526,25 @@ export async function cmdExperiment(
     kimi_stability_mode: kimiStabilityMode ?? 'auto',
     training_seed_mode: effectiveTrainingSeedMode,
     input_routing_comparison: inputRoutingComparison.rows,
-    official_input_routing_comparison: officialComparisonRows,
+    official_input_routing_comparison: strictOfficialComparisonRows,
     input_routing_recommendation: inputRoutingComparison.recommendation,
     dynamic_scaling_recommendation: inputRoutingComparison.dynamicScalingRecommendation,
     routing_decision_record: inputRoutingComparison.routingDecisionRecord,
     current_gray_path_recommendation: currentGrayPathRecommendation,
+    benchmark_manifests: benchmarkManifests,
+    artifact_refs: {
+      benchmark_manifest_path: manifestPath,
+      report_path: jsonPath,
+      report_csv_path: csvPath,
+    },
     evaluation_v2: {
-      version: 'evaluation-v2-p0',
+      version: 'evaluation-v2-p1',
       smoke_mode: rounds === 1 && questionsPerRound === 1,
+      official_status: strictOfficialAvailable ? 'available' : 'unavailable',
       official_best_profile: effectiveBestProfile,
       observed_best_profile: observedBestProfile,
       official_run_count:
-        officialSummaryRows.length + officialComparisonRows.length,
+        strictOfficialSummaryRows.length + strictOfficialComparisonRows.length,
       contaminated_run_count:
         rows.filter((row) => row.run_quality === 'contaminated').length +
         inputRoutingComparison.rows.filter((row) => row.run_quality === 'contaminated').length,
@@ -523,10 +554,30 @@ export async function cmdExperiment(
       inconclusive_run_count:
         rows.filter((row) => row.run_quality === 'inconclusive').length +
         inputRoutingComparison.rows.filter((row) => row.run_quality === 'inconclusive').length,
+      compatible_official_fallback_used:
+        compatibleOfficialSummaryRows.length !== strictOfficialSummaryRows.length ||
+        compatibleOfficialComparisonRows.length !== strictOfficialComparisonRows.length,
+      suite_types_present: [...new Set(benchmarkManifests.map((item) => item.suite_label.split(':')[0]))],
+      suite_tiers_present: [...new Set(benchmarkManifests.map((item) => item.suite_tier))],
     },
     gate_result: gateResult,
   };
   writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf-8');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      {
+        schema_version: 1,
+        version: 'evaluation-v2-p1',
+        generated_at: report.generated_at,
+        slug,
+        benchmark_manifests: benchmarkManifests,
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  );
 
   const csvLines = [
     'profile,total_rounds,avg_quality,avg_contradiction_rate,avg_duplication_rate,coverage',
@@ -545,6 +596,7 @@ export async function cmdExperiment(
 
   console.log(chalk.dim(`JSON report: ${jsonPath}`));
   console.log(chalk.dim(`CSV report:  ${csvPath}`));
+  console.log(chalk.dim(`Manifest:    ${manifestPath}`));
   if (inputRoutingComparison.rows.length > 0) {
     console.log(chalk.dim('Input routing comparison:'));
     for (const row of inputRoutingComparison.rows) {
@@ -984,7 +1036,8 @@ function resolveComparisonTimeoutMs(rawDocCount: number, rounds: number): number
 }
 
 function buildCurrentGrayPathRecommendation(rows: InputRoutingComparisonRow[]): CurrentGrayPathRecommendation {
-  const sourceRows = selectOfficialRows(rows);
+  const strictRows = selectStrictOfficialRows(rows);
+  const sourceRows = strictRows.length > 0 ? strictRows : rows;
   const observedBest = [...sourceRows].sort((left, right) =>
     right.avgQuality - left.avgQuality ||
     right.coverage - left.coverage ||

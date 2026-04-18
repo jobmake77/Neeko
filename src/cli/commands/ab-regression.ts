@@ -10,6 +10,7 @@ import {
   toAbComparisonCsv,
   toAbComparisonMarkdown,
 } from '../../core/training/ab-report.js';
+import { buildBenchmarkContext } from '../../core/training/evaluation-v2.js';
 import { TrainingProfile } from '../../core/training/types.js';
 import { runExperimentProfiles } from './experiment.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
@@ -95,6 +96,13 @@ export async function cmdAbRegression(
     reportQuality: failures && failures.length > 0 ? 'timeout_limited' : 'complete',
     elapsedMs: Date.now() - startedAt,
     fastFailures: failures ?? [],
+    benchmarkContext: buildBenchmarkContext({
+      slug,
+      suiteType: 'ab_regression',
+      variant: `${groupA}:${groupB}`,
+      rounds,
+      questionsPerRound: 5,
+    }),
   });
 
   console.log(renderAbComparisonTable(report));

@@ -19,6 +19,7 @@ export default defineConfig({
     'src/testing/dynamic-scaling-test-entry.ts',
     'src/testing/routing-decision-test-entry.ts',
     'src/testing/pk-aggregate-test-entry.ts',
+    'src/testing/evaluation-v2-test-entry.ts',
     'src/testing/chat-orchestrator-test-entry.ts',
     'src/testing/api-contract-test-entry.ts',
     'src/testing/twitter-adapter-test-entry.ts',

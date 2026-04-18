@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import type { TrainingQuestion } from './types.js';
 
 export type EvaluationAxisKey =
   | 'persona_fidelity'
@@ -62,9 +63,27 @@ export type BenchmarkSuiteTier = 'official' | 'regression' | 'smoke' | 'ad_hoc';
 
 export type BenchmarkReplayMode = 'recipe_only' | 'replica_summary';
 
+export type BenchmarkFreezeLevel = 'recipe_only' | 'frozen_cases';
+
+export interface BenchmarkCaseEntry {
+  case_id: string;
+  round: number;
+  ordinal: number;
+  question: string;
+  strategy?: string;
+  target_dimension?: string;
+  expected_challenge_level?: string;
+}
+
+export interface BenchmarkFreezeFingerprints {
+  provider_fingerprint: string;
+  runtime_fingerprint: string;
+  judge_fingerprint: string;
+}
+
 export interface BenchmarkCaseManifest {
   manifest_id: string;
-  manifest_version: 'benchmark-case-manifest-v1';
+  manifest_version: 'benchmark-case-manifest-v1' | 'benchmark-case-manifest-v2';
   pack_version: string;
   recipe_version: 'training-question-recipe-v1';
   suite_label: string;
@@ -72,8 +91,20 @@ export interface BenchmarkCaseManifest {
   flavor: string;
   replayable: boolean;
   replay_mode: BenchmarkReplayMode;
+  freeze_level?: BenchmarkFreezeLevel;
+  case_manifest_hash?: string;
+  question_digest?: string;
+  case_count?: number;
+  provider_fingerprint?: string;
+  runtime_fingerprint?: string;
+  judge_fingerprint?: string;
   replica_group?: string;
   replica_id?: string;
+}
+
+export interface FrozenBenchmarkCaseManifest {
+  manifest: BenchmarkCaseManifest;
+  cases: BenchmarkCaseEntry[];
 }
 
 export interface BenchmarkContext {
@@ -86,6 +117,18 @@ export interface BenchmarkContext {
   questions_per_round: number;
   case_distribution: Record<string, number>;
   case_manifest: BenchmarkCaseManifest;
+}
+
+export interface BenchmarkHomogeneitySummary {
+  homogeneous: boolean;
+  reasons: string[];
+  manifest_versions: string[];
+  freeze_levels: string[];
+  suite_labels: string[];
+  pack_versions: string[];
+  provider_fingerprints: string[];
+  runtime_fingerprints: string[];
+  judge_fingerprints: string[];
 }
 
 export type EvaluationStabilityLabel = 'stable' | 'provisional' | 'volatile' | 'insufficient_evidence';
@@ -142,9 +185,11 @@ export function buildBenchmarkContext(input: {
   suiteTier?: BenchmarkSuiteTier;
   replicaGroup?: string;
   replicaId?: string;
+  caseManifest?: BenchmarkCaseManifest;
 }): BenchmarkContext {
   const flavor = input.profile ?? input.variant ?? 'main';
   const suiteTier = input.suiteTier ?? inferBenchmarkSuiteTier(input.suiteType, input.smokeMode);
+  const defaultCaseCount = Math.max(1, input.rounds * input.questionsPerRound);
   const signature = stableDigest({
     slug: input.slug,
     suite_type: input.suiteType,
@@ -156,31 +201,201 @@ export function buildBenchmarkContext(input: {
   });
   const packVersion = `pack-v1-${signature}`;
   const manifestId = `${input.suiteType}:${input.slug}:${flavor}:${signature}`;
+  const caseManifest = input.caseManifest ?? {
+    manifest_id: manifestId,
+    manifest_version: 'benchmark-case-manifest-v1',
+    pack_version: packVersion,
+    recipe_version: 'training-question-recipe-v1',
+    suite_label: `${input.suiteType}:${flavor}`,
+    suite_tier: suiteTier,
+    flavor,
+    replayable: Boolean(input.replicaGroup),
+    replay_mode: input.replicaGroup ? 'replica_summary' : 'recipe_only',
+    freeze_level: 'recipe_only',
+    case_count: defaultCaseCount,
+    replica_group: input.replicaGroup,
+    replica_id: input.replicaId,
+  } satisfies BenchmarkCaseManifest;
   return {
     pack_id: `${input.suiteType}:${input.slug}:${flavor}:${input.rounds}x${input.questionsPerRound}`,
     pack_type: suiteTier === 'smoke' ? 'smoke' : 'ad_hoc',
     suite_type: input.suiteType,
     suite_tier: suiteTier,
-    case_count: Math.max(1, input.rounds * input.questionsPerRound),
+    case_count: caseManifest.case_count ?? defaultCaseCount,
     rounds: input.rounds,
     questions_per_round: input.questionsPerRound,
     case_distribution: {
-      generated_questions: Math.max(1, input.rounds * input.questionsPerRound),
+      generated_questions: caseManifest.case_count ?? defaultCaseCount,
     },
-    case_manifest: {
-      manifest_id: manifestId,
-      manifest_version: 'benchmark-case-manifest-v1',
-      pack_version: packVersion,
-      recipe_version: 'training-question-recipe-v1',
-      suite_label: `${input.suiteType}:${flavor}`,
+    case_manifest: caseManifest,
+  };
+}
+
+export function buildBenchmarkFingerprints(input: {
+  provider: Record<string, unknown>;
+  runtime: Record<string, unknown>;
+  judge: Record<string, unknown>;
+}): BenchmarkFreezeFingerprints {
+  return {
+    provider_fingerprint: `provider-${stableDigest(input.provider)}`,
+    runtime_fingerprint: `runtime-${stableDigest(input.runtime)}`,
+    judge_fingerprint: `judge-${stableDigest(input.judge)}`,
+  };
+}
+
+export function buildFrozenCaseManifest(input: {
+  slug: string;
+  suiteType: BenchmarkSuiteType;
+  suiteTier?: BenchmarkSuiteTier;
+  profile?: string;
+  variant?: string;
+  rounds: number;
+  questionsPerRound: number;
+  smokeMode?: boolean;
+  replicaGroup?: string;
+  replicaId?: string;
+  cases: BenchmarkCaseEntry[];
+  freezeFingerprints: BenchmarkFreezeFingerprints;
+}): FrozenBenchmarkCaseManifest {
+  const flavor = input.profile ?? input.variant ?? 'main';
+  const suiteTier = input.suiteTier ?? inferBenchmarkSuiteTier(input.suiteType, input.smokeMode);
+  const questionDigest = stableDigest(
+    input.cases.map((item) => ({
+      round: item.round,
+      ordinal: item.ordinal,
+      question: item.question,
+      strategy: item.strategy,
+      target_dimension: item.target_dimension,
+      expected_challenge_level: item.expected_challenge_level,
+    }))
+  );
+  const manifest = {
+    manifest_id: `${input.suiteType}:${input.slug}:${flavor}:${questionDigest}`,
+    manifest_version: 'benchmark-case-manifest-v2',
+    pack_version: `pack-v2-${stableDigest({
+      slug: input.slug,
+      suite_type: input.suiteType,
       suite_tier: suiteTier,
       flavor,
-      replayable: Boolean(input.replicaGroup),
-      replay_mode: input.replicaGroup ? 'replica_summary' : 'recipe_only',
-      replica_group: input.replicaGroup,
-      replica_id: input.replicaId,
-    },
+      question_digest: questionDigest,
+      provider: input.freezeFingerprints.provider_fingerprint,
+      runtime: input.freezeFingerprints.runtime_fingerprint,
+      judge: input.freezeFingerprints.judge_fingerprint,
+    })}`,
+    recipe_version: 'training-question-recipe-v1',
+    suite_label: `${input.suiteType}:${flavor}`,
+    suite_tier: suiteTier,
+    flavor,
+    replayable: true,
+    replay_mode: input.replicaGroup ? 'replica_summary' : 'recipe_only',
+    freeze_level: 'frozen_cases',
+    case_manifest_hash: stableDigest({
+      manifest_seed: `${input.suiteType}:${input.slug}:${flavor}`,
+      cases: input.cases,
+      fingerprints: input.freezeFingerprints,
+    }),
+    question_digest: questionDigest,
+    case_count: input.cases.length,
+    provider_fingerprint: input.freezeFingerprints.provider_fingerprint,
+    runtime_fingerprint: input.freezeFingerprints.runtime_fingerprint,
+    judge_fingerprint: input.freezeFingerprints.judge_fingerprint,
+    replica_group: input.replicaGroup,
+    replica_id: input.replicaId,
+  } satisfies BenchmarkCaseManifest;
+  return {
+    manifest,
+    cases: input.cases,
   };
+}
+
+export function summarizeBenchmarkHomogeneity(manifests: BenchmarkCaseManifest[]): BenchmarkHomogeneitySummary {
+  const manifestVersions = uniqueStrings(manifests.map((item) => item.manifest_version));
+  const freezeLevels = uniqueStrings(manifests.map((item) => item.freeze_level));
+  const suiteLabels = uniqueStrings(manifests.map((item) => item.suite_label));
+  const packVersions = uniqueStrings(manifests.map((item) => item.pack_version));
+  const providerFingerprints = uniqueStrings(manifests.map((item) => item.provider_fingerprint));
+  const runtimeFingerprints = uniqueStrings(manifests.map((item) => item.runtime_fingerprint));
+  const judgeFingerprints = uniqueStrings(manifests.map((item) => item.judge_fingerprint));
+  const reasons: string[] = [];
+
+  if (manifests.length === 0) reasons.push('no benchmark manifests supplied');
+  if (manifestVersions.length > 1) reasons.push('mixed manifest versions detected');
+  if (freezeLevels.length > 1) reasons.push('mixed freeze levels detected');
+  if (suiteLabels.length > 1) reasons.push('mixed suite labels detected');
+  if (packVersions.length > 1) reasons.push('mixed pack versions detected');
+  if (manifests.some((item) => item.freeze_level !== 'frozen_cases')) {
+    reasons.push('benchmark set is not fully frozen at case level');
+  }
+  if (manifests.some((item) => !item.provider_fingerprint)) reasons.push('provider freeze fingerprint missing');
+  if (manifests.some((item) => !item.runtime_fingerprint)) reasons.push('runtime freeze fingerprint missing');
+  if (manifests.some((item) => !item.judge_fingerprint)) reasons.push('judge freeze fingerprint missing');
+  if (providerFingerprints.length > 1) reasons.push('mixed provider freeze fingerprints detected');
+  if (runtimeFingerprints.length > 1) reasons.push('mixed runtime freeze fingerprints detected');
+  if (judgeFingerprints.length > 1) reasons.push('mixed judge freeze fingerprints detected');
+
+  return {
+    homogeneous: reasons.length === 0,
+    reasons,
+    manifest_versions: manifestVersions,
+    freeze_levels: freezeLevels,
+    suite_labels: suiteLabels,
+    pack_versions: packVersions,
+    provider_fingerprints: providerFingerprints,
+    runtime_fingerprints: runtimeFingerprints,
+    judge_fingerprints: judgeFingerprints,
+  };
+}
+
+export function toFrozenQuestionRounds(manifest: FrozenBenchmarkCaseManifest): TrainingQuestion[][] {
+  const sortedCases = [...manifest.cases].sort((left, right) => {
+    if (left.round !== right.round) return left.round - right.round;
+    return left.ordinal - right.ordinal;
+  });
+  if (sortedCases.length === 0) {
+    throw new Error(`frozen benchmark manifest "${manifest.manifest.manifest_id}" does not contain any cases`);
+  }
+
+  const roundIds = uniqueNumbers(sortedCases.map((item) => item.round));
+  for (let index = 0; index < roundIds.length; index += 1) {
+    if (roundIds[index] !== index + 1) {
+      throw new Error(
+        `frozen benchmark manifest "${manifest.manifest.manifest_id}" must use contiguous round ids starting at 1`
+      );
+    }
+  }
+
+  const grouped = new Map<number, Array<{ ordinal: number; question: TrainingQuestion }>>();
+  for (const item of sortedCases) {
+    if (!Number.isInteger(item.ordinal) || item.ordinal <= 0) {
+      throw new Error(`frozen benchmark manifest "${manifest.manifest.manifest_id}" has invalid ordinal for case ${item.case_id}`);
+    }
+    const question = String(item.question ?? '').trim();
+    if (!question) {
+      throw new Error(`frozen benchmark manifest "${manifest.manifest.manifest_id}" has an empty question in case ${item.case_id}`);
+    }
+
+    const entries = grouped.get(item.round) ?? [];
+    entries.push({
+      ordinal: item.ordinal,
+      question: {
+        question,
+        strategy: asQuestionStrategy(item.strategy, manifest.manifest.manifest_id, item.case_id),
+        target_dimension: asTargetDimension(item.target_dimension, manifest.manifest.manifest_id, item.case_id),
+        expected_challenge_level: asExpectedChallengeLevel(
+          item.expected_challenge_level,
+          manifest.manifest.manifest_id,
+          item.case_id
+        ),
+      },
+    });
+    grouped.set(item.round, entries);
+  }
+
+  return roundIds.map((round) =>
+    (grouped.get(round) ?? [])
+      .sort((left, right) => left.ordinal - right.ordinal)
+      .map((item) => ({ ...item.question }))
+  );
 }
 
 export function buildRerunStabilitySummary(input: {
@@ -413,8 +628,12 @@ export function normalizeRuntimeFallbackSummary(
 
 export const __evaluationV2Testables = {
   buildBenchmarkContext,
+  buildBenchmarkFingerprints,
+  buildFrozenCaseManifest,
   buildRerunStabilitySummary,
   inferBenchmarkSuiteTier,
+  summarizeBenchmarkHomogeneity,
+  toFrozenQuestionRounds,
 };
 
 function computeRuntimeReliability(runQuality: EvaluationRunQuality, fallbackCount: number): number {
@@ -449,6 +668,56 @@ function stableDigest(value: unknown): string {
     .update(JSON.stringify(value))
     .digest('hex')
     .slice(0, 12);
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))];
+}
+
+function uniqueNumbers(values: number[]): number[] {
+  return [...new Set(values)].sort((left, right) => left - right);
+}
+
+function asQuestionStrategy(
+  value: string | undefined,
+  manifestId: string,
+  caseId: string
+): TrainingQuestion['strategy'] {
+  if (value === 'blind_spot' || value === 'stress_test' || value === 'consistency' || value === 'scenario') {
+    return value;
+  }
+  throw new Error(`frozen benchmark manifest "${manifestId}" is missing a valid strategy for case ${caseId}`);
+}
+
+function asTargetDimension(
+  value: string | undefined,
+  manifestId: string,
+  caseId: string
+): TrainingQuestion['target_dimension'] {
+  if (
+    value === 'language_style' ||
+    value === 'values' ||
+    value === 'thinking_patterns' ||
+    value === 'behavioral_traits' ||
+    value === 'knowledge_domains' ||
+    value === 'general'
+  ) {
+    return value;
+  }
+  throw new Error(`frozen benchmark manifest "${manifestId}" is missing a valid target_dimension for case ${caseId}`);
+}
+
+function asExpectedChallengeLevel(
+  value: string | undefined,
+  manifestId: string,
+  caseId: string
+): TrainingQuestion['expected_challenge_level'] {
+  if (value === 'easy' || value === 'medium' || value === 'hard') {
+    return value;
+  }
+  throw new Error(
+    `frozen benchmark manifest "${manifestId}" is missing a valid expected_challenge_level for case ${caseId}`
+  );
 }
 
 function summarizeSpread(values: Array<number | null | undefined>): EvaluationMetricSpread {

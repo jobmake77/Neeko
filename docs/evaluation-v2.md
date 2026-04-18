@@ -99,13 +99,15 @@ Experiment reports now also include:
 - `observed_best_profile`
 - `evaluation_v2`
 - `benchmark_manifests`
+- `benchmark_case_manifests`
+- `benchmark_replay`
 - `artifact_refs`
 
 The new `evaluation_v2` block is a compact summary of official vs observed counts:
 
 ```json
 {
-  "version": "evaluation-v2-p1",
+  "version": "evaluation-v2-p2",
   "smoke_mode": false,
   "official_status": "available",
   "official_best_profile": "full",
@@ -253,10 +255,48 @@ The new `case_manifest` carries:
 - `flavor`
 - `replayable`
 - `replay_mode`
+- optional `freeze_level`
+- optional `case_manifest_hash`
+- optional `question_digest`
+- optional `case_count`
+- optional `provider_fingerprint`
+- optional `runtime_fingerprint`
+- optional `judge_fingerprint`
 - optional `replica_group`
 - optional `replica_id`
 
-This is still a recipe-level manifest, not a frozen benchmark dataset. It is meant to identify comparable runs, not to claim full dataset replay.
+P2 upgrades successful benchmark rows from recipe-level manifests to frozen case manifests.
+
+When a run completed and its generated question set is available, the sibling benchmark artifact now also carries `benchmark_case_manifests`, where each entry contains:
+
+- `manifest`
+- `cases`
+
+Each frozen case entry captures:
+
+- `case_id`
+- `round`
+- `ordinal`
+- `question`
+- optional `strategy`
+- optional `target_dimension`
+- optional `expected_challenge_level`
+
+Rows that fail before a question trace exists still fall back to recipe-level manifests. This keeps failure artifacts auditable without pretending they are frozen datasets.
+
+P2 also adds an explicit replay path:
+
+```bash
+nico experiment <slug> --benchmark-manifest <experiment-or-benchmark-manifest.json>
+```
+
+and:
+
+```bash
+nico ab-regression <slug> --benchmark-manifest <experiment-or-benchmark-manifest.json>
+```
+
+The CLI reads `benchmark_case_manifests` from either the main experiment report or the sibling benchmark-manifest artifact, restores the frozen round/question order, and replays against those exact cases instead of generating new questions.
 
 ## Artifact refs
 
@@ -268,7 +308,13 @@ Current experiment output therefore includes:
 - the legacy `experiment-*.csv`,
 - a sibling `experiment-*.benchmark-manifest.json`.
 
-This keeps the main report backward-compatible while making suite identity explicit.
+The sibling benchmark artifact now stores both:
+
+- `benchmark_manifests`
+- `benchmark_case_manifests`
+- `benchmark_replay`
+
+This keeps the main report backward-compatible while making suite identity and case freeze provenance explicit.
 
 ## Rerun stability
 
@@ -323,7 +369,20 @@ The PK scripts now also preserve:
 
 - `replica_group_id`
 - benchmark manifests collected from child runs
+- `benchmark_homogeneity`
 - `rerun_stability_by_variant`
+
+Variant aggregates now also emit `benchmark_homogeneity`, which checks whether repeated runs for the same variant stayed aligned on:
+
+- manifest version
+- freeze level
+- suite label
+- pack version
+- provider fingerprint
+- runtime fingerprint
+- judge fingerprint
+
+`scripts/build-pk-aggregate.mjs` now hard-fails when any source summary is internally non-homogeneous for a variant, or when multiple summaries do not match on the same frozen benchmark identity and freeze fingerprints.
 
 Routing decision confidence now also reads rerun stability:
 
@@ -355,7 +414,7 @@ This keeps the existing workbench flow working without changing the CLI artifact
 
 ## Current limitations
 
-P1 is still deliberately conservative.
+P2 is still deliberately conservative.
 
 It does not yet provide:
 
@@ -382,13 +441,56 @@ This keeps smoke and regression artifacts visible without letting them silently 
 
 Those belong to later phases.
 
-## Recommended next steps
-
 ### P2
 
-- move from recipe-level manifests to frozen benchmark case manifests,
-- add stronger homogeneity checks across suite identity, pack version, and provider/runtime freeze,
-- feed stability into routing-decision confidence rather than only surfacing it.
+P2 now adds:
+
+- frozen benchmark case manifests derived from the actual generated question trace,
+- replay execution against frozen benchmark cases via `--benchmark-manifest`,
+- provider/runtime/judge freeze fingerprints on successful manifests,
+- stronger PK homogeneity checks across manifest version, freeze level, pack version, and freeze fingerprints.
+
+### P2 Acceptance
+
+P2 was validated with a real smoke replay run on local persona `garrytan-test`.
+
+Base run:
+
+```bash
+nico experiment garrytan-test \
+  --profiles baseline \
+  --rounds 1 \
+  --questions-per-round 1 \
+  --output-dir /tmp/neeko-p2-acceptance/base
+```
+
+Replay run:
+
+```bash
+nico experiment garrytan-test \
+  --profiles baseline \
+  --rounds 1 \
+  --questions-per-round 1 \
+  --benchmark-manifest /tmp/neeko-p2-acceptance/base/experiment-garrytan-test-2026-04-18T07-33-07-725Z.benchmark-manifest.json \
+  --output-dir /tmp/neeko-p2-acceptance/replay
+```
+
+Observed result:
+
+- both runs completed as `clean`,
+- replay report emitted `benchmark_replay.active=true`,
+- replay report preserved the same `manifest_id`,
+- replay report preserved the same frozen `cases`,
+- replay report preserved the same provider/runtime/judge fingerprints,
+- replay report preserved the same `pack_version`.
+
+Acceptance artifacts:
+
+- `/tmp/neeko-p2-acceptance/base/experiment-garrytan-test-2026-04-18T07-33-07-725Z.json`
+- `/tmp/neeko-p2-acceptance/base/experiment-garrytan-test-2026-04-18T07-33-07-725Z.benchmark-manifest.json`
+- `/tmp/neeko-p2-acceptance/replay/experiment-garrytan-test-2026-04-18T07-34-22-199Z.json`
+
+This confirms that P2 no longer stops at “freeze and record”; it can replay the same benchmark case set end to end.
 
 ### P3
 

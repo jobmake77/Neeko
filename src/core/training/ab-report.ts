@@ -1,9 +1,12 @@
 import { TrainingProfile } from './types.js';
 import type {
+  BenchmarkCaseManifest,
   BenchmarkContext,
+  BenchmarkHomogeneitySummary,
   EvaluationContamination,
   EvaluationRunQuality,
   EvaluationScorecard,
+  FrozenBenchmarkCaseManifest,
   JudgeProvenance,
 } from './evaluation-v2.js';
 
@@ -54,6 +57,9 @@ export interface AbComparisonReport {
   group_a: TrainingProfile;
   group_b: TrainingProfile;
   benchmark_context?: BenchmarkContext;
+  benchmark_manifests?: BenchmarkCaseManifest[];
+  benchmark_case_manifests?: FrozenBenchmarkCaseManifest[];
+  benchmark_homogeneity?: BenchmarkHomogeneitySummary;
   execution: {
     elapsed_ms: number;
     fast_failures: Array<{ profile: TrainingProfile; error: string }>;
@@ -193,6 +199,9 @@ export function buildAbComparisonReport(
     elapsedMs?: number;
     fastFailures?: Array<{ profile: TrainingProfile; error: string }>;
     benchmarkContext?: BenchmarkContext;
+    benchmarkManifests?: BenchmarkCaseManifest[];
+    benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
+    benchmarkHomogeneity?: BenchmarkHomogeneitySummary;
   }
 ): AbComparisonReport {
   const a = rows.find((row) => row.profile === groupA);
@@ -208,6 +217,9 @@ export function buildAbComparisonReport(
     group_a: groupA,
     group_b: groupB,
     benchmark_context: options?.benchmarkContext,
+    benchmark_manifests: options?.benchmarkManifests,
+    benchmark_case_manifests: options?.benchmarkCaseManifests,
+    benchmark_homogeneity: options?.benchmarkHomogeneity,
     execution: {
       elapsed_ms: Math.max(0, options?.elapsedMs ?? 0),
       fast_failures: options?.fastFailures ?? [],

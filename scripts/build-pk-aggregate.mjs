@@ -15,6 +15,8 @@ const summaryPaths = summaryPathsRaw.map((item) => path.resolve(item));
 const { buildPkAggregateSummary, defaultCurrentGrayPathRecommendation } = await import(
   '../dist/testing/pk-aggregate-test-entry.js'
 );
+const { __evaluationV2Testables } = await import('../dist/testing/evaluation-v2-test-entry.js');
+const { summarizeBenchmarkHomogeneity } = __evaluationV2Testables;
 
 const parsedSummaries = summaryPaths.map((summaryPath) => ({
   summaryPath,
@@ -43,6 +45,7 @@ const report = {
   source_summaries: summaryPaths,
   benchmark_manifests: collectBenchmarkManifests(allRuns),
   aggregate: aggregateSummary.aggregate_by_variant,
+  benchmark_homogeneity: aggregateSummary.benchmark_homogeneity,
   routing_decision_aggregate: aggregateSummary.routing_decision_aggregate,
   rerun_stability_by_variant: aggregateSummary.rerun_stability_by_variant,
   stage_conclusion: {
@@ -52,7 +55,7 @@ const report = {
       ? `${overallRecord.recommended_routing.input_routing} + ${overallRecord.recommended_routing.training_seed_mode}`
       : 'unknown',
     signals_status: 'keep gated',
-      runtime_governance:
+    runtime_governance:
       aggregateSummary.routing_decision_aggregate.excluded_run_count > 0
         ? 'provider/runtime noise was detected and isolated via excluded-run handling in the PK aggregate layer'
         : 'no excluded runs were detected in the supplied summaries; current PK aggregate is clean under the new routing-decision-aware report layer',
@@ -104,32 +107,83 @@ function hydrateRunFromReport(run) {
 }
 
 function validateSummaryCompatibility(summaries) {
-  if (summaries.length <= 1) return;
+  if (summaries.length === 0) return;
   const expectedSuiteType = summaries[0].parsed?.suite_type ?? 'unknown';
   const expectedTier = summaries[0].parsed?.suite_tier ?? 'unknown';
-  const expectedManifestIds = JSON.stringify(
-    normalizeManifestIds(summaries[0].parsed?.benchmark_manifests)
+  const firstSummaryIssues = summarizeSummaryHomogeneity(summaries[0].parsed?.benchmark_manifests);
+  if (firstSummaryIssues.length > 0) {
+    throw new Error(
+      `incompatible PK summaries: first summary is not internally homogeneous (${firstSummaryIssues.join('; ')})`
+    );
+  }
+  const expectedManifestIdentity = JSON.stringify(
+    normalizeManifestIdentityByVariant(summaries[0].parsed?.benchmark_manifests)
   );
 
   for (const { summaryPath, parsed } of summaries.slice(1)) {
     const suiteType = parsed?.suite_type ?? 'unknown';
     const suiteTier = parsed?.suite_tier ?? 'unknown';
-    const manifestIds = JSON.stringify(normalizeManifestIds(parsed?.benchmark_manifests));
-    if (suiteType !== expectedSuiteType || suiteTier !== expectedTier || manifestIds !== expectedManifestIds) {
+    const summaryIssues = summarizeSummaryHomogeneity(parsed?.benchmark_manifests);
+    const manifestIdentity = JSON.stringify(normalizeManifestIdentityByVariant(parsed?.benchmark_manifests));
+    if (summaryIssues.length > 0) {
       throw new Error(
-        `incompatible PK summaries: ${summaryPath} does not match suite/manifest identity of the first summary`
+        `incompatible PK summaries: ${summaryPath} is not internally homogeneous (${summaryIssues.join('; ')})`
+      );
+    }
+    if (suiteType !== expectedSuiteType || suiteTier !== expectedTier || manifestIdentity !== expectedManifestIdentity) {
+      throw new Error(
+        `incompatible PK summaries: ${summaryPath} does not match frozen benchmark identity or freeze fingerprints of the first summary`
       );
     }
   }
 }
 
-function normalizeManifestIds(manifests) {
-  return Array.isArray(manifests)
-    ? manifests
-      .map((item) => item?.manifest_id)
-      .filter(Boolean)
-      .sort()
-    : [];
+function summarizeSummaryHomogeneity(manifests) {
+  const grouped = groupBenchmarkManifestsByVariant(manifests);
+  const variants = Object.keys(grouped).sort();
+  if (variants.length === 0) {
+    return ['no benchmark manifests found'];
+  }
+
+  const issues = [];
+  for (const variant of variants) {
+    const summary = summarizeBenchmarkHomogeneity(grouped[variant]);
+    if (!summary.homogeneous) {
+      issues.push(`${variant}: ${summary.reasons.join(', ')}`);
+    }
+  }
+  return issues;
+}
+
+function normalizeManifestIdentityByVariant(manifests) {
+  const grouped = groupBenchmarkManifestsByVariant(manifests);
+  return Object.keys(grouped)
+    .sort()
+    .map((variant) => ({
+      variant,
+      manifests: grouped[variant]
+        .map((item) => ({
+          manifest_id: item?.manifest_id ?? null,
+          manifest_version: item?.manifest_version ?? null,
+          freeze_level: item?.freeze_level ?? null,
+          suite_label: item?.suite_label ?? null,
+          pack_version: item?.pack_version ?? null,
+          provider_fingerprint: item?.provider_fingerprint ?? null,
+          runtime_fingerprint: item?.runtime_fingerprint ?? null,
+          judge_fingerprint: item?.judge_fingerprint ?? null,
+        }))
+        .sort((left, right) => String(left.manifest_id).localeCompare(String(right.manifest_id))),
+    }));
+}
+
+function groupBenchmarkManifestsByVariant(manifests) {
+  const grouped = {};
+  for (const manifest of Array.isArray(manifests) ? manifests : []) {
+    const variant = String(manifest?.flavor ?? 'unknown');
+    grouped[variant] = grouped[variant] ?? [];
+    grouped[variant].push(manifest);
+  }
+  return grouped;
 }
 
 function collectBenchmarkManifests(runs) {
@@ -153,6 +207,14 @@ function buildStageNotes(summary) {
     notes.push(
       `${summary.routing_decision_aggregate.excluded_run_count} run(s) were excluded from clean means because they matched the fallback-contaminated outlier rule`
     );
+  }
+
+  if (!summary.benchmark_homogeneity.overall_homogeneous) {
+    for (const [variant, homogeneity] of Object.entries(summary.benchmark_homogeneity.by_variant ?? {})) {
+      if (!homogeneity.homogeneous) {
+        notes.push(`${variant} benchmark homogeneity failed: ${homogeneity.reasons.join(', ')}`);
+      }
+    }
   }
 
   if (legacy && v2off) {

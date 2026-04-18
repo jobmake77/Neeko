@@ -1,29 +1,36 @@
 import chalk from 'chalk';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import yaml from 'js-yaml';
 import { settings } from '../../config/settings.js';
-import { resolvePreferredProviderName } from '../../config/model.js';
+import { resolvePreferredModelOverride, resolvePreferredProviderName } from '../../config/model.js';
 import { Persona } from '../../core/models/persona.js';
 import { Soul } from '../../core/models/soul.js';
 import { createEmptySoul } from '../../core/models/soul.js';
 import { MemoryStore } from '../../core/memory/store.js';
-import { TrainingLoop } from '../../core/training/loop.js';
+import { TrainingLoop, type TrainingProgress } from '../../core/training/loop.js';
 import { ExperimentSummaryRow, evaluateGate } from '../../core/training/ab-report.js';
 import {
   buildBenchmarkContext,
+  buildBenchmarkFingerprints,
   buildEvaluationScorecard,
+  buildFrozenCaseManifest,
   buildJudgeProvenance,
   classifyEvaluationRun,
+  toFrozenQuestionRounds,
+  type BenchmarkCaseEntry,
   type BenchmarkCaseManifest,
   type BenchmarkContext,
+  type BenchmarkSuiteTier,
+  type BenchmarkSuiteType,
   type EvaluationContamination,
   type EvaluationRunQuality,
   type EvaluationScorecard,
+  type FrozenBenchmarkCaseManifest,
   type JudgeProvenance,
   type RuntimeFallbackSummary,
 } from '../../core/training/evaluation-v2.js';
-import { TrainingProfile } from '../../core/training/types.js';
+import { TrainingProfile, type TrainingQuestion } from '../../core/training/types.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
 import {
   loadTrainingSeedHints,
@@ -51,6 +58,7 @@ import {
   resolveTrainingExecutionSettings,
   resolveTrainingStrategy,
   selectSoulChunksForStrategy,
+  type TrainingExecutionSettings,
 } from '../../core/training/strategy-resolver.js';
 import { buildRoutingDecisionRecord, RoutingDecisionRecord } from '../../core/training/routing-decision.js';
 
@@ -68,6 +76,7 @@ export interface ExperimentRoundHistoryItem {
 export interface ExperimentRunResult {
   rows: ExperimentSummaryRow[];
   roundHistories: Record<string, ExperimentRoundHistoryItem[]>;
+  benchmarkCaseManifests: FrozenBenchmarkCaseManifest[];
   failures?: Array<{ profile: TrainingProfile; error: string }>;
 }
 
@@ -124,6 +133,7 @@ interface InputRoutingComparisonSummary {
   dynamicScalingRecommendation: ReturnType<typeof recommendDynamicScaling> | null;
   routingDecisionRecord: RoutingDecisionRecord | null;
   rows: InputRoutingComparisonRow[];
+  benchmarkCaseManifests: FrozenBenchmarkCaseManifest[];
 }
 
 interface CurrentGrayPathRecommendation {
@@ -146,6 +156,12 @@ interface CurrentGrayPathRecommendation {
     contradiction_rate: number;
     duplication_rate: number;
   };
+}
+
+interface BenchmarkReplayMeta {
+  active: boolean;
+  source_path?: string;
+  replay_manifest_count?: number;
 }
 
 const EXPERIMENT_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_PROFILE_TIMEOUT_MS ?? 90_000);
@@ -180,6 +196,210 @@ function collectBenchmarkManifests(
   return [...manifests.values()];
 }
 
+function collectFrozenBenchmarkCaseManifests(
+  manifests: FrozenBenchmarkCaseManifest[]
+): FrozenBenchmarkCaseManifest[] {
+  const deduped = new Map<string, FrozenBenchmarkCaseManifest>();
+  for (const manifest of manifests) {
+    deduped.set(manifest.manifest.manifest_id, manifest);
+  }
+  return [...deduped.values()];
+}
+
+export function loadBenchmarkCaseManifestsFromArtifact(artifactPath: string): FrozenBenchmarkCaseManifest[] {
+  const resolvedPath = resolve(artifactPath);
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`benchmark manifest artifact not found: ${resolvedPath}`);
+  }
+  const parsed = JSON.parse(readFileSync(resolvedPath, 'utf-8')) as {
+    benchmark_case_manifests?: FrozenBenchmarkCaseManifest[];
+  };
+  const manifests = Array.isArray(parsed?.benchmark_case_manifests) ? parsed.benchmark_case_manifests : [];
+  if (manifests.length === 0) {
+    throw new Error(`artifact does not contain benchmark_case_manifests: ${resolvedPath}`);
+  }
+  return manifests;
+}
+
+function buildBenchmarkCaseEntries(history: TrainingProgress[]): BenchmarkCaseEntry[] {
+  return history.flatMap((item) =>
+    item.question_trace.map((question, index) => ({
+      case_id: `r${String(item.round).padStart(2, '0')}-q${String(index + 1).padStart(2, '0')}`,
+      round: item.round,
+      ordinal: index + 1,
+      question: question.question,
+      strategy: question.strategy,
+      target_dimension: question.target_dimension,
+      expected_challenge_level: question.expected_challenge_level,
+    }))
+  );
+}
+
+function inferSuiteTypeFromManifest(manifest: FrozenBenchmarkCaseManifest): BenchmarkSuiteType {
+  const suiteType = String(manifest.manifest.suite_label ?? '').split(':')[0];
+  if (
+    suiteType === 'profile_sweep' ||
+    suiteType === 'routing_compare' ||
+    suiteType === 'smoke_pk' ||
+    suiteType === 'ab_regression'
+  ) {
+    return suiteType;
+  }
+  throw new Error(`unsupported benchmark suite type in manifest "${manifest.manifest.manifest_id}"`);
+}
+
+function buildReplayManifestIndex(manifests?: FrozenBenchmarkCaseManifest[]): Map<string, FrozenBenchmarkCaseManifest> | null {
+  if (!Array.isArray(manifests) || manifests.length === 0) return null;
+  const index = new Map<string, FrozenBenchmarkCaseManifest>();
+  for (const manifest of manifests) {
+    const key = `${inferSuiteTypeFromManifest(manifest)}:${manifest.manifest.flavor}`;
+    if (index.has(key)) {
+      throw new Error(`duplicate frozen benchmark manifest for replay key "${key}"`);
+    }
+    index.set(key, manifest);
+  }
+  return index;
+}
+
+function findReplayManifest(
+  replayManifestIndex: Map<string, FrozenBenchmarkCaseManifest> | null,
+  suiteType: BenchmarkSuiteType,
+  flavor: string
+): FrozenBenchmarkCaseManifest | null {
+  if (!replayManifestIndex) return null;
+  const replayManifest = replayManifestIndex.get(`${suiteType}:${flavor}`) ?? null;
+  if (!replayManifest) {
+    throw new Error(`benchmark replay manifest missing for ${suiteType}:${flavor}`);
+  }
+  return replayManifest;
+}
+
+function summarizeReplayQuestionRounds(questionRounds: TrainingQuestion[][]): { rounds: number; questionsPerRound: number } {
+  const rounds = questionRounds.length;
+  const questionsPerRound = questionRounds.reduce((best, round) => Math.max(best, round.length), 0);
+  return {
+    rounds,
+    questionsPerRound: Math.max(1, questionsPerRound),
+  };
+}
+
+function inferReplayReportShape(
+  manifests: FrozenBenchmarkCaseManifest[]
+): { rounds: number; questionsPerRound: number } | null {
+  if (manifests.length === 0) return null;
+  const shapes = new Map<string, { rounds: number; questionsPerRound: number }>();
+  for (const manifest of manifests) {
+    const shape = summarizeReplayQuestionRounds(toFrozenQuestionRounds(manifest));
+    shapes.set(`${shape.rounds}x${shape.questionsPerRound}`, shape);
+  }
+  return shapes.size === 1 ? [...shapes.values()][0] : null;
+}
+
+function buildExperimentFreezeFingerprints(input: {
+  providerName?: string;
+  executionSettings: TrainingExecutionSettings;
+}) {
+  const generalModel = resolvePreferredModelOverride();
+  const chatModel = resolvePreferredModelOverride('chat');
+  const trainingModel = resolvePreferredModelOverride('training');
+
+  return buildBenchmarkFingerprints({
+    provider: {
+      provider_name: input.providerName ?? trainingModel?.provider ?? generalModel?.provider ?? 'unknown',
+      general: generalModel ?? null,
+      chat: chatModel ?? null,
+      training: trainingModel ?? null,
+    },
+    runtime: {
+      runtime_preset: input.executionSettings.runtimePreset,
+      runtime_overrides: input.executionSettings.runtimeOverrides ?? null,
+      kimi_stability_mode: input.executionSettings.kimiStabilityMode,
+      kimi_stability_reason: input.executionSettings.kimiStabilityReason,
+      director_review_interval: input.executionSettings.directorReviewInterval,
+      director_always_on_final_round: input.executionSettings.directorAlwaysOnFinalRound,
+    },
+    judge: {
+      evaluator_layered: input.executionSettings.evaluatorLayered,
+      evaluator_dual_review: Boolean(input.executionSettings.evaluatorDualReview),
+      calibration_version: 'evaluation-rubric-v1-mini',
+      calibration_examples: 3,
+    },
+  });
+}
+
+function buildExperimentBenchmarkArtifacts(input: {
+  slug: string;
+  suiteType: BenchmarkSuiteType;
+  suiteTier?: BenchmarkSuiteTier;
+  profile?: string;
+  variant?: string;
+  rounds: number;
+  questionsPerRound: number;
+  smokeMode?: boolean;
+  replicaGroup?: string;
+  replicaId?: string;
+  history?: TrainingProgress[];
+  providerName?: string;
+  executionSettings: TrainingExecutionSettings;
+}): {
+  benchmarkContext: BenchmarkContext;
+  benchmarkCaseManifest: FrozenBenchmarkCaseManifest | null;
+} {
+  const cases = buildBenchmarkCaseEntries(input.history ?? []);
+  if (cases.length === 0) {
+    return {
+      benchmarkContext: buildBenchmarkContext({
+        slug: input.slug,
+        suiteType: input.suiteType,
+        suiteTier: input.suiteTier,
+        profile: input.profile,
+        variant: input.variant,
+        rounds: input.rounds,
+        questionsPerRound: input.questionsPerRound,
+        smokeMode: input.smokeMode,
+        replicaGroup: input.replicaGroup,
+        replicaId: input.replicaId,
+      }),
+      benchmarkCaseManifest: null,
+    };
+  }
+
+  const benchmarkCaseManifest = buildFrozenCaseManifest({
+    slug: input.slug,
+    suiteType: input.suiteType,
+    suiteTier: input.suiteTier,
+    profile: input.profile,
+    variant: input.variant,
+    rounds: input.rounds,
+    questionsPerRound: input.questionsPerRound,
+    smokeMode: input.smokeMode,
+    replicaGroup: input.replicaGroup,
+    replicaId: input.replicaId,
+    cases,
+    freezeFingerprints: buildExperimentFreezeFingerprints({
+      providerName: input.providerName,
+      executionSettings: input.executionSettings,
+    }),
+  });
+
+  return {
+    benchmarkContext: buildBenchmarkContext({
+      slug: input.slug,
+      suiteType: input.suiteType,
+      suiteTier: input.suiteTier,
+      profile: input.profile,
+      variant: input.variant,
+      rounds: input.rounds,
+      questionsPerRound: input.questionsPerRound,
+      smokeMode: input.smokeMode,
+      replicaGroup: input.replicaGroup,
+      replicaId: input.replicaId,
+      caseManifest: benchmarkCaseManifest.manifest,
+    }),
+    benchmarkCaseManifest,
+  };
+}
+
 function toRuntimeObservabilitySnapshot(input: {
   trainerFallbacks: number;
   personaFallbacks: number;
@@ -203,6 +423,7 @@ export async function runExperimentProfiles(
     kimiStabilityMode?: string;
     trainingSeedMode?: string;
     questionsPerRound?: number;
+    benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
   }
 ): Promise<ExperimentRunResult> {
   const dir = settings.getPersonaDir(slug);
@@ -224,10 +445,12 @@ export async function runExperimentProfiles(
   const stamp = Date.now().toString(36);
   const rows: ExperimentSummaryRow[] = [];
   const roundHistories: Record<string, ExperimentRoundHistoryItem[]> = {};
+  const benchmarkCaseManifests: FrozenBenchmarkCaseManifest[] = [];
   const failures: Array<{ profile: TrainingProfile; error: string }> = [];
   const providerName = resolvePreferredProviderName();
   const trainingSeedMode = normalizeTrainingSeedMode(options?.trainingSeedMode);
   const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
+  const replayManifestIndex = buildReplayManifestIndex(options?.benchmarkCaseManifests);
 
   const profileTimeoutMs = Math.max(10_000, options?.timeoutMs ?? EXPERIMENT_PROFILE_TIMEOUT_MS);
 
@@ -245,20 +468,25 @@ export async function runExperimentProfiles(
     await store.ensureCollection(persona.memory_collection);
 
     const loop = new TrainingLoop(soul, persona, store);
+    const replayManifest = findReplayManifest(replayManifestIndex, 'profile_sweep', profile);
+    const replayQuestionRounds = replayManifest ? toFrozenQuestionRounds(replayManifest) : null;
+    const replayConfig = replayQuestionRounds ? summarizeReplayQuestionRounds(replayQuestionRounds) : null;
+    const effectiveRounds = replayConfig?.rounds ?? rounds;
+    const questionsPerRound = replayConfig?.questionsPerRound ?? Math.max(1, options?.questionsPerRound ?? 5);
     const executionSettings = resolveTrainingExecutionSettings({
       providerName,
-      rounds,
+      rounds: effectiveRounds,
       explicitKimiStabilityMode: options?.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
-    const questionsPerRound = Math.max(1, options?.questionsPerRound ?? 5);
     let result: Awaited<ReturnType<TrainingLoop['run']>> | null = null;
     snapshotAndResetAgentFallbackMetrics();
     try {
       result = await withTimeout(
         loop.run({
-          maxRounds: rounds,
+          maxRounds: effectiveRounds,
           profile,
           questionsPerRound,
+          frozenQuestionRounds: replayQuestionRounds ?? undefined,
           trainingSeedHints: trainingSeedSelection.hints,
           runtimePreset: executionSettings.runtimePreset,
           runtimeOverrides: executionSettings.runtimeOverrides,
@@ -285,6 +513,16 @@ export async function runExperimentProfiles(
         judgeProvenance,
         failureError: message,
       });
+      const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+        slug,
+        suiteType: 'profile_sweep',
+        profile,
+        rounds: effectiveRounds,
+        questionsPerRound,
+        smokeMode: effectiveRounds === 1 && questionsPerRound === 1,
+        providerName,
+        executionSettings,
+      });
       failures.push({ profile, error: message });
       roundHistories[profile] = [];
       rows.push({
@@ -305,14 +543,7 @@ export async function runExperimentProfiles(
           runtimeObservability: runtimeSnapshot,
         }),
         judge_provenance: judgeProvenance,
-        benchmark_context: buildBenchmarkContext({
-          slug,
-          suiteType: 'profile_sweep',
-          profile,
-          rounds,
-          questionsPerRound,
-          smokeMode: rounds === 1 && questionsPerRound === 1,
-        }),
+        benchmark_context: benchmarkArtifacts.benchmarkContext,
         runtime_observability: runtimeSnapshot,
       });
       console.log(
@@ -351,6 +582,20 @@ export async function runExperimentProfiles(
       runtimeObservability: runtimeSnapshot,
       judgeProvenance,
     });
+    const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+      slug,
+      suiteType: 'profile_sweep',
+      profile,
+      rounds: effectiveRounds,
+      questionsPerRound,
+      smokeMode: effectiveRounds === 1 && questionsPerRound === 1,
+      history,
+      providerName,
+      executionSettings,
+    });
+    if (benchmarkArtifacts.benchmarkCaseManifest) {
+      benchmarkCaseManifests.push(benchmarkArtifacts.benchmarkCaseManifest);
+    }
 
     rows.push({
       profile,
@@ -370,14 +615,7 @@ export async function runExperimentProfiles(
         runtimeObservability: runtimeSnapshot,
       }),
       judge_provenance: judgeProvenance,
-      benchmark_context: buildBenchmarkContext({
-        slug,
-        suiteType: 'profile_sweep',
-        profile,
-        rounds,
-        questionsPerRound,
-        smokeMode: rounds === 1 && questionsPerRound === 1,
-      }),
+      benchmark_context: benchmarkArtifacts.benchmarkContext,
       runtime_observability: runtimeSnapshot,
     });
 
@@ -391,7 +629,12 @@ export async function runExperimentProfiles(
     );
   }
 
-  return { rows, roundHistories, failures };
+  return {
+    rows,
+    roundHistories,
+    benchmarkCaseManifests: collectFrozenBenchmarkCaseManifests(benchmarkCaseManifests),
+    failures,
+  };
 }
 
 export async function cmdExperiment(
@@ -400,6 +643,7 @@ export async function cmdExperiment(
     profiles?: string;
     rounds?: string;
     questionsPerRound?: string;
+    benchmarkManifest?: string;
     outputDir?: string;
     gate?: boolean;
     maxQualityDrop?: string;
@@ -440,13 +684,34 @@ export async function cmdExperiment(
   const providerName = resolvePreferredProviderName();
   const kimiStabilityMode = options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE;
   const trainingSeedMode = normalizeTrainingSeedMode(options.trainingSeedMode);
+  const replayBenchmarkCaseManifests = options.benchmarkManifest
+    ? loadBenchmarkCaseManifestsFromArtifact(options.benchmarkManifest)
+    : [];
+  const benchmarkReplayMeta: BenchmarkReplayMeta = options.benchmarkManifest
+    ? {
+      active: true,
+      source_path: resolve(options.benchmarkManifest),
+      replay_manifest_count: replayBenchmarkCaseManifests.length,
+    }
+    : {
+      active: false,
+    };
 
-  const { rows, roundHistories, failures } = options.skipProfileSweep
-    ? { rows: [], roundHistories: {}, failures: [] }
+  if (benchmarkReplayMeta.active) {
+    console.log(
+      chalk.dim(
+        `Replay benchmark source: ${benchmarkReplayMeta.source_path} (${benchmarkReplayMeta.replay_manifest_count} frozen manifest(s))`
+      )
+    );
+  }
+
+  const { rows, roundHistories, benchmarkCaseManifests: profileBenchmarkCaseManifests, failures } = options.skipProfileSweep
+    ? { rows: [], roundHistories: {}, benchmarkCaseManifests: [], failures: [] }
     : await runExperimentProfiles(slug, rounds, profiles, {
       kimiStabilityMode,
       trainingSeedMode,
       questionsPerRound,
+      benchmarkCaseManifests: replayBenchmarkCaseManifests,
     });
   const inputRoutingComparison = options.compareTrainingSeed
     ? await runInputRoutingComparison(
@@ -454,10 +719,11 @@ export async function cmdExperiment(
       rounds,
       'full',
       kimiStabilityMode,
-      true,
-      questionsPerRound,
-      parseComparisonVariants(options.compareVariants, true)
-    )
+        true,
+        questionsPerRound,
+        parseComparisonVariants(options.compareVariants, true),
+        replayBenchmarkCaseManifests
+      )
     : options.compareInputRouting
       ? await runInputRoutingComparison(
         slug,
@@ -466,9 +732,16 @@ export async function cmdExperiment(
         kimiStabilityMode,
         false,
         questionsPerRound,
-        parseComparisonVariants(options.compareVariants, false)
-      )
-    : { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
+        parseComparisonVariants(options.compareVariants, false),
+        replayBenchmarkCaseManifests
+    )
+    : {
+      rows: [],
+      recommendation: null,
+      dynamicScalingRecommendation: null,
+      routingDecisionRecord: null,
+      benchmarkCaseManifests: [],
+    };
 
   const strictOfficialSummaryRows = selectStrictOfficialRows(rows);
   const strictOfficialComparisonRows = selectStrictOfficialRows(inputRoutingComparison.rows);
@@ -487,7 +760,16 @@ export async function cmdExperiment(
   const effectiveBestProfile = best?.profile ?? primaryComparisonRow?.profile ?? null;
   const currentGrayPathRecommendation = buildCurrentGrayPathRecommendation(inputRoutingComparison.rows);
   const observedBestProfile = computeObservedBestProfile(rows);
-  const benchmarkManifests = collectBenchmarkManifests([...rows, ...inputRoutingComparison.rows]);
+  const benchmarkCaseManifests = collectFrozenBenchmarkCaseManifests([
+    ...profileBenchmarkCaseManifests,
+    ...inputRoutingComparison.benchmarkCaseManifests,
+  ]);
+  const replayReportShape = inferReplayReportShape(benchmarkCaseManifests);
+  const reportRounds = replayReportShape?.rounds ?? rounds;
+  const reportQuestionsPerRound = replayReportShape?.questionsPerRound ?? questionsPerRound;
+  const benchmarkManifests = benchmarkCaseManifests.length > 0
+    ? benchmarkCaseManifests.map((item) => item.manifest)
+    : collectBenchmarkManifests([...rows, ...inputRoutingComparison.rows]);
   const strictOfficialAvailable =
     strictOfficialSummaryRows.length > 0 ||
     strictOfficialComparisonRows.length > 0;
@@ -512,9 +794,9 @@ export async function cmdExperiment(
     schema_version: 2,
     generated_at: new Date().toISOString(),
     slug,
-    rounds_per_profile: rounds,
+    rounds_per_profile: reportRounds,
     profiles,
-    questions_per_round: questionsPerRound,
+    questions_per_round: reportQuestionsPerRound,
     summary_rows: rows,
     official_summary_rows: strictOfficialSummaryRows,
     best_profile: effectiveBestProfile,
@@ -532,14 +814,16 @@ export async function cmdExperiment(
     routing_decision_record: inputRoutingComparison.routingDecisionRecord,
     current_gray_path_recommendation: currentGrayPathRecommendation,
     benchmark_manifests: benchmarkManifests,
+    benchmark_case_manifests: benchmarkCaseManifests,
+    benchmark_replay: benchmarkReplayMeta,
     artifact_refs: {
       benchmark_manifest_path: manifestPath,
       report_path: jsonPath,
       report_csv_path: csvPath,
     },
     evaluation_v2: {
-      version: 'evaluation-v2-p1',
-      smoke_mode: rounds === 1 && questionsPerRound === 1,
+      version: 'evaluation-v2-p2',
+      smoke_mode: reportRounds === 1 && reportQuestionsPerRound === 1,
       official_status: strictOfficialAvailable ? 'available' : 'unavailable',
       official_best_profile: effectiveBestProfile,
       observed_best_profile: observedBestProfile,
@@ -567,11 +851,13 @@ export async function cmdExperiment(
     manifestPath,
     JSON.stringify(
       {
-        schema_version: 1,
-        version: 'evaluation-v2-p1',
+        schema_version: 2,
+        version: 'evaluation-v2-p2',
         generated_at: report.generated_at,
         slug,
         benchmark_manifests: benchmarkManifests,
+        benchmark_case_manifests: benchmarkCaseManifests,
+        benchmark_replay: benchmarkReplayMeta,
       },
       null,
       2
@@ -699,19 +985,32 @@ async function runInputRoutingComparison(
   kimiStabilityMode?: string,
   compareTrainingSeed = false,
   questionsPerRound = 5,
-  explicitVariants?: Array<{ strategy: InputRoutingStrategy; trainingSeedMode: TrainingSeedMode }>
+  explicitVariants?: Array<{ strategy: InputRoutingStrategy; trainingSeedMode: TrainingSeedMode }>,
+  replayBenchmarkCaseManifests?: FrozenBenchmarkCaseManifest[]
 ): Promise<InputRoutingComparisonSummary> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
   if (!existsSync(personaPath)) {
-    return { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
+    return {
+      rows: [],
+      recommendation: null,
+      dynamicScalingRecommendation: null,
+      routingDecisionRecord: null,
+      benchmarkCaseManifests: [],
+    };
   }
 
   const basePersona = JSON.parse(readFileSync(personaPath, 'utf-8')) as Persona;
   const docs = loadRawDocsCache(dir);
   if (docs.length === 0) {
     console.log(chalk.yellow('Skipping input routing comparison: raw-docs cache not found.'));
-    return { rows: [], recommendation: null, dynamicScalingRecommendation: null, routingDecisionRecord: null };
+    return {
+      rows: [],
+      recommendation: null,
+      dynamicScalingRecommendation: null,
+      routingDecisionRecord: null,
+      benchmarkCaseManifests: [],
+    };
   }
 
   const store = new MemoryStore({
@@ -722,7 +1021,9 @@ async function runInputRoutingComparison(
   const extractor = new SoulExtractor();
   const aggregator = new SoulAggregator();
   const rows: InputRoutingComparisonRow[] = [];
+  const producedBenchmarkCaseManifests: FrozenBenchmarkCaseManifest[] = [];
   const providerName = resolvePreferredProviderName();
+  const replayManifestIndex = buildReplayManifestIndex(replayBenchmarkCaseManifests);
   const comparisonTimeoutMs = resolveComparisonTimeoutMs(docs.length, rounds);
   const evidenceItems = loadEvidenceItemsFromFile(join(dir, 'evidence-index.jsonl'));
   const packSourceItems = evidenceItems.length > 0 ? evidenceItems : buildStandaloneEvidenceBatch(docs).items;
@@ -764,13 +1065,22 @@ async function runInputRoutingComparison(
       rawDocCount: docs.length,
       providerName,
     });
+    const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
+    const replayManifest = findReplayManifest(
+      replayManifestIndex,
+      'routing_compare',
+      `${strategy}:${trainingSeedSelection.mode}`
+    );
+    const replayQuestionRounds = replayManifest ? toFrozenQuestionRounds(replayManifest) : null;
+    const replayConfig = replayQuestionRounds ? summarizeReplayQuestionRounds(replayQuestionRounds) : null;
+    const effectiveRounds = replayConfig?.rounds ?? rounds;
+    const effectiveQuestionsPerRound = replayConfig?.questionsPerRound ?? Math.max(1, questionsPerRound);
     const executionSettings = resolveTrainingExecutionSettings({
       strategyDecision,
       providerName,
-      rounds,
+      rounds: effectiveRounds,
       explicitKimiStabilityMode: kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
-    const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
     const persona: Persona = {
       ...basePersona,
       id: crypto.randomUUID(),
@@ -807,9 +1117,10 @@ async function runInputRoutingComparison(
     try {
       const result = await withTimeout(
         loop.run({
-          maxRounds: rounds,
+          maxRounds: effectiveRounds,
           profile,
-          questionsPerRound: Math.max(1, questionsPerRound),
+          questionsPerRound: effectiveQuestionsPerRound,
+          frozenQuestionRounds: replayQuestionRounds ?? undefined,
           trainingSeedHints: trainingSeedSelection.hints,
           runtimePreset: executionSettings.runtimePreset,
           runtimeOverrides: executionSettings.runtimeOverrides,
@@ -840,6 +1151,20 @@ async function runInputRoutingComparison(
         runtimeObservability: fallbackMetrics,
         judgeProvenance,
       });
+      const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+        slug,
+        suiteType: 'routing_compare',
+        variant: `${strategy}:${trainingSeedSelection.mode}`,
+        rounds: effectiveRounds,
+        questionsPerRound: effectiveQuestionsPerRound,
+        smokeMode: effectiveRounds === 1 && effectiveQuestionsPerRound === 1,
+        history,
+        providerName,
+        executionSettings,
+      });
+      if (benchmarkArtifacts.benchmarkCaseManifest) {
+        producedBenchmarkCaseManifests.push(benchmarkArtifacts.benchmarkCaseManifest);
+      }
 
       rows.push({
         label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
@@ -875,14 +1200,7 @@ async function runInputRoutingComparison(
           runtimeObservability: fallbackMetrics,
         }),
         judge_provenance: judgeProvenance,
-        benchmark_context: buildBenchmarkContext({
-          slug,
-          suiteType: 'routing_compare',
-          variant: `${strategy}:${trainingSeedSelection.mode}`,
-          rounds,
-          questionsPerRound,
-          smokeMode: rounds === 1 && questionsPerRound === 1,
-        }),
+        benchmark_context: benchmarkArtifacts.benchmarkContext,
         observability: routed.observability,
         scaling_observability: {
           pack_count: packBuild.packs.length,
@@ -925,6 +1243,16 @@ async function runInputRoutingComparison(
         judgeProvenance,
         failureError: String(error),
       });
+      const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+        slug,
+        suiteType: 'routing_compare',
+        variant: `${strategy}:${trainingSeedSelection.mode}`,
+        rounds: effectiveRounds,
+        questionsPerRound: effectiveQuestionsPerRound,
+        smokeMode: effectiveRounds === 1 && effectiveQuestionsPerRound === 1,
+        providerName,
+        executionSettings,
+      });
       rows.push({
         label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
         profile,
@@ -959,14 +1287,7 @@ async function runInputRoutingComparison(
           runtimeObservability,
         }),
         judge_provenance: judgeProvenance,
-        benchmark_context: buildBenchmarkContext({
-          slug,
-          suiteType: 'routing_compare',
-          variant: `${strategy}:${trainingSeedSelection.mode}`,
-          rounds,
-          questionsPerRound,
-          smokeMode: rounds === 1 && questionsPerRound === 1,
-        }),
+        benchmark_context: benchmarkArtifacts.benchmarkContext,
         observability: routed.observability,
         scaling_observability: {
           pack_count: packBuild.packs.length,
@@ -1015,6 +1336,7 @@ async function runInputRoutingComparison(
     recommendation,
     dynamicScalingRecommendation,
     routingDecisionRecord,
+    benchmarkCaseManifests: collectFrozenBenchmarkCaseManifests(producedBenchmarkCaseManifests),
   };
 }
 

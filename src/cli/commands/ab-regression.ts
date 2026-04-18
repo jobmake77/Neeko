@@ -10,9 +10,14 @@ import {
   toAbComparisonCsv,
   toAbComparisonMarkdown,
 } from '../../core/training/ab-report.js';
-import { buildBenchmarkContext } from '../../core/training/evaluation-v2.js';
+import {
+  buildBenchmarkContext,
+  summarizeBenchmarkHomogeneity,
+  type BenchmarkCaseManifest,
+  type FrozenBenchmarkCaseManifest,
+} from '../../core/training/evaluation-v2.js';
 import { TrainingProfile } from '../../core/training/types.js';
-import { runExperimentProfiles } from './experiment.js';
+import { loadBenchmarkCaseManifestsFromArtifact, runExperimentProfiles } from './experiment.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
 
 const VALID_PROFILES: TrainingProfile[] = ['baseline', 'a1', 'a2', 'a3', 'a4', 'full'];
@@ -32,12 +37,30 @@ function pickRows(rows: ExperimentSummaryRow[], a: TrainingProfile, b: TrainingP
   return selected;
 }
 
+function collectBenchmarkManifests(rows: Array<{ benchmark_context?: { case_manifest?: BenchmarkCaseManifest } }>) {
+  const manifests = new Map<string, BenchmarkCaseManifest>();
+  for (const row of rows) {
+    const manifest = row.benchmark_context?.case_manifest;
+    if (!manifest?.manifest_id) continue;
+    manifests.set(manifest.manifest_id, manifest);
+  }
+  return [...manifests.values()];
+}
+
+function collectFrozenBenchmarkCaseManifests(
+  manifests: FrozenBenchmarkCaseManifest[],
+  manifestIds: Set<string>
+): FrozenBenchmarkCaseManifest[] {
+  return manifests.filter((item) => manifestIds.has(item.manifest.manifest_id));
+}
+
 export async function cmdAbRegression(
   slug: string,
   options: {
     rounds?: string;
     a?: string;
     b?: string;
+    benchmarkManifest?: string;
     outputDir?: string;
     format?: string;
     gate?: boolean;
@@ -59,10 +82,16 @@ export async function cmdAbRegression(
   if (!supported.has(format)) {
     throw new Error('Invalid format. Use table|csv|json|md|all');
   }
+  const replayBenchmarkCaseManifests = options.benchmarkManifest
+    ? loadBenchmarkCaseManifestsFromArtifact(options.benchmarkManifest)
+    : [];
 
   console.log(chalk.bold.cyan(`\n✦ A/B Regression (${slug})\n`));
   console.log(chalk.dim(`Groups: A=${groupA}, B=${groupB}`));
   console.log(chalk.dim(`Rounds per group: ${rounds}\n`));
+  if (options.benchmarkManifest) {
+    console.log(chalk.dim(`Replay benchmark source: ${options.benchmarkManifest}`));
+  }
   const startedAt = Date.now();
 
   const preflight = await runModelPreflight({
@@ -75,8 +104,9 @@ export async function cmdAbRegression(
     );
   }
 
-  const { rows, failures } = await runExperimentProfiles(slug, rounds, [groupA, groupB], {
+  const { rows, benchmarkCaseManifests, failures } = await runExperimentProfiles(slug, rounds, [groupA, groupB], {
     timeoutMs: AB_PROFILE_TIMEOUT_MS,
+    benchmarkCaseManifests: replayBenchmarkCaseManifests,
   });
   if (failures && failures.length > 0) {
     for (const item of failures) {
@@ -84,6 +114,12 @@ export async function cmdAbRegression(
     }
   }
   const selectedRows = pickRows(rows, groupA, groupB);
+  const benchmarkManifests = collectBenchmarkManifests(selectedRows);
+  const benchmarkManifestIds = new Set(benchmarkManifests.map((item) => item.manifest_id));
+  const selectedBenchmarkCaseManifests = collectFrozenBenchmarkCaseManifests(
+    benchmarkCaseManifests,
+    benchmarkManifestIds
+  );
   const gateResult = evaluateGate(selectedRows, {
     enabled: options.gate === true,
     maxQualityDrop: parseFloat(options.maxQualityDrop ?? '0.02'),
@@ -103,6 +139,9 @@ export async function cmdAbRegression(
       rounds,
       questionsPerRound: 5,
     }),
+    benchmarkManifests,
+    benchmarkCaseManifests: selectedBenchmarkCaseManifests,
+    benchmarkHomogeneity: summarizeBenchmarkHomogeneity(benchmarkManifests),
   });
 
   console.log(renderAbComparisonTable(report));

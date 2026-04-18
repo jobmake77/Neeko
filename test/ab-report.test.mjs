@@ -95,6 +95,19 @@ test('buildAbComparisonReport computes delta as B-A', () => {
         replay_mode: 'recipe_only',
       },
     },
+    benchmarkManifests: [
+      {
+        manifest_id: 'ab_regression:demo:baseline:manifest',
+        manifest_version: 'benchmark-case-manifest-v1',
+        pack_version: 'pack-v1-demo',
+        recipe_version: 'training-question-recipe-v1',
+        suite_label: 'ab_regression:baseline:full',
+        suite_tier: 'regression',
+        flavor: 'baseline:full',
+        replayable: false,
+        replay_mode: 'recipe_only',
+      },
+    ],
   });
 
   assert.ok(Math.abs(report.deltas.avg_quality - 0.05) < 1e-9);
@@ -107,6 +120,7 @@ test('buildAbComparisonReport computes delta as B-A', () => {
   assert.equal(report.scorecards.a?.version, 'evaluation-v2-p1');
   assert.equal(report.contamination.b?.status, 'contaminated');
   assert.equal(report.benchmark_context?.suite_type, 'ab_regression');
+  assert.equal(report.benchmark_manifests?.length, 1);
 });
 
 test('csv and markdown outputs include core metric rows', () => {

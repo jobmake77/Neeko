@@ -7,7 +7,7 @@ import { PersonaAgent, TrainerAgent, EvaluatorAgent, DirectorAgent, Evaluation }
 import { checkConvergence, ConvergenceState } from './convergence.js';
 import { TrainingPolicy } from './policy.js';
 import { GovernanceDecision, MemoryGovernance } from './governance.js';
-import { RoundObservability, TrainingProfile } from './types.js';
+import { RoundObservability, TrainingProfile, TrainingQuestion } from './types.js';
 import { settings } from '../../config/settings.js';
 import { computeCoverageByOrigin, loadSkillLibrary } from '../skills/library.js';
 import { PersonaSkillLibrary } from '../skills/types.js';
@@ -22,6 +22,7 @@ export interface TrainingOptions {
   maxRounds?: number;
   questionsPerRound?: number;
   profile?: TrainingProfile;
+  frozenQuestionRounds?: TrainingQuestion[][];
   trainingSeedHints?: string[];
   runtimePreset?: TrainingRuntimePreset;
   runtimeOverrides?: TrainingRuntimeOverrides;
@@ -47,6 +48,7 @@ export interface TrainingProgress {
     totalRoundMs: number;
     directorDecisionSource: 'llm' | 'fallback' | 'heuristic_skip';
   };
+  question_trace: TrainingQuestion[];
   status: 'running' | 'converged' | 'max_rounds_reached';
 }
 
@@ -88,6 +90,7 @@ export class TrainingLoop {
       maxRounds = 20,
       questionsPerRound = 5,
       profile = 'full',
+      frozenQuestionRounds,
       trainingSeedHints = [],
       runtimePreset = 'balanced',
       runtimeOverrides,
@@ -98,6 +101,9 @@ export class TrainingLoop {
       onProgress,
     } = options;
     const runtime = mergeTrainingRuntimeConfig(runtimePreset, runtimeOverrides);
+    const replayQuestionRounds = normalizeFrozenQuestionRounds(frozenQuestionRounds);
+    const effectiveMaxRounds = replayQuestionRounds?.length ?? maxRounds;
+    const forceReplayCompletion = Boolean(replayQuestionRounds);
 
     const convergenceHistory: ConvergenceState[] = [];
     const allPreviousQuestions: string[] = [];
@@ -105,38 +111,44 @@ export class TrainingLoop {
     const quarantineQueue: MemoryNode[] = [];
     const history: TrainingProgress[] = [];
 
-    for (let round = 1; round <= maxRounds; round++) {
+    for (let round = 1; round <= effectiveMaxRounds; round++) {
       const roundStartedAt = Date.now();
 
       // ── Step 1: Generate questions ─────────────────────────────────────────
       const trainerStartedAt = Date.now();
       const gapHints = this.skillGapHints();
-      const gapPressure = this.skillGapPressure();
-      const plan = this.trainingPolicy.buildQuestionPlan(
-        this.soul,
-        round,
-        profile,
-        questionsPerRound,
-        previousRoundObservability,
-        gapPressure
-      );
-      const questionSet = await this.trainerAgent.generateQuestions(
-        this.soul,
-        round,
-        allPreviousQuestions,
-        {
-          strategyTargets: plan.strategyTargets,
-          lowConfidenceDimensions: plan.lowConfidenceDimensions,
-          previousRound: previousRoundObservability,
-          questionsPerRound,
-          skillHints: this.skillHints(),
-          skillGapHints: gapHints,
-          trainingSeedHints,
-          timeoutMs: runtime.trainerTimeoutMs,
-          retries: runtime.trainerRetries,
-          compactPrompt: runtime.trainerCompactPrompt,
+      const plan = replayQuestionRounds
+        ? {
+          strategyTargets: [],
+          lowConfidenceDimensions: [] as ReturnType<TrainingPolicy['buildQuestionPlan']>['lowConfidenceDimensions'],
         }
-      );
+        : this.trainingPolicy.buildQuestionPlan(
+          this.soul,
+          round,
+          profile,
+          questionsPerRound,
+          previousRoundObservability,
+          this.skillGapPressure()
+        );
+      const questionSet = replayQuestionRounds
+        ? replayQuestionRounds[round - 1].map((item) => ({ ...item }))
+        : await this.trainerAgent.generateQuestions(
+          this.soul,
+          round,
+          allPreviousQuestions,
+          {
+            strategyTargets: plan.strategyTargets,
+            lowConfidenceDimensions: plan.lowConfidenceDimensions,
+            previousRound: previousRoundObservability,
+            questionsPerRound,
+            skillHints: this.skillHints(),
+            skillGapHints: gapHints,
+            trainingSeedHints,
+            timeoutMs: runtime.trainerTimeoutMs,
+            retries: runtime.trainerRetries,
+            compactPrompt: runtime.trainerCompactPrompt,
+          }
+        );
       allPreviousQuestions.push(...questionSet.map((q) => q.question));
       const gapFocusedQuestions = this.countGapFocusedQuestions(
         questionSet.map((q) => q.question),
@@ -295,7 +307,7 @@ export class TrainingLoop {
       const directorStartedAt = Date.now();
       const shouldRunDirectorModel = this.shouldRunDirectorReview({
         round,
-        maxRounds,
+        maxRounds: effectiveMaxRounds,
         interval: directorReviewInterval,
         alwaysOnFinalRound: directorAlwaysOnFinalRound,
       });
@@ -344,7 +356,7 @@ export class TrainingLoop {
 
       const progress: TrainingProgress = {
         round,
-        maxRounds,
+        maxRounds: effectiveMaxRounds,
         nodesWritten: nodesWrittenThisRound,
         nodesReinforced: nodesReinforcedThisRound,
         avgQualityScore: avgQuality,
@@ -357,19 +369,20 @@ export class TrainingLoop {
           totalRoundMs: Date.now() - roundStartedAt,
           directorDecisionSource: directorDecision.decision_source,
         },
+        question_trace: questionSet.map((item) => ({ ...item })),
         status: 'running',
       };
 
       const converged = checkConvergence(convergenceHistory);
-      if (converged || !directorDecision.should_continue) {
+      if ((converged || !directorDecision.should_continue) && !forceReplayCompletion) {
         progress.status = 'converged';
         onProgress?.(progress);
         history.push(progress);
         break;
       }
 
-      if (round === maxRounds) {
-        progress.status = 'max_rounds_reached';
+      if (round === effectiveMaxRounds) {
+        progress.status = converged ? 'converged' : 'max_rounds_reached';
       }
 
       onProgress?.(progress);
@@ -523,4 +536,14 @@ export class TrainingLoop {
     if (coverage.length === 0) return 0;
     return coverage.reduce((sum, item) => sum + item.coverage_score, 0) / coverage.length;
   }
+}
+
+function normalizeFrozenQuestionRounds(rounds?: TrainingQuestion[][]): TrainingQuestion[][] | null {
+  if (!Array.isArray(rounds) || rounds.length === 0) return null;
+  return rounds.map((round, index) => {
+    if (!Array.isArray(round) || round.length === 0) {
+      throw new Error(`frozen benchmark round ${index + 1} is empty`);
+    }
+    return round.map((item) => ({ ...item }));
+  });
 }

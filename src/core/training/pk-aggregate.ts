@@ -9,6 +9,8 @@ import {
   buildRerunStabilitySummary,
   buildEvaluationScorecard,
   isOfficialCleanRun,
+  summarizeBenchmarkHomogeneity,
+  type BenchmarkHomogeneitySummary,
   type BenchmarkContext,
   type EvaluationRerunStability,
   type EvaluationContamination,
@@ -74,6 +76,7 @@ export interface PkVariantAggregate {
   official_scorecard: EvaluationScorecard | null;
   observed_rerun_stability: EvaluationRerunStability;
   official_rerun_stability: EvaluationRerunStability;
+  benchmark_homogeneity: BenchmarkHomogeneitySummary;
   excluded_run_details: PkExcludedRun[];
   excluded_reason_counts: Record<string, number>;
   routing_record_counts: {
@@ -104,6 +107,10 @@ export interface PkRoutingDecisionAggregate {
 export interface PkAggregateSummary {
   aggregate: PkVariantAggregate[];
   aggregate_by_variant: Record<string, PkVariantAggregate>;
+  benchmark_homogeneity: {
+    overall_homogeneous: boolean;
+    by_variant: Record<string, BenchmarkHomogeneitySummary>;
+  };
   routing_decision_aggregate: PkRoutingDecisionAggregate;
   rerun_stability_by_variant: Record<
     string,
@@ -122,6 +129,7 @@ export function buildPkAggregateSummary(options: {
   const variants = Array.from(new Set(successfulRuns.map((run) => run.variant)));
   const aggregateRows: PkVariantAggregate[] = [];
   const aggregateByVariant: Record<string, PkVariantAggregate> = {};
+  const benchmarkHomogeneityByVariant: Record<string, BenchmarkHomogeneitySummary> = {};
   const rerunStabilityByVariant: PkAggregateSummary['rerun_stability_by_variant'] = {};
   const excludedRuns: PkExcludedRun[] = [];
 
@@ -130,6 +138,7 @@ export function buildPkAggregateSummary(options: {
     const excludedForVariant = detectExcludedRunsForVariant(variantRuns);
     const excludedLabels = new Set(excludedForVariant.map((item) => item.label));
     const cleanRuns = variantRuns.filter((run) => !excludedLabels.has(runLabel(run)));
+    const benchmarkHomogeneity = summarizeBenchmarkHomogeneity(collectBenchmarkManifests(variantRuns));
     const observedRerunStability = buildRerunStabilitySummary({
       runs: variantRuns.map(toStabilityRun),
       cleanReplicaCount: cleanRuns.length,
@@ -163,6 +172,7 @@ export function buildPkAggregateSummary(options: {
       official_scorecard: buildAggregateScorecard(cleanRuns),
       observed_rerun_stability: observedRerunStability,
       official_rerun_stability: officialRerunStability,
+      benchmark_homogeneity: benchmarkHomogeneity,
       excluded_run_details: excludedForVariant,
       excluded_reason_counts: countBy(excludedForVariant.map((run) => run.reason)),
       routing_record_counts: summarizeRoutingRecords(cleanRuns),
@@ -170,6 +180,7 @@ export function buildPkAggregateSummary(options: {
 
     aggregateRows.push(aggregate);
     aggregateByVariant[variant] = aggregate;
+    benchmarkHomogeneityByVariant[variant] = benchmarkHomogeneity;
     rerunStabilityByVariant[variant] = {
       observed: observedRerunStability,
       official: officialRerunStability,
@@ -190,6 +201,10 @@ export function buildPkAggregateSummary(options: {
   return {
     aggregate: aggregateRows,
     aggregate_by_variant: aggregateByVariant,
+    benchmark_homogeneity: {
+      overall_homogeneous: Object.values(benchmarkHomogeneityByVariant).every((item) => item.homogeneous),
+      by_variant: benchmarkHomogeneityByVariant,
+    },
     routing_decision_aggregate: {
       overall_record: overallRecord,
       clean_run_count: aggregateRows.reduce((sum, row) => sum + row.clean_runs, 0),
@@ -209,6 +224,16 @@ export function buildPkAggregateSummary(options: {
     },
     rerun_stability_by_variant: rerunStabilityByVariant,
   };
+}
+
+function collectBenchmarkManifests(runs: PkRunSummary[]) {
+  const manifests = new Map<string, NonNullable<PkRunSummary['benchmarkContext']>['case_manifest']>();
+  for (const run of runs) {
+    const manifest = run.benchmarkContext?.case_manifest;
+    if (!manifest?.manifest_id) continue;
+    manifests.set(manifest.manifest_id, manifest);
+  }
+  return [...manifests.values()];
 }
 
 export function defaultCurrentGrayPathRecommendation(): GrayPathRecommendationLike {

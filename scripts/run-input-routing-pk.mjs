@@ -143,13 +143,14 @@ const aggregateSummary = buildPkAggregateSummary({
   runs: allRuns,
   currentGrayPathRecommendation: defaultCurrentGrayPathRecommendation(),
 });
+const benchmarkManifests = collectBenchmarkManifests(allRuns);
 
 const summary = {
   slug,
   suite_type: 'smoke_pk',
   suite_tier: 'smoke',
   replica_group_id: replicaGroup,
-  benchmark_manifest_version: 'benchmark-case-manifest-v1',
+  benchmark_manifest_version: summarizeBenchmarkManifestVersion(benchmarkManifests),
   repeats,
   rounds,
   questions,
@@ -157,9 +158,10 @@ const summary = {
   max_attempts: maxAttempts,
   variants,
   runs: allRuns,
-  benchmark_manifests: collectBenchmarkManifests(allRuns),
+  benchmark_manifests: benchmarkManifests,
   aggregate: aggregateSummary.aggregate,
   aggregate_by_variant: aggregateSummary.aggregate_by_variant,
+  benchmark_homogeneity: aggregateSummary.benchmark_homogeneity,
   routing_decision_aggregate: aggregateSummary.routing_decision_aggregate,
   rerun_stability_by_variant: aggregateSummary.rerun_stability_by_variant,
 };
@@ -235,6 +237,15 @@ function collectBenchmarkManifests(runs) {
     manifests.set(manifest.manifest_id, manifest);
   }
   return [...manifests.values()];
+}
+
+function summarizeBenchmarkManifestVersion(manifests) {
+  const versions = Array.isArray(manifests)
+    ? [...new Set(manifests.map((item) => item?.manifest_version).filter(Boolean))]
+    : [];
+  if (versions.length === 1) return versions[0];
+  if (versions.length > 1) return 'mixed';
+  return 'unknown';
 }
 
 function sleep(ms) {

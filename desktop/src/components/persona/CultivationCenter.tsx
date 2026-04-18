@@ -644,6 +644,7 @@ export function CultivationCenter({
   const { setView } = useAppStore();
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
   const [pendingOps, setPendingOps] = useState<Record<string, 'deep_fetch' | 'incremental_sync' | undefined>>({});
+  const liveCultivatingSlugs = useMemo(() => new Set(cultivating.map((item) => item.slug)), [cultivating]);
 
   const hasActiveSourceOp = cultivating.some((item) => {
     const detail = details[item.slug];
@@ -656,8 +657,18 @@ export function CultivationCenter({
 
   useEffect(() => {
     if (!expandedSlug || details[expandedSlug]) return;
+    if (!liveCultivatingSlugs.has(expandedSlug)) {
+      setExpandedSlug(null);
+      return;
+    }
     void loadDetail(expandedSlug);
-  }, [details, expandedSlug, loadDetail]);
+  }, [details, expandedSlug, liveCultivatingSlugs, loadDetail]);
+
+  useEffect(() => {
+    if (expandedSlug && !liveCultivatingSlugs.has(expandedSlug)) {
+      setExpandedSlug(null);
+    }
+  }, [expandedSlug, liveCultivatingSlugs]);
 
   useEffect(() => {
     cultivating.forEach((persona) => {
@@ -671,11 +682,11 @@ export function CultivationCenter({
     const poll = setInterval(() => {
       if (cultivating.some((item) => (item.progress_percent ?? 0) < 100) || hasActiveSourceOp) {
         void reload();
-        if (expandedSlug) void loadDetail(expandedSlug);
+        if (expandedSlug && liveCultivatingSlugs.has(expandedSlug)) void loadDetail(expandedSlug);
       }
     }, 5000);
     return () => clearInterval(poll);
-  }, [cultivating, expandedSlug, hasActiveSourceOp, loadDetail, reload]);
+  }, [cultivating, expandedSlug, hasActiveSourceOp, liveCultivatingSlugs, loadDetail, reload]);
 
   useEffect(() => {
     const autoSync = setInterval(() => {

@@ -24,7 +24,14 @@ export const useCultivationStore = create<CultivationState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const cultivating = await api.listCultivatingPersonas();
-      set({ cultivating, loading: false });
+      const liveSlugs = new Set(cultivating.map((item) => item.slug));
+      set((state) => ({
+        cultivating,
+        loading: false,
+        details: Object.fromEntries(
+          Object.entries(state.details).filter(([slug]) => liveSlugs.has(slug))
+        ),
+      }));
     } catch (e: unknown) {
       set({ loading: false, error: (e as Error).message });
     }

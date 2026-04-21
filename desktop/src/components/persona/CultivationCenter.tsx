@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Edit2, RefreshCw, Trash2 } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import type { CultivationDetail, PersonaSummary } from '@/lib/types';
@@ -89,6 +89,17 @@ function formatWindowSentence(detail?: CultivationDetail) {
   if (!currentWindow?.window_start || !currentWindow?.window_end) return null;
   const sourceLabel = currentWindow.source_label || detail?.source_summary?.current_source_label || '当前来源';
   return `${sourceLabel} · ${currentWindow.window_start.slice(0, 10)} ~ ${currentWindow.window_end.slice(0, 10)}`;
+}
+
+function getLatestSourceWindow(detail?: CultivationDetail) {
+  if (!detail?.source_items?.length) return undefined;
+  return detail.source_items
+    .filter((item) => item.active_window)
+    .map((item) => ({
+      source_label: item.label,
+      ...item.active_window,
+    }))
+    .sort((a, b) => String(b.updated_at ?? b.finished_at ?? b.started_at ?? '').localeCompare(String(a.updated_at ?? a.finished_at ?? a.started_at ?? '')))[0];
 }
 
 function StageIndicator({ stages }: { stages: CultivationDetail['progress']['stages'] }) {
@@ -419,6 +430,15 @@ function TrainingCard({
   const tickerText = `[${String(progress).padStart(3, '0')}%] ${operationLabel ?? displayPhaseLabel} :: win ${String((detail?.source_summary as any)?.completed_windows ?? 0).padStart(2, '0')} / ${String((detail?.source_summary as any)?.estimated_total_windows ?? 0).padStart(2, '0')} :: raw ${String(rawDocumentCount).padStart(4, '0')} :: clean ${String(cleanDocumentCount).padStart(4, '0')} :: round ${String(persona.current_round ?? detail?.progress.current_round ?? 0).padStart(2, '0')} / ${String(persona.total_rounds ?? detail?.progress.total_rounds ?? 0).padStart(2, '0')} :: ${String(detail?.phase ?? stageStatus).toUpperCase()} ::`;
   const latestActivity = detail?.latest_activity || (operationLabel ? `当前任务：${operationLabel}` : '正在等待培养推进');
   const currentWindowText = formatWindowSentence(detail);
+  const latestSourceWindow = getLatestSourceWindow(detail);
+  const latestWindowNewCount = Math.max(
+    latestSourceWindow?.new_count ?? 0,
+    latestSourceWindow?.result_count ?? 0,
+    latestSourceWindow?.matched_count ?? 0,
+  );
+  const latestWindowHint = latestWindowNewCount > 0
+    ? `${latestSourceWindow?.source_label || '当前来源'} 最近窗口新增 ${latestWindowNewCount} 条`
+    : null;
   const cacheReuse = detail?.cache_reuse;
   const collectionCycle = detail?.collection_cycle ?? detail?.source_summary?.collection_cycle;
   const collectionStopReason = detail?.collection_stop_reason ?? detail?.source_summary?.collection_stop_reason;
@@ -488,6 +508,7 @@ function TrainingCard({
             {retrainProgressLabel ? <span>重训进度 {retrainProgressLabel}</span> : null}
             {typeof collectionCycle === 'number' && collectionCycle > 0 ? <span>循环 {collectionCycle}</span> : null}
             {evaluationHint ? <span>{evaluationHint}</span> : null}
+            {latestWindowHint ? <span>{latestWindowHint}</span> : null}
             {cacheReuse?.active ? <span>缓存复用 {cacheReuse.reused_document_count}</span> : null}
             {currentWindowText ? <span>{currentWindowText}</span> : null}
           </div>
@@ -501,6 +522,11 @@ function TrainingCard({
               {retrainReady
                 ? `${retrainProgressLabel}，已达到下一轮训练条件`
                 : `${retrainProgressLabel}，达到后自动进入下一轮训练`}
+            </div>
+          ) : null}
+          {evaluationPassed === false && latestWindowHint ? (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'rgb(var(--text-secondary))' }}>
+              {latestWindowHint}，当前还未累计进下一轮重训进度。
             </div>
           ) : null}
           {collectionStopReason || historyExhausted || providerExhausted ? (
@@ -541,7 +567,7 @@ function TrainingCard({
               <InfoStat label="最近成功推进" value={formatDate(detail.last_success_at)} />
               <InfoStat label="最近活动心跳" value={formatRelativeTime(detail.last_heartbeat_at)} />
               <InfoStat label="最近检查更新" value={formatDate(detail.source_summary?.last_update_check_at)} />
-              <InfoStat label="最近新增素材" value={detail.source_summary?.recent_delta_count ?? 0} />
+              <InfoStat label="最近窗口新增" value={latestWindowNewCount} />
               <InfoStat label="历史缓存复用" value={detail.cache_reuse?.active ? `${detail.cache_reuse.reused_document_count} 条` : '无'} />
               <InfoStat label="历史窗口状态" value={historyExhausted ? '已耗尽' : '未耗尽'} />
               <InfoStat label="Provider 状态" value={providerExhausted ? '待恢复' : '正常'} />
@@ -644,7 +670,19 @@ export function CultivationCenter({
   const { setView } = useAppStore();
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
   const [pendingOps, setPendingOps] = useState<Record<string, 'deep_fetch' | 'incremental_sync' | undefined>>({});
+  const pollInFlightRef = useRef(false);
+  const detailInFlightRef = useRef(new Set<string>());
   const liveCultivatingSlugs = useMemo(() => new Set(cultivating.map((item) => item.slug)), [cultivating]);
+
+  const loadDetailSafely = useCallback(async (slug: string) => {
+    if (detailInFlightRef.current.has(slug)) return;
+    detailInFlightRef.current.add(slug);
+    try {
+      await loadDetail(slug);
+    } finally {
+      detailInFlightRef.current.delete(slug);
+    }
+  }, [loadDetail]);
 
   const hasActiveSourceOp = cultivating.some((item) => {
     const detail = details[item.slug];
@@ -661,8 +699,8 @@ export function CultivationCenter({
       setExpandedSlug(null);
       return;
     }
-    void loadDetail(expandedSlug);
-  }, [details, expandedSlug, liveCultivatingSlugs, loadDetail]);
+    void loadDetailSafely(expandedSlug);
+  }, [details, expandedSlug, liveCultivatingSlugs, loadDetailSafely]);
 
   useEffect(() => {
     if (expandedSlug && !liveCultivatingSlugs.has(expandedSlug)) {
@@ -673,20 +711,29 @@ export function CultivationCenter({
   useEffect(() => {
     cultivating.forEach((persona) => {
       if (!details[persona.slug]) {
-        void loadDetail(persona.slug);
+        void loadDetailSafely(persona.slug);
       }
     });
-  }, [cultivating, details, loadDetail]);
+  }, [cultivating, details, loadDetailSafely]);
 
   useEffect(() => {
     const poll = setInterval(() => {
-      if (cultivating.some((item) => (item.progress_percent ?? 0) < 100) || hasActiveSourceOp) {
-        void reload();
-        if (expandedSlug && liveCultivatingSlugs.has(expandedSlug)) void loadDetail(expandedSlug);
-      }
+      if (!(cultivating.some((item) => (item.progress_percent ?? 0) < 100) || hasActiveSourceOp)) return;
+      if (pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
+      void (async () => {
+        try {
+          await reload();
+          if (expandedSlug && liveCultivatingSlugs.has(expandedSlug)) {
+            await loadDetailSafely(expandedSlug);
+          }
+        } finally {
+          pollInFlightRef.current = false;
+        }
+      })();
     }, 5000);
     return () => clearInterval(poll);
-  }, [cultivating, expandedSlug, hasActiveSourceOp, liveCultivatingSlugs, loadDetail, reload]);
+  }, [cultivating, expandedSlug, hasActiveSourceOp, liveCultivatingSlugs, loadDetailSafely, reload]);
 
   useEffect(() => {
     const autoSync = setInterval(() => {

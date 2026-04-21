@@ -50,7 +50,10 @@ export class AgentReachAdapter extends BaseSourceAdapter {
         .filter(Boolean)
         .join(' ');
 
-      const output = execSync(cmd, { timeout: 60_000 }).toString();
+      const output = execSync(cmd, {
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).toString();
       const items = JSON.parse(output) as Array<{
         id: string;
         text: string;
@@ -83,7 +86,10 @@ export class AgentReachAdapter extends BaseSourceAdapter {
     try {
       const { execSync } = await import('child_process');
       const cmd = `agent-reach read --json "${url}"`;
-      const output = execSync(cmd, { timeout: 60_000 }).toString();
+      const output = execSync(cmd, {
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).toString();
       const page = JSON.parse(output) as { content: string; title?: string; author?: string };
 
       return [

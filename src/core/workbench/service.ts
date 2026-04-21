@@ -29,6 +29,7 @@ import {
 import { VideoAdapter } from '../pipeline/ingestion/video.js';
 import { AgentReachAdapter } from '../pipeline/ingestion/agentreach.js';
 import { TwitterAdapter } from '../pipeline/ingestion/twitter.js';
+import { ArticleAdapter } from '../pipeline/ingestion/article.js';
 import { enrichAttachment } from '../media/attachment-processing.js';
 import {
   AttachmentRef,
@@ -1469,6 +1470,7 @@ function parseTranscriptSourceFile(sourcePath: string): RawDocument[] | null {
 export class WorkbenchService {
   private readonly collectionReviewTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly collectionContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private static readonly REMOTE_SOURCE_HOST_FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
   constructor(
     private readonly store = new WorkbenchStore(),
@@ -1506,40 +1508,51 @@ export class WorkbenchService {
   private async resumePendingCollectionContinuations(): Promise<void> {
     const personas = this.listAllPersonaSummaries();
     for (const persona of personas) {
-      const slug = persona.slug;
-      if (this.getActivePersonaRun(slug)) continue;
-      const config = this.store.getPersonaConfig(slug);
-      if (!config) continue;
-      const state = this.summarizeCollectionState(slug);
-      if (state.evaluationPassed === true) continue;
-      const shouldResume =
-        (state.evaluationPassed === false && state.cleanDocumentCount >= state.threshold.training_threshold)
-        || (state.cleanDocumentCount > 0 && state.cleanDocumentCount < state.threshold.training_threshold)
-        ||
-        state.stopReason === 'evaluation_retry_pending'
-        || state.stopReason === 'continuing_collection'
-        || state.stopReason === 'retrying_after_exhaustion'
-        || state.stopReason === 'below_training_threshold'
-        || state.stopReason === 'provider_retry_pending'
-        || state.stopReason === 'history_retry_pending';
-      if (!shouldResume) continue;
-      const decision = buildCollectionContinuationDecision({
-        cleanDocumentCount: state.cleanDocumentCount,
-        trainingThreshold: state.threshold.training_threshold,
-        evaluationPassed: state.evaluationPassed,
-        retrainReady: state.retrain.retrainReady,
-        historyExhausted: state.historyExhausted,
-        providerExhausted: state.providerExhausted,
-        collectionCycle: state.collectionCycle,
-        hasActiveRun: false,
-      });
-      if (!decision.shouldContinue) continue;
-      const summary = state.cleanDocumentCount < state.threshold.training_threshold
-        ? state.threshold.summary
-        : '当前测评未通过，系统正在继续补充素材';
-      this.appendPersonaRunLog(slug, 'resuming collection continuation after service restart', summary);
-      this.startSourceSyncRun(slug, 'deep_fetch');
+      this.maybeResumeCollectionContinuation(
+        persona.slug,
+        'resuming collection continuation after service restart',
+        { preferCachedDocumentCount: true },
+      );
     }
+  }
+
+  private shouldResumeCollectionContinuation(state: {
+    cleanDocumentCount: number;
+    threshold: ReturnType<typeof buildTrainingThresholdSummary>;
+    evaluationPassed?: boolean;
+    stopReason?: string;
+  }): boolean {
+    if (state.evaluationPassed === true) return false;
+    return (
+      (state.evaluationPassed === false && state.cleanDocumentCount >= state.threshold.training_threshold)
+      || (state.cleanDocumentCount > 0 && state.cleanDocumentCount < state.threshold.training_threshold)
+      || state.stopReason === 'evaluation_retry_pending'
+      || state.stopReason === 'continuing_collection'
+      || state.stopReason === 'retrying_after_exhaustion'
+      || state.stopReason === 'below_training_threshold'
+      || state.stopReason === 'provider_retry_pending'
+      || state.stopReason === 'history_retry_pending'
+    );
+  }
+
+  private maybeResumeCollectionContinuation(
+    slug: string,
+    logMessage: string,
+    options?: { preferCachedDocumentCount?: boolean },
+  ): boolean {
+    if (this.getActivePersonaRun(slug)) return false;
+    const config = this.store.getPersonaConfig(slug);
+    if (!config) return false;
+    const state = this.summarizeCollectionState(slug, {
+      preferCachedDocumentCount: options?.preferCachedDocumentCount,
+    });
+    if (!this.shouldResumeCollectionContinuation(state)) return false;
+    const summary = state.cleanDocumentCount < state.threshold.training_threshold
+      ? state.threshold.summary
+      : this.buildFailedEvaluationSummary(state.retrain);
+    this.appendPersonaRunLog(slug, logMessage, summary);
+    this.scheduleCollectionContinuation(slug, summary, state);
+    return true;
   }
 
   private isPersonaReady(summary: PersonaSummary): boolean {
@@ -3253,6 +3266,7 @@ export class WorkbenchService {
         .map((row) => mapTweetRowToRawDocument(handle, row))
         .filter((item): item is RawDocument => Boolean(item))
     );
+    const allowCacheBaseline = !source.last_cursor && !source.last_synced_at;
     const horizonYears = inferHorizonYears(source);
     const start = new Date();
     const earliest = new Date();
@@ -3293,17 +3307,16 @@ export class WorkbenchService {
         const supplementalDocs = forceRemote && dedupedDocs.length < Math.min(target, AUTO_TRAINING_THRESHOLD)
           ? await this.fetchTwitterSupplementalDocuments(source, handle)
           : [];
-        return mergeDocumentCollections(
-          dedupedDocs,
-          supplementalDocs,
-          this.markCacheReusedDocuments(cachedDocs, handle),
-        );
+        return dedupeRawDocuments([
+          ...dedupedDocs,
+          ...supplementalDocs,
+        ]);
       }
       console.warn(`[WorkbenchService] twitter deep fetch yielded 0 accepted docs for ${handle}, trying provider fallbacks`);
-      return this.fetchTwitterFallbackDocuments(source, handle, cachedDocs);
+      return this.fetchTwitterFallbackDocuments(source, handle, cachedDocs, allowCacheBaseline);
     } catch (error) {
       console.warn(`[WorkbenchService] twitter deep fetch failed for ${handle}: ${String(error).slice(0, 240)}`);
-      return this.fetchTwitterFallbackDocuments(source, handle, cachedDocs);
+      return this.fetchTwitterFallbackDocuments(source, handle, cachedDocs, allowCacheBaseline);
     }
   }
 
@@ -3311,9 +3324,10 @@ export class WorkbenchService {
     source: PersonaSource,
     handle: string,
     cachedDocs: RawDocument[],
+    allowCacheBaseline: boolean,
   ): Promise<RawDocument[]> {
     const merged: RawDocument[] = [];
-    if (cachedDocs.length > 0) {
+    if (allowCacheBaseline && cachedDocs.length > 0) {
       console.warn(`[WorkbenchService] using cached twitter corpus baseline for ${handle}: ${cachedDocs.length} docs`);
       merged.push(...this.markCacheReusedDocuments(cachedDocs, handle));
     }
@@ -3514,6 +3528,20 @@ export class WorkbenchService {
         return null;
       }
     }
+    const hostFailureCooldown = this.getRemoteSourceHostFailureCooldown(source, now);
+    if (hostFailureCooldown) {
+      this.appendPersonaRunLog(
+        slug,
+        `source ${describeSourceLabel(source)} skipped: ${hostFailureCooldown.summary}`,
+        hostFailureCooldown.summary,
+      );
+      this.touchSourceSyncState(slug, config, source.id, {
+        last_synced_at: source.last_synced_at,
+        status: 'error',
+        summary: hostFailureCooldown.summary,
+      });
+      return null;
+    }
 
     let docs: RawDocument[] = [];
     let sourcePlatform = source.platform ?? source.type;
@@ -3527,74 +3555,95 @@ export class WorkbenchService {
         sourcePlatform = source.platform ?? 'twitter';
       } else {
         const mergedDocs: RawDocument[] = [];
+        let targetFetchFailed = false;
+        let lastTargetError: string | undefined;
         for (const target of targets) {
-          if (source.type === 'video_file') {
-            const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
-            const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
-            const remoteDocs = await adapter.fetch(target, {
-              limit: source.mode === 'channel_url' ? 12 : 1,
-              since,
-            });
-            mergedDocs.push(...remoteDocs.map((doc) => ({
-              ...doc,
-              metadata: {
-                ...(doc.metadata ?? {}),
-                source_target_url: target,
-              },
-            })));
-            sourcePlatform = source.platform ?? remoteDocs[0]?.source_platform ?? 'video_remote';
-            continue;
-          }
-
-          if (source.type === 'audio_file') {
-            const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
-            let remoteDocs: RawDocument[] = [];
-            try {
-              remoteDocs = await adapter.fetch(target, { limit: 1 });
-            } catch {
-              remoteDocs = [];
-            }
-            if (remoteDocs.length === 0) {
-              const articleAdapter = new AgentReachAdapter('article');
-              remoteDocs = await articleAdapter.fetch(target, { limit: 1 });
-              remoteDocs = remoteDocs.map((doc) => ({
+          try {
+            if (source.type === 'video_file') {
+              const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+              const since = source.last_synced_at ? new Date(source.last_synced_at) : undefined;
+              const remoteDocs = await adapter.fetch(target, {
+                limit: source.mode === 'channel_url' ? 12 : 1,
+                since,
+              });
+              mergedDocs.push(...remoteDocs.map((doc) => ({
                 ...doc,
                 metadata: {
                   ...(doc.metadata ?? {}),
-                  audio_link_fallback: true,
                   source_target_url: target,
                 },
-              }));
-            } else {
-              remoteDocs = remoteDocs.map((doc) => ({
+              })));
+              sourcePlatform = source.platform ?? remoteDocs[0]?.source_platform ?? 'video_remote';
+              continue;
+            }
+
+            if (source.type === 'audio_file') {
+              const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+              let remoteDocs: RawDocument[] = [];
+              try {
+                remoteDocs = await adapter.fetch(target, { limit: 1 });
+              } catch {
+                remoteDocs = [];
+              }
+              if (remoteDocs.length === 0) {
+                const articleAdapter = new ArticleAdapter();
+                remoteDocs = await articleAdapter.fetch(target);
+                remoteDocs = remoteDocs.map((doc) => ({
+                  ...doc,
+                  metadata: {
+                    ...(doc.metadata ?? {}),
+                    audio_link_fallback: true,
+                    source_target_url: target,
+                  },
+                }));
+              } else {
+                remoteDocs = remoteDocs.map((doc) => ({
+                  ...doc,
+                  source_platform: source.platform ?? 'podcast',
+                  metadata: {
+                    ...(doc.metadata ?? {}),
+                    media_kind: 'audio',
+                    source_target_url: target,
+                  },
+                }));
+              }
+              mergedDocs.push(...remoteDocs);
+              sourcePlatform = source.platform ?? 'podcast';
+              continue;
+            }
+
+            if (source.type === 'article' || source.mode === 'remote_url') {
+              const adapter = new ArticleAdapter();
+              const remoteDocs = await adapter.fetch(target);
+              mergedDocs.push(...remoteDocs.map((doc) => ({
                 ...doc,
-                source_platform: source.platform ?? 'podcast',
                 metadata: {
                   ...(doc.metadata ?? {}),
-                  media_kind: 'audio',
                   source_target_url: target,
                 },
-              }));
+              })));
+              sourcePlatform = source.platform ?? 'web';
             }
-            mergedDocs.push(...remoteDocs);
-            sourcePlatform = source.platform ?? 'podcast';
-            continue;
-          }
-
-          if (source.type === 'article' || source.mode === 'remote_url') {
-            const adapter = new AgentReachAdapter('article');
-            const remoteDocs = await adapter.fetch(target, { limit: 1 });
-            mergedDocs.push(...remoteDocs.map((doc) => ({
-              ...doc,
-              metadata: {
-                ...(doc.metadata ?? {}),
-                source_target_url: target,
-              },
-            })));
-            sourcePlatform = source.platform ?? 'web';
+          } catch (error) {
+            targetFetchFailed = true;
+            lastTargetError = String(error instanceof Error ? error.message : error).slice(0, 180);
+            this.appendPersonaRunLog(
+              slug,
+              `source ${describeSourceLabel(source)} target ${target} failed: ${lastTargetError}`,
+              '来源暂时不可用，稍后会继续尝试',
+            );
           }
         }
         docs = dedupeRawDocuments(mergedDocs);
+        if (docs.length === 0 && targetFetchFailed) {
+          this.touchSourceSyncState(slug, config, source.id, {
+            last_synced_at: now.toISOString(),
+            status: 'error',
+            summary: `Source fetch failed: ${lastTargetError ?? 'unknown error'}`,
+          });
+          this.clearSyncOperation(slug);
+          return null;
+        }
       }
 
       if (docs.length === 0) {
@@ -3677,7 +3726,7 @@ export class WorkbenchService {
       const cursor = createHash('sha1')
         .update(JSON.stringify(acceptedDocs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
         .digest('hex');
-      if (!forceRemote && source.last_cursor && source.last_cursor === cursor) {
+      if (source.last_cursor && source.last_cursor === cursor) {
         this.touchSourceSyncState(slug, config, source.id, {
           last_synced_at: now.toISOString(),
           status: 'ready',
@@ -3739,6 +3788,29 @@ export class WorkbenchService {
     }
   }
 
+  private getRemoteSourceHostFailureCooldown(
+    source: PersonaSource,
+    now = new Date(),
+  ): { summary: string } | null {
+    if (source.type === 'social') return null;
+    if (!this.isRemoteSourceHostFailureSummary(source.summary)) return null;
+    if (!source.last_synced_at) return null;
+    const lastSyncedAt = new Date(source.last_synced_at).getTime();
+    if (!Number.isFinite(lastSyncedAt)) return null;
+    const remainingMs = (lastSyncedAt + WorkbenchService.REMOTE_SOURCE_HOST_FAILURE_COOLDOWN_MS) - now.getTime();
+    if (remainingMs <= 0) return null;
+    const remainingHours = Math.max(1, Math.ceil(remainingMs / (60 * 60 * 1000)));
+    return {
+      summary: `来源域名当前不可解析，已跳过本轮重试，约 ${remainingHours} 小时后再检查`,
+    };
+  }
+
+  private isRemoteSourceHostFailureSummary(summary?: string): boolean {
+    if (!summary) return false;
+    return summary.includes('Host lookup failed')
+      || summary.includes('来源域名当前不可解析');
+  }
+
   private touchSyncOperation(slug: string, config: PersonaConfig, source: PersonaSource, forceRemote: boolean): void {
     const latestConfig = this.store.getPersonaConfig(slug) ?? config;
     const currentOperation = source.type === 'social' && (!source.last_seen_published_at || forceRemote)
@@ -3792,7 +3864,24 @@ export class WorkbenchService {
     }
   }
 
-  private summarizeCollectionState(slug: string): {
+  private getCachedPersonaDocumentCount(slug: string): number | undefined {
+    const cached = this.readPersonaSummary(slug)?.doc_count;
+    if (!Number.isFinite(cached)) return undefined;
+    return Math.max(0, Math.round(Number(cached)));
+  }
+
+  private computeCleanDocumentCountFromImports(
+    slug: string,
+    evidenceImports = this.store.listEvidenceImports(slug),
+  ): number {
+    return dedupeRawDocuments(
+      evidenceImports.flatMap((item) => this.readImportDocuments(item))
+    ).length;
+  }
+
+  private summarizeCollectionState(slug: string, options: {
+    preferCachedDocumentCount?: boolean;
+  } = {}): {
     cleanDocumentCount: number;
     threshold: ReturnType<typeof buildTrainingThresholdSummary>;
     evaluationPassed?: boolean;
@@ -3809,9 +3898,10 @@ export class WorkbenchService {
     stopReason?: string;
   } {
     const config = this.getPersonaConfig(slug);
-    const cleanDocumentCount = dedupeRawDocuments(
-      this.store.listEvidenceImports(slug).flatMap((item) => this.readImportDocuments(item))
-    ).length;
+    const cachedDocumentCount = options.preferCachedDocumentCount
+      ? this.getCachedPersonaDocumentCount(slug)
+      : undefined;
+    const cleanDocumentCount = cachedDocumentCount ?? this.computeCleanDocumentCountFromImports(slug);
     const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config ?? undefined));
     const trainingContext = this.readTrainingContext(slug);
     const evaluationPassed = deriveEvaluationPassed(trainingContext);
@@ -4615,8 +4705,9 @@ export class WorkbenchService {
         const trainingContext = this.readTrainingContext(run.persona_slug);
         inferredStatus = trainingContext?.state === 'completed' ? 'completed' : 'failed';
       } else if (run.type === 'experiment') {
-        resolvedReportPath = this.resolveExperimentReportPath(run.report_path);
-        inferredStatus = resolvedReportPath ? 'completed' : 'failed';
+        const experimentReportPath = this.resolveExperimentReportPath(run.report_path);
+        resolvedReportPath = experimentReportPath ?? undefined;
+        inferredStatus = experimentReportPath ? 'completed' : 'failed';
       } else {
         inferredStatus = run.report_path && existsSync(run.report_path) ? 'completed' : 'failed';
       }
@@ -4754,10 +4845,15 @@ export class WorkbenchService {
     const config = this.getPersonaConfig(slug);
     const skills = this.readSkillSummary(slug);
     const evidenceImports = this.store.listEvidenceImports(slug);
-    const sourceItems = this.buildCultivationSourceItems(config, evidenceImports);
-    const uniqueDocumentCount = sourceItems.reduce((sum, item) => sum + item.clean_count, 0);
+    const uniqueDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
+    const sourceItems = this.buildCultivationSourceItems(config, evidenceImports, {
+      preferCachedCounts: true,
+      totalCleanDocumentCount: uniqueDocumentCount,
+    });
     const recentUniqueDocumentCount = this.computeRecentDeltaCount(evidenceImports, sourceItems);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
+    const currentWindow = this.getCurrentWindow(sourceItems);
+    const latestWindow = currentWindow ?? this.getActiveWindows(sourceItems)[0];
     const threshold = buildTrainingThresholdSummary(uniqueDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const retrain = this.computeRetrainState(slug, config, uniqueDocumentCount, evaluationPassed);
@@ -4787,6 +4883,8 @@ export class WorkbenchService {
         current_source_label: config.update_policy.current_source_label,
         last_update_check_at: config.update_policy.last_checked_at,
         latest_update_result: this.resolveCultivationStatusMessage(persona, config, threshold, evaluationPassed),
+        active_window: currentWindow,
+        latest_window: latestWindow,
         training_threshold: threshold.training_threshold,
         training_threshold_met: threshold.training_threshold_met,
         training_block_reason: showThresholdBlock
@@ -4811,12 +4909,23 @@ export class WorkbenchService {
 
   private buildCultivationSourceItems(
     config: PersonaConfig,
-    evidenceImports: WorkbenchEvidenceImport[]
+    evidenceImports: WorkbenchEvidenceImport[],
+    options?: {
+      preferCachedCounts?: boolean;
+      totalCleanDocumentCount?: number;
+    },
   ): NonNullable<CultivationDetail['source_items']> {
     return config.sources.map((source) => {
       const sourceProgress = this.readSourceSyncProgress(source);
-      const matchingImports = evidenceImports.filter((item) => this.matchesSourceImport(source, item));
-      const dedupedDocuments = dedupeRawDocuments(matchingImports.flatMap((item) => this.readImportDocuments(item)));
+      const matchingImports = evidenceImports.filter((item) => (
+        options?.preferCachedCounts
+          ? this.matchesSourceImportMetadata(source, item)
+          : this.matchesSourceImport(source, item)
+      ));
+      const latestImport = [...matchingImports].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+      const dedupedDocuments = options?.preferCachedCounts
+        ? []
+        : dedupeRawDocuments(matchingImports.flatMap((item) => this.readImportDocuments(item)));
       const realtimeCount = source.type === 'social'
         ? Math.max(
             sourceProgress?.count ?? 0,
@@ -4824,10 +4933,19 @@ export class WorkbenchService {
             sourceProgress?.last_success_window?.new_count ?? 0,
           )
         : 0;
-      const rawCount = Math.max(dedupedDocuments.length, realtimeCount);
-      const cleanCount = Math.max(dedupedDocuments.length, realtimeCount);
-      const cacheReuse = this.summarizeCacheReuseDocuments(dedupedDocuments, describeSourceLabel(source));
-      const latestImport = [...matchingImports].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+      const latestImportCount = Math.max(0, latestImport?.item_count ?? 0);
+      const exactDocumentCount = dedupedDocuments.length;
+      const fallbackDocumentCount = source.type === 'social'
+        ? Math.max(latestImportCount, options?.totalCleanDocumentCount ?? 0)
+        : latestImportCount;
+      const sourceDocumentCount = options?.preferCachedCounts
+        ? fallbackDocumentCount
+        : exactDocumentCount;
+      const rawCount = Math.max(sourceDocumentCount, realtimeCount, latestImport?.stats.raw_messages ?? 0);
+      const cleanCount = Math.max(sourceDocumentCount, realtimeCount);
+      const cacheReuse = options?.preferCachedCounts
+        ? this.summarizeCacheReuseFromImport(latestImport, describeSourceLabel(source))
+        : this.summarizeCacheReuseDocuments(dedupedDocuments, describeSourceLabel(source));
       const validationSummary = latestImport
         ? this.readImportValidationSummary(latestImport)
         : {
@@ -4836,18 +4954,24 @@ export class WorkbenchService {
             quarantined_count: 0,
           };
       const syncedAt = sourceProgress?.updated_at ?? source.last_synced_at ?? matchingImports.map((item) => item.updated_at).sort().at(-1);
-      const coveragePoints = dedupedDocuments
-        .map((doc) => doc.published_at)
-        .filter((value): value is string => Boolean(value))
-        .map((value) => {
-          const parsed = new Date(value);
-          return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-        })
-        .filter((value): value is string => Boolean(value))
-        .sort();
+      const coveragePoints = options?.preferCachedCounts
+        ? []
+        : dedupedDocuments
+          .map((doc) => doc.published_at)
+          .filter((value): value is string => Boolean(value))
+          .map((value) => {
+            const parsed = new Date(value);
+            return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+          })
+          .filter((value): value is string => Boolean(value))
+          .sort();
+      const importCoverage = options?.preferCachedCounts || !latestImport
+        ? {}
+        : this.readImportCoverageWindow(latestImport);
+      const inferredCoverageEnd = coveragePoints.at(-1) ?? importCoverage.end ?? source.last_seen_published_at;
       const inferredCoverageStart = coveragePoints[0]
-        ?? this.inferSourceCoverageStart(source, source.last_seen_published_at);
-      const inferredCoverageEnd = coveragePoints.at(-1) ?? source.last_seen_published_at;
+        ?? importCoverage.start
+        ?? this.inferSourceCoverageStart(source, inferredCoverageEnd);
       return {
         source_id: source.id,
         label: source.handle_or_url || source.local_path || source.platform || source.type,
@@ -4907,6 +5031,20 @@ export class WorkbenchService {
     };
   }
 
+  private summarizeCacheReuseFromImport(
+    entry: WorkbenchEvidenceImport | undefined,
+    sourceLabel?: string,
+  ): { active: boolean; reused_document_count: number; summary: string } | null {
+    if (!entry?.summary || !entry.summary.includes('复用')) return null;
+    const reusedDocumentCount = Math.max(0, Number(entry.item_count ?? 0));
+    const label = sourceLabel || '当前来源';
+    return {
+      active: true,
+      reused_document_count: reusedDocumentCount,
+      summary: entry.summary || `已复用 ${label} 的历史素材缓存 ${reusedDocumentCount} 条`,
+    };
+  }
+
   private getSourceSyncStatePath(source: PersonaSource): string | null {
     if (source.type !== 'social' || !source.handle_or_url?.trim()) return null;
     const handle = normalizeHandle(source.handle_or_url);
@@ -4928,6 +5066,10 @@ export class WorkbenchService {
     if (importSourceIds.length > 0) {
       return importSourceIds.includes(source.id);
     }
+    return this.matchesSourceImportMetadata(source, entry);
+  }
+
+  private matchesSourceImportMetadata(source: PersonaSource, entry: WorkbenchEvidenceImport): boolean {
     const sourceKind =
       source.type === 'chat_file' ? 'chat'
       : source.type === 'audio_file' ? 'audio'
@@ -4936,6 +5078,12 @@ export class WorkbenchService {
       : 'chat';
     if (sourceKind !== entry.source_kind) return false;
     if (source.platform && entry.source_platform && source.platform !== entry.source_platform) return false;
+    if (source.type === 'social' && source.handle_or_url?.trim() && entry.source_path?.trim()) {
+      return normalizeHandle(source.handle_or_url) === normalizeHandle(entry.source_path);
+    }
+    if (source.handle_or_url?.trim() && entry.source_path?.trim()) {
+      return source.handle_or_url.trim() === entry.source_path.trim();
+    }
     return true;
   }
 
@@ -4986,16 +5134,20 @@ export class WorkbenchService {
 
   private buildCultivationRounds(
     slug: string,
-    cleanDocumentCount: number
+    cleanDocumentCount: number,
+    config = this.getPersonaConfig(slug),
   ): NonNullable<CultivationDetail['rounds']> {
     const report = this.readTrainingReport(slug);
-    const prepDocumentCount = this.getLatestPrepDocumentCount(slug);
+    const storedPrepCount = Number(config.update_policy.last_training_prep_count);
+    const prepDocumentCount = Number.isFinite(storedPrepCount) && storedPrepCount > 0
+      ? Math.max(0, Math.round(storedPrepCount))
+      : this.getLatestPrepDocumentCount(slug);
     const rounds = report?.rounds ?? [];
     return rounds.map((item) => ({
       round: item.round,
       status: item.status,
       objective: this.describeRoundObjective(item.round),
-      document_count: prepDocumentCount ?? cleanDocumentCount,
+      document_count: item.document_count ?? prepDocumentCount ?? cleanDocumentCount,
       finished_at: report?.generated_at,
     }));
   }
@@ -5463,6 +5615,9 @@ export class WorkbenchService {
               ? 'Training completed after automatic recovery.'
               : (summaryLabel === 'train smoke' ? 'Smoke check completed.' : `${summaryLabel} completed`),
           });
+          if (type === 'create' && personaSlug) {
+            this.maybeResumeCollectionContinuation(personaSlug, 'resuming collection continuation after create run completed');
+          }
           return;
         }
 
@@ -5502,6 +5657,9 @@ export class WorkbenchService {
             ? 'Training paused. Progress has been saved and automatic recovery could not complete.'
             : `${summaryLabel} did not finish. Please try again later.`,
         });
+        if (type === 'create' && personaSlug) {
+          this.maybeResumeCollectionContinuation(personaSlug, 'resuming collection continuation after create run stopped');
+        }
       });
 
       child.on('error', (error) => {
@@ -5539,6 +5697,9 @@ export class WorkbenchService {
             ? 'Training could not start. Progress has been kept safe.'
             : `${type} could not start.`,
         });
+        if (type === 'create' && personaSlug) {
+          this.maybeResumeCollectionContinuation(personaSlug, 'resuming collection continuation after create run errored');
+        }
       });
     };
 
@@ -5722,12 +5883,20 @@ export class WorkbenchService {
     }
     const config = this.store.getPersonaConfig(slug);
     const stage = this.resolveStage(base.status, trainingContext, trainingReport);
-    const evidenceImports = this.store.listEvidenceImports(slug);
-    const cleanDocumentCount = dedupeRawDocuments(
-      evidenceImports.flatMap((item) => this.readImportDocuments(item))
-    ).length;
-    const sourceItems = config ? this.buildCultivationSourceItems(config, evidenceImports) : [];
-    const realtimeDocumentCount = sourceItems.reduce((sum, item) => sum + Math.max(0, item.clean_count), 0);
+    const cleanDocumentCount = Math.max(0, Math.round(base.doc_count ?? 0));
+    const realtimeDocumentCount = config
+      ? config.sources
+        .filter((source) => source.enabled && source.type === 'social')
+        .reduce((sum, source) => {
+          const progress = this.readSourceSyncProgress(source);
+          return sum + Math.max(
+            0,
+            progress?.count ?? 0,
+            progress?.current_window?.new_count ?? 0,
+            progress?.last_success_window?.new_count ?? 0,
+          );
+        }, 0)
+      : 0;
     const effectiveDocumentCount = Math.max(base.doc_count ?? 0, cleanDocumentCount, realtimeDocumentCount);
     const threshold = buildTrainingThresholdSummary(
       cleanDocumentCount,
@@ -5824,7 +5993,11 @@ export class WorkbenchService {
     }
   }
 
-  private readTrainingReport(slug: string): { total_rounds: number; generated_at?: string; rounds?: Array<{ round: number; status: string }> } | null {
+  private readTrainingReport(slug: string): {
+    total_rounds: number;
+    generated_at?: string;
+    rounds?: Array<{ round: number; status: string; document_count?: number }>;
+  } | null {
     const path = join(settings.getPersonaDir(slug), 'training-report.json');
     if (!existsSync(path)) return null;
     try {
@@ -5838,6 +6011,9 @@ export class WorkbenchService {
             return {
               round: Number(row.round ?? 0),
               status: String(row.status ?? 'pending'),
+              document_count: Number.isFinite(Number(row.document_count))
+                ? Math.max(0, Math.round(Number(row.document_count)))
+                : undefined,
             };
           })
           : [],
@@ -5986,9 +6162,12 @@ export class WorkbenchService {
     const config = this.getPersonaConfig(slug);
     const evidenceImports = this.store.listEvidenceImports(slug);
     const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
-    let sourceItems = this.buildCultivationSourceItems(config, evidenceImports);
+    const cleanDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
+    let sourceItems = this.buildCultivationSourceItems(config, evidenceImports, {
+      preferCachedCounts: true,
+      totalCleanDocumentCount: cleanDocumentCount,
+    });
     const rawDocumentCount = sourceItems.reduce((sum, item) => sum + item.raw_count, 0);
-    const cleanDocumentCount = sourceItems.reduce((sum, item) => sum + item.clean_count, 0);
     const validationSummary = sourceItems.reduce<ValidationSummaryTotals>((acc, item) => {
       acc.accepted_count += item.validation_summary?.accepted_count ?? item.clean_count ?? 0;
       acc.rejected_count += item.validation_summary?.rejected_count ?? 0;
@@ -6023,6 +6202,9 @@ export class WorkbenchService {
     }
     const currentWindow = phase === 'ready' ? undefined : this.getCurrentWindow(sourceItems);
     const activeWindows = phase === 'ready' ? [] : this.getActiveWindows(sourceItems);
+    const latestWindow = phase === 'ready'
+      ? undefined
+      : currentWindow ?? activeWindows[0];
     const windowProgress = sourceItems.reduce((acc, item) => {
       const progress = item.type === 'social' ? this.readSourceSyncProgress(config.sources.find((source) => source.id === item.source_id) ?? config.sources[0]) : null;
       acc.completed_windows += progress?.completed_windows ?? 0;
@@ -6103,6 +6285,8 @@ export class WorkbenchService {
         last_heartbeat_at: lastHeartbeatAt,
         completed_windows: windowProgress.completed_windows,
         estimated_total_windows: windowProgress.estimated_total_windows,
+        active_window: currentWindow,
+        latest_window: latestWindow,
         training_threshold: threshold.training_threshold,
         training_threshold_met: threshold.training_threshold_met,
         training_block_reason: showThresholdBlock ? threshold.training_block_reason : undefined,

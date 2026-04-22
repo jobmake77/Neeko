@@ -127,6 +127,9 @@ program
   .option('--questions-per-round <n>', 'Questions per round for experiment runs', '5')
   .option('--benchmark-manifest <path>', 'Replay against frozen benchmark_case_manifests from an experiment artifact')
   .option('--official-pack <pack-id-or-path>', 'Load a checked-in official benchmark pack by registry id or pack path')
+  .option('--judge-mode <mode>', 'Benchmark judge mode: proxy | benchmark_single | benchmark_dual | both')
+  .option('--replicas <n>', 'Repeat official benchmark execution under one replica group')
+  .option('--significance', 'Emit benchmark significance summary when replica evidence is sufficient')
   .option('--output-dir <dir>', 'Write JSON/CSV reports to this directory')
   .option('--gate', 'Enable quality gate: compare full vs baseline and fail on regression')
   .option('--max-quality-drop <n>', 'Allowed quality drop for full vs baseline', '0.02')
@@ -145,6 +148,9 @@ program
     questionsPerRound?: string;
     benchmarkManifest?: string;
     officialPack?: string;
+    judgeMode?: string;
+    replicas?: string;
+    significance?: boolean;
     outputDir?: string;
     gate?: boolean;
     maxQualityDrop?: string;
@@ -170,6 +176,9 @@ program
   .option('--b <profile>', 'Group B profile (baseline | a1 | a2 | a3 | a4 | full)', 'full')
   .option('--benchmark-manifest <path>', 'Replay groups against frozen benchmark_case_manifests from an experiment artifact')
   .option('--official-pack <pack-id-or-path>', 'Load a checked-in official benchmark pack by registry id or pack path')
+  .option('--judge-mode <mode>', 'Benchmark judge mode: proxy | benchmark_single | benchmark_dual | both')
+  .option('--replicas <n>', 'Repeat official benchmark execution under one replica group')
+  .option('--significance', 'Emit benchmark significance summary when replica evidence is sufficient')
   .option('--output-dir <dir>', 'Write reports to this directory')
   .option('--format <fmt>', 'Output format: table | csv | json | md | all', 'all')
   .option('--gate', 'Enable quality gate: compare B vs A and fail on regression')
@@ -182,6 +191,9 @@ program
     b?: string;
     benchmarkManifest?: string;
     officialPack?: string;
+    judgeMode?: string;
+    replicas?: string;
+    significance?: boolean;
     outputDir?: string;
     format?: string;
     gate?: boolean;

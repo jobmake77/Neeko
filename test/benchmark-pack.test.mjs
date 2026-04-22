@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -9,6 +10,7 @@ const fixturesRoot = join(__dirname, 'fixtures', 'benchmarks');
 const registryRoot = join(fixturesRoot, 'packs');
 const validPackDir = join(registryRoot, 'persona-core-v1');
 const invalidPackDir = join(registryRoot, 'persona-core-invalid-v1');
+const humanSeedPackDir = join(__dirname, '..', 'benchmarks', 'packs', 'persona-core-human-seed-v1');
 
 async function importOptional(modulePath) {
   try {
@@ -90,6 +92,14 @@ function summarizeLoadedPack(loaded) {
   };
 }
 
+function parseJsonLines(text) {
+  return text
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
 async function requireBenchmarkPackApi(t) {
   const mod =
     (await importOptional(join(__dirname, '..', 'dist', 'testing', 'benchmark-pack-test-entry.js'))) ??
@@ -150,4 +160,41 @@ test('benchmark pack validator rejects label rows that do not map to declared ca
     },
     /label|case[_ ]?id|missing|unknown/i
   );
+});
+
+test('benchmark pack loader accepts the repo human-labeled seed pack by path', async (t) => {
+  const api = await requireBenchmarkPackApi(t);
+  if (!api) return;
+
+  const loaded = await loadPack(api.loadBenchmarkPack, humanSeedPackDir);
+  await validatePack(api.validateBenchmarkPack, loaded);
+  const summary = summarizeLoadedPack(loaded);
+
+  assert.equal(summary.packId, 'persona-core-human-seed-v1');
+  assert.equal(summary.packVersion, '2026-04-22');
+  assert.equal(summary.suiteTier, 'official');
+  assert.equal(summary.suiteType, 'official_benchmark');
+  assert.equal(summary.cases.length, 2);
+  assert.equal(summary.labels.length, 2);
+});
+
+test('repo includes a minimal human-labeled benchmark seed pack for P3 governance calibration', () => {
+  const pack = JSON.parse(readFileSync(join(humanSeedPackDir, 'pack.json'), 'utf8'));
+  const cases = parseJsonLines(readFileSync(join(humanSeedPackDir, 'cases.jsonl'), 'utf8'));
+  const labels = parseJsonLines(readFileSync(join(humanSeedPackDir, 'labels.jsonl'), 'utf8'));
+
+  assert.equal(pack.pack_id, 'persona-core-human-seed-v1');
+  assert.equal(pack.manifest_version, 'benchmark-pack-registry-v1');
+  assert.equal(pack.suite_type, 'official_benchmark');
+  assert.equal(pack.suite_tier, 'official');
+  assert.equal(pack.status, 'candidate');
+  assert.equal(cases.length, 2);
+  assert.equal(labels.length, 2);
+
+  const caseIds = new Set(cases.map((item) => item.case_id));
+  for (const label of labels) {
+    assert.ok(caseIds.has(label.case_id));
+    assert.equal(label.label_source, 'human');
+    assert.equal(label.label_version, '1');
+  }
 });

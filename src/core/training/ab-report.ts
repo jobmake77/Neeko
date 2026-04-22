@@ -16,6 +16,11 @@ import type {
   FrozenBenchmarkCaseManifest,
   JudgeProvenance,
 } from './evaluation-v2.js';
+import type {
+  BenchmarkGovernanceSummary,
+  BenchmarkReplicaSummary,
+  BenchmarkSignificanceSummary,
+} from './significance.js';
 
 export interface ExperimentSummaryRow {
   profile: TrainingProfile;
@@ -32,6 +37,8 @@ export interface ExperimentSummaryRow {
   benchmark_case_summary?: BenchmarkCaseSummary;
   benchmark_judge_summary?: BenchmarkJudgeSummary;
   benchmark_judge_disagreement?: BenchmarkJudgeDisagreement;
+  benchmark_replica_summary?: BenchmarkReplicaSummary;
+  benchmark_governance?: BenchmarkGovernanceSummary;
   benchmark_context?: BenchmarkContext;
   runtime_observability?: {
     trainer_fallbacks: number;
@@ -116,6 +123,12 @@ export interface AbComparisonReport {
     a: BenchmarkJudgeDisagreement | null;
     b: BenchmarkJudgeDisagreement | null;
   };
+  benchmark_replica_summaries?: {
+    a: BenchmarkReplicaSummary | null;
+    b: BenchmarkReplicaSummary | null;
+  };
+  benchmark_significance?: BenchmarkSignificanceSummary | null;
+  benchmark_governance?: BenchmarkGovernanceSummary | null;
   artifact_refs?: {
     benchmark_summary_path?: string;
   };
@@ -131,6 +144,7 @@ export function evaluateGate(
     maxDuplicationRise: number;
     baselineProfile?: TrainingProfile;
     compareProfile?: TrainingProfile;
+    benchmarkGovernance?: BenchmarkGovernanceSummary | null;
   }
 ): GateResult {
   const baselineProfile = cfg.baselineProfile ?? 'baseline';
@@ -185,21 +199,25 @@ export function evaluateGate(
   const qualityOk = qualityDrop <= cfg.maxQualityDrop;
   const contradictionOk = contradictionRise <= cfg.maxContradictionRise;
   const duplicationOk = duplicationRise <= cfg.maxDuplicationRise;
-  const passed = qualityOk && contradictionOk && duplicationOk;
+  const governance = cfg.benchmarkGovernance ?? null;
+  const governancePassed = !governance || governance.promotion_readiness === 'promotable';
+  const passed = qualityOk && contradictionOk && duplicationOk && governancePassed;
 
+  const failureReasons = [
+    !qualityOk ? `quality drop ${qualityDrop.toFixed(4)} > ${cfg.maxQualityDrop.toFixed(4)}` : null,
+    !contradictionOk
+      ? `contradiction rise ${contradictionRise.toFixed(4)} > ${cfg.maxContradictionRise.toFixed(4)}`
+      : null,
+    !duplicationOk
+      ? `duplication rise ${duplicationRise.toFixed(4)} > ${cfg.maxDuplicationRise.toFixed(4)}`
+      : null,
+    !governancePassed && governance
+      ? `benchmark governance=${governance.promotion_readiness} (${governance.reasons.join('; ') || governance.significance_status})`
+      : null,
+  ].filter(Boolean);
   const reason = passed
     ? `${compareProfile} is within regression thresholds vs ${baselineProfile}`
-    : [
-      !qualityOk ? `quality drop ${qualityDrop.toFixed(4)} > ${cfg.maxQualityDrop.toFixed(4)}` : null,
-      !contradictionOk
-        ? `contradiction rise ${contradictionRise.toFixed(4)} > ${cfg.maxContradictionRise.toFixed(4)}`
-        : null,
-      !duplicationOk
-        ? `duplication rise ${duplicationRise.toFixed(4)} > ${cfg.maxDuplicationRise.toFixed(4)}`
-        : null,
-    ]
-      .filter(Boolean)
-      .join('; ');
+    : failureReasons.join('; ');
 
   return {
     enabled: true,
@@ -234,6 +252,8 @@ export function buildAbComparisonReport(
     benchmarkManifests?: BenchmarkCaseManifest[];
     benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
     benchmarkHomogeneity?: BenchmarkHomogeneitySummary;
+    benchmarkSignificance?: BenchmarkSignificanceSummary | null;
+    benchmarkGovernance?: BenchmarkGovernanceSummary | null;
     artifactRefs?: {
       benchmark_summary_path?: string;
     };
@@ -300,6 +320,12 @@ export function buildAbComparisonReport(
       a: a.benchmark_judge_disagreement ?? null,
       b: b.benchmark_judge_disagreement ?? null,
     },
+    benchmark_replica_summaries: {
+      a: a.benchmark_replica_summary ?? null,
+      b: b.benchmark_replica_summary ?? null,
+    },
+    benchmark_significance: options?.benchmarkSignificance ?? null,
+    benchmark_governance: options?.benchmarkGovernance ?? null,
     artifact_refs: options?.artifactRefs,
     gate_result: gateResult,
   };

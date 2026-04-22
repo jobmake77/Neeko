@@ -76,6 +76,37 @@ function benchmarkJudgeDisagreement(overrides = {}) {
   };
 }
 
+function benchmarkSignificance(overrides = {}) {
+  return {
+    method: 'paired_bootstrap',
+    replicas_a: 3,
+    replicas_b: 3,
+    metric: 'benchmark_overall',
+    delta_mean: 0.12,
+    ci_low: 0.04,
+    ci_high: 0.19,
+    significant: true,
+    favors: 'b',
+    ...overrides,
+  };
+}
+
+function benchmarkGovernance(overrides = {}) {
+  return {
+    version: 'benchmark-governance-v1',
+    pack_id: 'persona-core-v1',
+    pack_version: '2026-04-22',
+    judge_mode: 'benchmark_dual',
+    official_benchmark_status: 'available',
+    promotion_readiness: 'promotable',
+    clean_replica_count: 3,
+    benchmark_homogeneous: true,
+    significance_status: 'improved',
+    judge_disagreement_rate: 0.08,
+    ...overrides,
+  };
+}
+
 function officialPackDescriptor() {
   return {
     pack_id: 'persona-core-v1',
@@ -296,4 +327,118 @@ test('experiment report preserves row-level benchmark artifacts and disagreement
   assert.equal(report.artifact_refs.benchmark_summary_path, '/tmp/persona-core-v1.benchmark-summary.json');
   assert.equal(report.evaluation_v2.official_pack_id, 'persona-core-v1');
   assert.equal(report.evaluation_v2.official_status, 'available');
+});
+
+test('ab-regression official-pack report can preserve P2 significance and governance summaries', (t) => {
+  const rows = officialRowsWithBenchmarkArtifacts();
+  const gateResult = evaluateGate(rows, {
+    enabled: true,
+    maxQualityDrop: 0.05,
+    maxContradictionRise: 0.05,
+    maxDuplicationRise: 0.05,
+    baselineProfile: 'baseline',
+    compareProfile: 'full',
+  });
+  const report = buildAbComparisonReport(rows, 'baseline', 'full', gateResult, {
+    benchmarkContext: officialBenchmarkContext(),
+    benchmarkPack: officialPackDescriptor(),
+    benchmarkSignificance: benchmarkSignificance(),
+    benchmarkGovernance: benchmarkGovernance(),
+    artifactRefs: {
+      benchmark_pack_path: '/tmp/persona-core-v1',
+      benchmark_summary_path: '/tmp/ab-regression.benchmark-summary.json',
+      report_path: '/tmp/ab-report.json',
+    },
+  });
+
+  if (
+    !Object.prototype.hasOwnProperty.call(report, 'benchmark_significance') ||
+    !Object.prototype.hasOwnProperty.call(report, 'benchmark_governance')
+  ) {
+    t.skip('Blocker: buildAbComparisonReport does not expose P2 significance/governance fields yet.');
+    return;
+  }
+
+  assert.equal(report.benchmark_significance.method, 'paired_bootstrap');
+  assert.equal(report.benchmark_significance.significant, true);
+  assert.equal(report.benchmark_significance.favors, 'b');
+  assert.equal(report.benchmark_governance.promotion_readiness, 'promotable');
+  assert.equal(report.benchmark_governance.clean_replica_count, 3);
+  assert.equal(report.benchmark_governance.significance_status, 'improved');
+});
+
+test('experiment report can preserve P2 governance summaries for official benchmark promotion decisions', async (t) => {
+  const experimentModule =
+    (await importOptional(join(repoRoot, 'dist', 'testing', 'experiment-test-entry.js'))) ??
+    (await importOptional(join(repoRoot, 'dist', 'cli', 'commands', 'experiment.js')));
+  const buildExperimentReport =
+    experimentModule?.__experimentTestables?.buildExperimentReport ??
+    experimentModule?.buildExperimentReport ??
+    null;
+
+  if (!buildExperimentReport) {
+    t.skip('Blocker: no experiment report builder test entry is available for P2 governance contract tests.');
+    return;
+  }
+
+  const rows = officialRowsWithBenchmarkArtifacts();
+  const report = buildExperimentReport({
+    slug: 'onevcat',
+    summary_rows: rows,
+    official_summary_rows: rows,
+    benchmark_pack: officialPackDescriptor(),
+    benchmark_significance: benchmarkSignificance(),
+    benchmark_governance: benchmarkGovernance(),
+    artifact_refs: {
+      benchmark_pack_path: '/tmp/persona-core-v1',
+      benchmark_judgments_path: '/tmp/persona-core-v1.benchmark-judgments.json',
+      benchmark_summary_path: '/tmp/persona-core-v1.benchmark-summary.json',
+      report_path: '/tmp/experiment-report.json',
+    },
+  });
+
+  if (
+    !Object.prototype.hasOwnProperty.call(report, 'benchmark_significance') ||
+    !Object.prototype.hasOwnProperty.call(report, 'benchmark_governance')
+  ) {
+    t.skip('Blocker: buildExperimentReport does not expose P2 significance/governance fields yet.');
+    return;
+  }
+
+  assert.equal(report.benchmark_significance.method, 'paired_bootstrap');
+  assert.equal(report.benchmark_significance.delta_mean, 0.12);
+  assert.equal(report.benchmark_governance.pack_id, 'persona-core-v1');
+  assert.equal(report.benchmark_governance.promotion_readiness, 'promotable');
+  assert.equal(report.benchmark_governance.significance_status, 'improved');
+});
+
+test('legacy experiment report contract stays readable when P2 benchmark governance fields are absent', async (t) => {
+  const experimentModule =
+    (await importOptional(join(repoRoot, 'dist', 'testing', 'experiment-test-entry.js'))) ??
+    (await importOptional(join(repoRoot, 'dist', 'cli', 'commands', 'experiment.js')));
+  const buildExperimentReport =
+    experimentModule?.__experimentTestables?.buildExperimentReport ??
+    experimentModule?.buildExperimentReport ??
+    null;
+
+  if (!buildExperimentReport) {
+    t.skip('Blocker: no experiment report builder test entry is available for legacy compatibility tests.');
+    return;
+  }
+
+  const legacyRows = officialRows().map(({ benchmark_context, ...row }) => row);
+  const report = buildExperimentReport({
+    slug: 'onevcat',
+    summary_rows: legacyRows,
+    official_summary_rows: legacyRows,
+    artifact_refs: {
+      report_path: '/tmp/legacy-experiment-report.json',
+    },
+  });
+
+  assert.ok(Array.isArray(report.summary_rows));
+  assert.ok(Array.isArray(report.official_summary_rows));
+  assert.equal(report.benchmark_significance ?? null, null);
+  assert.equal(report.benchmark_governance ?? null, null);
+  assert.equal(report.artifact_refs.report_path, '/tmp/legacy-experiment-report.json');
 });

@@ -22,6 +22,7 @@ export default defineConfig({
     'src/testing/evaluation-v2-test-entry.ts',
     'src/testing/benchmark-pack-test-entry.ts',
     'src/testing/benchmark-judge-test-entry.ts',
+    'src/testing/significance-test-entry.ts',
     'src/testing/experiment-test-entry.ts',
     'src/testing/chat-orchestrator-test-entry.ts',
     'src/testing/api-contract-test-entry.ts',

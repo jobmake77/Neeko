@@ -34,6 +34,7 @@ interface ExperimentSummaryRow {
 }
 
 type ExperimentPromotionReadiness = 'blocked' | 'provisional' | 'promotable';
+type ExperimentPackStatus = 'draft' | 'candidate' | 'official';
 
 interface ExperimentReport {
   schema_version: number;
@@ -55,7 +56,7 @@ interface ExperimentReport {
     pack_version?: string;
     suite_type?: string;
     suite_tier?: string;
-    status?: string;
+    status?: ExperimentPackStatus | string;
   };
   benchmark_scorecards?: Array<{
     profile?: string;

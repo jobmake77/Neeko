@@ -125,6 +125,7 @@ interface ExperimentSummaryRow {
 type ExperimentSuiteTier = 'official' | 'regression' | 'smoke' | 'ad_hoc';
 type ExperimentPromotionReadiness = 'blocked' | 'provisional' | 'promotable';
 type ExperimentSignificanceStatus = 'improved' | 'regressed' | 'not_significant' | 'insufficient_evidence';
+type ExperimentPackStatus = 'draft' | 'candidate' | 'official';
 
 interface ExperimentBenchmarkManifest {
   suite_tier?: ExperimentSuiteTier;
@@ -147,7 +148,7 @@ interface ExperimentBenchmarkPack {
   pack_version?: string;
   suite_type?: string;
   suite_tier?: ExperimentSuiteTier | string;
-  status?: string;
+  status?: ExperimentPackStatus | string;
 }
 
 interface ExperimentBenchmarkGovernance {
@@ -330,6 +331,11 @@ function getExperimentPromotionReadiness(report: ExperimentReportData): Experime
   return report.benchmark_governance?.promotion_readiness ?? null;
 }
 
+function getExperimentOfficialWinner(report: ExperimentReportData): string | null {
+  if (getExperimentOfficialStatus(report) !== 'available') return null;
+  return report.evaluation_v2?.official_best_profile ?? report.best_profile ?? null;
+}
+
 function getExperimentBenchmarkPackLabel(report: ExperimentReportData): string | null {
   const packId = report.benchmark_governance?.pack_id
     ?? report.benchmark_pack?.pack_id
@@ -443,11 +449,10 @@ function formatExperimentSignificanceStatus(status: ExperimentSignificanceStatus
   }
 }
 
-function getExperimentPrimaryProfile(report: ExperimentReportData): string | null {
-  if (getExperimentOfficialStatus(report) === 'available') {
-    return report.evaluation_v2?.official_best_profile ?? report.best_profile ?? null;
-  }
-  return report.best_profile ?? null;
+function formatExperimentHomogeneous(value: boolean | undefined): string {
+  if (value === true) return 'yes';
+  if (value === false) return 'no';
+  return '-';
 }
 
 function getExperimentDisplayRows(report: ExperimentReportData): ExperimentSummaryRow[] {
@@ -488,6 +493,50 @@ function getExperimentDefaultDisabledReason(report: ExperimentReportData): strin
     return 'A/B regression 结果只用于回归判断，不能直接设为默认';
   }
   return '';
+}
+
+function getExperimentGovernanceNote(report: ExperimentReportData): string | null {
+  const governance = report.benchmark_governance;
+  if (!governance) {
+    if (report.benchmark_significance || report.benchmark_judge_summary || report.benchmark_pack) {
+      return 'benchmark governance summary is missing, so this report should be treated as observed evidence only';
+    }
+    return null;
+  }
+
+  if (governance.official_benchmark_status !== 'available') {
+    return 'strict official benchmark evidence is unavailable, so this report remains observed evidence only';
+  }
+
+  if (governance.benchmark_homogeneous === false) {
+    return 'clean benchmark evidence is not homogeneous across replicas, so promotion stays non-promotable';
+  }
+
+  if (governance.promotion_readiness === 'blocked') {
+    if (governance.significance_status === 'regressed') {
+      return 'governance is blocked by a benchmark regression signal';
+    }
+    return 'governance is blocked, so the official winner must not be used as a default candidate';
+  }
+
+  if (governance.promotion_readiness === 'provisional') {
+    if (governance.significance_status === 'insufficient_evidence') {
+      return 'governance is still provisional because significance evidence is insufficient';
+    }
+    if (governance.significance_status === 'not_significant') {
+      return 'governance is still provisional because benchmark improvement is not significant yet';
+    }
+    if (!report.benchmark_significance) {
+      return 'governance is still provisional because the significance summary is not emitted yet';
+    }
+    return 'governance is still provisional and requires more evidence or review';
+  }
+
+  if (governance.promotion_readiness === 'promotable') {
+    return 'governance is promotable; only the strict official winner can be used as the default candidate';
+  }
+
+  return null;
 }
 
 function formatExperimentSuiteTier(suiteTier: ExperimentSuiteTier): string {
@@ -1282,9 +1331,11 @@ export default function TrainingPage() {
               const scorecardMode = formatExperimentScorecardMode(item.report);
               const disagreementRate = getExperimentJudgeDisagreementRate(item.report);
               const disputedCaseCount = getExperimentDisputedCaseCount(item.report);
-              const recommendedProfile = getExperimentPrimaryProfile(item.report);
+              const officialWinner = getExperimentOfficialWinner(item.report);
               const displayRows = getExperimentDisplayRows(item.report);
-              const canSetDefault = canUseExperimentAsDefault(item.report) && Boolean(recommendedProfile);
+              const defaultCandidate = canUseExperimentAsDefault(item.report) ? officialWinner : null;
+              const governanceNote = getExperimentGovernanceNote(item.report);
+              const canSetDefault = Boolean(defaultCandidate);
               const disabledReason = getExperimentDefaultDisabledReason(item.report);
 
               return (
@@ -1298,7 +1349,7 @@ export default function TrainingPage() {
                         {new Date(item.report.generated_at).toLocaleString()}
                       </p>
                       <p className="text-[12px] text-[oklch(0.58_0_0)] mt-0.5">
-                        rounds/profile: {item.report.rounds_per_profile} · best: {item.report.best_profile ?? '-'} · strict official: {recommendedProfile ?? '-'}
+                        rounds/profile: {item.report.rounds_per_profile} · observed best: {item.report.best_profile ?? '-'} · official winner: {officialWinner ?? '-'} · default candidate: {defaultCandidate ?? 'gated'}
                       </p>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.02_240)] text-[oklch(0.36_0.1_240)]">
@@ -1357,12 +1408,12 @@ export default function TrainingPage() {
                         {expandedExperiment === item.filename ? '收起' : '展开'}
                       </button>
                       <button
-                        onClick={() => recommendedProfile && setAsDefaultTrainingProfile(recommendedProfile)}
-                        disabled={!canSetDefault || savingProfile === recommendedProfile}
+                        onClick={() => defaultCandidate && setAsDefaultTrainingProfile(defaultCandidate)}
+                        disabled={!canSetDefault || savingProfile === defaultCandidate}
                         title={canSetDefault ? undefined : disabledReason}
                         className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.85_0.03_142)] bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)] hover:bg-[oklch(0.93_0.03_142)] disabled:opacity-60"
                       >
-                        {recommendedProfile ? `设默认(${recommendedProfile})` : '设默认不可用'}
+                        {defaultCandidate ? `设默认(${defaultCandidate})` : '设默认不可用'}
                       </button>
                       <button
                         onClick={() => downloadExperimentJson(item)}
@@ -1379,7 +1430,13 @@ export default function TrainingPage() {
                     </div>
                   </div>
 
-                  {disabledReason && (
+                  {governanceNote && (
+                    <p className="mt-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                      治理说明：{governanceNote}
+                    </p>
+                  )}
+
+                  {!governanceNote && disabledReason && (
                     <p className="mt-2 text-[11.5px] text-[oklch(0.56_0_0)]">
                       默认推荐限制：{disabledReason}
                     </p>
@@ -1392,8 +1449,11 @@ export default function TrainingPage() {
                       </p>
                       {item.report.benchmark_governance && (
                         <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
-                          benchmark governance：judge={item.report.benchmark_governance.judge_mode ?? '-'} ·
+                          benchmark governance：official={officialStatus} ·
+                          promotion={promotionReadiness ? formatExperimentPromotionReadiness(promotionReadiness) : '-'} ·
+                          judge={item.report.benchmark_governance.judge_mode ?? '-'} ·
                           clean replicas={item.report.benchmark_governance.clean_replica_count ?? '-'} ·
+                          homogeneous={formatExperimentHomogeneous(item.report.benchmark_governance.benchmark_homogeneous)} ·
                           disagreement={formatPercentValue(disagreementRate)}
                         </p>
                       )}
@@ -1408,6 +1468,11 @@ export default function TrainingPage() {
                       {item.report.benchmark_significance && (
                         <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
                           benchmark significance：{formatBenchmarkSignificanceInline(item.report.benchmark_significance)}
+                        </p>
+                      )}
+                      {!item.report.benchmark_significance && significanceStatus && (
+                        <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                          benchmark significance：{formatExperimentSignificanceStatus(significanceStatus)} · summary not emitted
                         </p>
                       )}
                       <table className="w-full text-[12.5px]">
@@ -1425,7 +1490,7 @@ export default function TrainingPage() {
                         </thead>
                         <tbody>
                           {displayRows.map((r) => {
-                            const rowCanSetDefault = canSetDefault && r.profile === recommendedProfile;
+                            const rowCanSetDefault = canSetDefault && r.profile === defaultCandidate;
                             const rowBenchmarkSummary = formatRowBenchmarkSummary(r);
                             return (
                               <tr key={`${item.filename}-${r.profile}`} className="border-b border-[oklch(0.95_0_0)]">

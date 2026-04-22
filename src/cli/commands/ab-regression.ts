@@ -16,6 +16,7 @@ import {
   type BenchmarkCaseManifest,
   type FrozenBenchmarkCaseManifest,
 } from '../../core/training/evaluation-v2.js';
+import { loadBenchmarkPack, type LoadedBenchmarkPack } from '../../core/training/benchmark-pack.js';
 import { TrainingProfile } from '../../core/training/types.js';
 import { loadBenchmarkCaseManifestsFromArtifact, runExperimentProfiles } from './experiment.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
@@ -61,6 +62,7 @@ export async function cmdAbRegression(
     a?: string;
     b?: string;
     benchmarkManifest?: string;
+    officialPack?: string;
     outputDir?: string;
     format?: string;
     gate?: boolean;
@@ -69,6 +71,10 @@ export async function cmdAbRegression(
     maxDuplicationRise?: string;
   }
 ): Promise<void> {
+  if (options.benchmarkManifest && options.officialPack) {
+    throw new Error('--benchmark-manifest and --official-pack cannot be used together');
+  }
+
   const rounds = Math.max(1, parseInt(options.rounds ?? '10', 10));
   const groupA = normalizeProfile(options.a, 'baseline');
   const groupB = normalizeProfile(options.b, 'full');
@@ -82,6 +88,9 @@ export async function cmdAbRegression(
   if (!supported.has(format)) {
     throw new Error('Invalid format. Use table|csv|json|md|all');
   }
+  const officialPack: LoadedBenchmarkPack | null = options.officialPack
+    ? loadBenchmarkPack(options.officialPack, { repoRoot: process.cwd() })
+    : null;
   const replayBenchmarkCaseManifests = options.benchmarkManifest
     ? loadBenchmarkCaseManifestsFromArtifact(options.benchmarkManifest)
     : [];
@@ -91,6 +100,14 @@ export async function cmdAbRegression(
   console.log(chalk.dim(`Rounds per group: ${rounds}\n`));
   if (options.benchmarkManifest) {
     console.log(chalk.dim(`Replay benchmark source: ${options.benchmarkManifest}`));
+  }
+  if (officialPack) {
+    console.log(
+      chalk.dim(
+        `Official benchmark pack: ${officialPack.summary.pack_id}@${officialPack.summary.pack_version} ` +
+        `(${officialPack.summary.case_count} case(s), source=${officialPack.summary.source_kind})`
+      )
+    );
   }
   const startedAt = Date.now();
 
@@ -107,6 +124,7 @@ export async function cmdAbRegression(
   const { rows, benchmarkCaseManifests, failures } = await runExperimentProfiles(slug, rounds, [groupA, groupB], {
     timeoutMs: AB_PROFILE_TIMEOUT_MS,
     benchmarkCaseManifests: replayBenchmarkCaseManifests,
+    officialPack,
   });
   if (failures && failures.length > 0) {
     for (const item of failures) {
@@ -132,7 +150,8 @@ export async function cmdAbRegression(
     reportQuality: failures && failures.length > 0 ? 'timeout_limited' : 'complete',
     elapsedMs: Date.now() - startedAt,
     fastFailures: failures ?? [],
-    benchmarkContext: buildBenchmarkContext({
+    benchmarkPack: officialPack?.summary,
+    benchmarkContext: officialPack?.benchmark_context ?? buildBenchmarkContext({
       slug,
       suiteType: 'ab_regression',
       variant: `${groupA}:${groupB}`,

@@ -1,0 +1,1 @@
+{"case_id":"persona-core-invalid-v1-001","prompt":"What do you optimize for in long-lived codebases?","strategy":"scenario","target_dimension":"values","difficulty":"medium","tags":["maintainability"],"expected_failure_modes":["generic_answer"],"evaluation_mode":"single_turn"}

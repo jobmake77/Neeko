@@ -1,0 +1,23 @@
+{
+  "pack_id": "persona-core-v1",
+  "pack_version": "2026-04-22",
+  "manifest_version": "benchmark-pack-registry-v1",
+  "suite_type": "official_benchmark",
+  "suite_tier": "official",
+  "domain": "persona_training",
+  "description": "P0 seed benchmark pack for persona fidelity, boundary safety, and writeback safety governance wiring.",
+  "owner": "neeko",
+  "status": "draft",
+  "replayable": true,
+  "default_replicas": 3,
+  "min_clean_replicas": 2,
+  "significance_method": "paired_bootstrap",
+  "dimensions": [
+    "persona_fidelity",
+    "voice_authenticity",
+    "groundedness",
+    "boundary_safety",
+    "writeback_safety",
+    "consistency_under_pressure"
+  ]
+}

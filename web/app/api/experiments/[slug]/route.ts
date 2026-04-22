@@ -13,6 +13,8 @@ interface ExperimentSummaryRow {
   run_quality?: string;
 }
 
+type ExperimentPromotionReadiness = 'blocked' | 'provisional' | 'promotable';
+
 interface ExperimentReport {
   schema_version: number;
   generated_at: string;
@@ -25,7 +27,28 @@ interface ExperimentReport {
   benchmark_manifests?: Array<{
     suite_tier?: string;
     suite_label?: string;
+    pack_id?: string;
+    pack_version?: string;
   }>;
+  benchmark_pack?: {
+    pack_id?: string;
+    pack_version?: string;
+    suite_type?: string;
+    suite_tier?: string;
+    status?: string;
+  };
+  benchmark_governance?: {
+    version?: string;
+    pack_id?: string;
+    pack_version?: string;
+    judge_mode?: string;
+    official_benchmark_status?: 'available' | 'unavailable';
+    promotion_readiness?: ExperimentPromotionReadiness;
+    clean_replica_count?: number;
+    benchmark_homogeneous?: boolean;
+    significance_status?: 'improved' | 'regressed' | 'not_significant' | 'insufficient_evidence';
+    judge_disagreement_rate?: number;
+  };
   evaluation_v2?: {
     official_status?: 'available' | 'unavailable';
     official_best_profile?: string | null;

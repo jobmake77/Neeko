@@ -103,10 +103,14 @@ interface ExperimentSummaryRow {
 }
 
 type ExperimentSuiteTier = 'official' | 'regression' | 'smoke' | 'ad_hoc';
+type ExperimentPromotionReadiness = 'blocked' | 'provisional' | 'promotable';
+type ExperimentSignificanceStatus = 'improved' | 'regressed' | 'not_significant' | 'insufficient_evidence';
 
 interface ExperimentBenchmarkManifest {
   suite_tier?: ExperimentSuiteTier;
   suite_label?: string;
+  pack_id?: string;
+  pack_version?: string;
 }
 
 interface ExperimentEvaluationSummary {
@@ -118,6 +122,27 @@ interface ExperimentEvaluationSummary {
   compatible_official_fallback_used?: boolean;
 }
 
+interface ExperimentBenchmarkPack {
+  pack_id?: string;
+  pack_version?: string;
+  suite_type?: string;
+  suite_tier?: ExperimentSuiteTier | string;
+  status?: string;
+}
+
+interface ExperimentBenchmarkGovernance {
+  version?: string;
+  pack_id?: string;
+  pack_version?: string;
+  judge_mode?: string;
+  official_benchmark_status?: 'available' | 'unavailable';
+  promotion_readiness?: ExperimentPromotionReadiness;
+  clean_replica_count?: number;
+  benchmark_homogeneous?: boolean;
+  significance_status?: ExperimentSignificanceStatus;
+  judge_disagreement_rate?: number;
+}
+
 interface ExperimentReportData {
   generated_at: string;
   rounds_per_profile: number;
@@ -125,6 +150,8 @@ interface ExperimentReportData {
   summary_rows: ExperimentSummaryRow[];
   official_summary_rows?: ExperimentSummaryRow[];
   benchmark_manifests?: ExperimentBenchmarkManifest[];
+  benchmark_pack?: ExperimentBenchmarkPack;
+  benchmark_governance?: ExperimentBenchmarkGovernance;
   evaluation_v2?: ExperimentEvaluationSummary;
 }
 
@@ -242,7 +269,48 @@ function getExperimentSuiteTier(report: ExperimentReportData): ExperimentSuiteTi
 }
 
 function getExperimentOfficialStatus(report: ExperimentReportData): 'available' | 'unavailable' {
-  return report.evaluation_v2?.official_status ?? 'unavailable';
+  return report.benchmark_governance?.official_benchmark_status
+    ?? report.evaluation_v2?.official_status
+    ?? 'unavailable';
+}
+
+function getExperimentPromotionReadiness(report: ExperimentReportData): ExperimentPromotionReadiness | null {
+  return report.benchmark_governance?.promotion_readiness ?? null;
+}
+
+function getExperimentBenchmarkPackLabel(report: ExperimentReportData): string | null {
+  const packId = report.benchmark_governance?.pack_id
+    ?? report.benchmark_pack?.pack_id
+    ?? report.benchmark_manifests?.[0]?.pack_id;
+  const packVersion = report.benchmark_governance?.pack_version
+    ?? report.benchmark_pack?.pack_version
+    ?? report.benchmark_manifests?.[0]?.pack_version;
+  if (!packId) return null;
+  return packVersion ? `${packId}@${packVersion}` : packId;
+}
+
+function formatExperimentPromotionReadiness(readiness: ExperimentPromotionReadiness): string {
+  switch (readiness) {
+    case 'promotable':
+      return 'promotable';
+    case 'blocked':
+      return 'blocked';
+    default:
+      return 'provisional';
+  }
+}
+
+function formatExperimentSignificanceStatus(status: ExperimentSignificanceStatus): string {
+  switch (status) {
+    case 'improved':
+      return 'improved';
+    case 'regressed':
+      return 'regressed';
+    case 'insufficient_evidence':
+      return 'insufficient_evidence';
+    default:
+      return 'not_significant';
+  }
 }
 
 function getExperimentPrimaryProfile(report: ExperimentReportData): string | null {
@@ -261,11 +329,25 @@ function getExperimentDisplayRows(report: ExperimentReportData): ExperimentSumma
 
 function canUseExperimentAsDefault(report: ExperimentReportData): boolean {
   const suiteTier = getExperimentSuiteTier(report);
+  const readiness = getExperimentPromotionReadiness(report);
+  if (readiness) {
+    return readiness === 'promotable'
+      && getExperimentOfficialStatus(report) === 'available'
+      && suiteTier !== 'smoke'
+      && suiteTier !== 'regression';
+  }
   return getExperimentOfficialStatus(report) === 'available' && suiteTier !== 'smoke' && suiteTier !== 'regression';
 }
 
 function getExperimentDefaultDisabledReason(report: ExperimentReportData): string {
   const suiteTier = getExperimentSuiteTier(report);
+  const readiness = getExperimentPromotionReadiness(report);
+  if (readiness === 'blocked') {
+    return 'benchmark governance 标记为 blocked，当前结果不能设为默认';
+  }
+  if (readiness === 'provisional') {
+    return 'benchmark governance 仍为 provisional，需等待后续 judge/significance 验收';
+  }
   if (getExperimentOfficialStatus(report) !== 'available') {
     return '当前实验没有 strict official 结论';
   }
@@ -1064,6 +1146,9 @@ export default function TrainingPage() {
             {experimentReports.map((item) => {
               const suiteTier = getExperimentSuiteTier(item.report);
               const officialStatus = getExperimentOfficialStatus(item.report);
+              const promotionReadiness = getExperimentPromotionReadiness(item.report);
+              const benchmarkPackLabel = getExperimentBenchmarkPackLabel(item.report);
+              const significanceStatus = item.report.benchmark_governance?.significance_status;
               const recommendedProfile = getExperimentPrimaryProfile(item.report);
               const displayRows = getExperimentDisplayRows(item.report);
               const canSetDefault = canUseExperimentAsDefault(item.report) && Boolean(recommendedProfile);
@@ -1095,6 +1180,21 @@ export default function TrainingPage() {
                         >
                           {formatExperimentOfficialStatus(item.report)}
                         </span>
+                        {benchmarkPackLabel && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.01_220)] text-[oklch(0.34_0.07_220)]">
+                            pack: {benchmarkPackLabel}
+                          </span>
+                        )}
+                        {promotionReadiness && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.97_0.01_80)] text-[oklch(0.42_0.07_80)]">
+                            governance: {formatExperimentPromotionReadiness(promotionReadiness)}
+                          </span>
+                        )}
+                        {significanceStatus && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.01_180)] text-[oklch(0.34_0.07_180)]">
+                            significance: {formatExperimentSignificanceStatus(significanceStatus)}
+                          </span>
+                        )}
                         {item.report.evaluation_v2?.compatible_official_fallback_used && (
                           <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.97_0.01_40)] text-[oklch(0.44_0.05_40)]">
                             observed fallback kept for compatibility
@@ -1147,6 +1247,15 @@ export default function TrainingPage() {
                       <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
                         当前表格展示：{officialStatus === 'available' ? 'strict official rows' : 'observed rows'}
                       </p>
+                      {item.report.benchmark_governance && (
+                        <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                          benchmark governance：judge={item.report.benchmark_governance.judge_mode ?? '-'} ·
+                          clean replicas={item.report.benchmark_governance.clean_replica_count ?? '-'} ·
+                          disagreement={typeof item.report.benchmark_governance.judge_disagreement_rate === 'number'
+                            ? `${(item.report.benchmark_governance.judge_disagreement_rate * 100).toFixed(1)}%`
+                            : '-'}
+                        </p>
+                      )}
                       <table className="w-full text-[12.5px]">
                         <thead>
                           <tr className="text-left text-[oklch(0.55_0_0)] border-b border-[oklch(0.92_0_0)]">

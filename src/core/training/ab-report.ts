@@ -1,4 +1,5 @@
 import { TrainingProfile } from './types.js';
+import type { BenchmarkPackSummary } from './benchmark-pack.js';
 import type {
   BenchmarkCaseManifest,
   BenchmarkContext,
@@ -56,6 +57,7 @@ export interface AbComparisonReport {
   report_quality: 'complete' | 'timeout_limited';
   group_a: TrainingProfile;
   group_b: TrainingProfile;
+  benchmark_pack?: BenchmarkPackSummary;
   benchmark_context?: BenchmarkContext;
   benchmark_manifests?: BenchmarkCaseManifest[];
   benchmark_case_manifests?: FrozenBenchmarkCaseManifest[];
@@ -198,6 +200,7 @@ export function buildAbComparisonReport(
     reportQuality?: 'complete' | 'timeout_limited';
     elapsedMs?: number;
     fastFailures?: Array<{ profile: TrainingProfile; error: string }>;
+    benchmarkPack?: BenchmarkPackSummary;
     benchmarkContext?: BenchmarkContext;
     benchmarkManifests?: BenchmarkCaseManifest[];
     benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
@@ -216,6 +219,7 @@ export function buildAbComparisonReport(
     report_quality: options?.reportQuality ?? 'complete',
     group_a: groupA,
     group_b: groupB,
+    benchmark_pack: options?.benchmarkPack,
     benchmark_context: options?.benchmarkContext,
     benchmark_manifests: options?.benchmarkManifests,
     benchmark_case_manifests: options?.benchmarkCaseManifests,

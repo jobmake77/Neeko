@@ -1,6 +1,12 @@
 import { TrainingProfile } from './types.js';
 import type { BenchmarkPackSummary } from './benchmark-pack.js';
 import type {
+  BenchmarkCaseSummary,
+  BenchmarkJudgeDisagreement,
+  BenchmarkJudgeSummary,
+  BenchmarkScorecard,
+} from './benchmark-judge.js';
+import type {
   BenchmarkCaseManifest,
   BenchmarkContext,
   BenchmarkHomogeneitySummary,
@@ -22,6 +28,10 @@ export interface ExperimentSummaryRow {
   contamination?: EvaluationContamination;
   scorecard?: EvaluationScorecard;
   judge_provenance?: JudgeProvenance;
+  benchmark_scorecard?: BenchmarkScorecard;
+  benchmark_case_summary?: BenchmarkCaseSummary;
+  benchmark_judge_summary?: BenchmarkJudgeSummary;
+  benchmark_judge_disagreement?: BenchmarkJudgeDisagreement;
   benchmark_context?: BenchmarkContext;
   runtime_observability?: {
     trainer_fallbacks: number;
@@ -89,6 +99,25 @@ export interface AbComparisonReport {
   scorecards: {
     a: EvaluationScorecard | null;
     b: EvaluationScorecard | null;
+  };
+  benchmark_scorecards?: {
+    a: BenchmarkScorecard | null;
+    b: BenchmarkScorecard | null;
+  };
+  benchmark_case_summaries?: {
+    a: BenchmarkCaseSummary | null;
+    b: BenchmarkCaseSummary | null;
+  };
+  benchmark_judge_summaries?: {
+    a: BenchmarkJudgeSummary | null;
+    b: BenchmarkJudgeSummary | null;
+  };
+  benchmark_judge_disagreements?: {
+    a: BenchmarkJudgeDisagreement | null;
+    b: BenchmarkJudgeDisagreement | null;
+  };
+  artifact_refs?: {
+    benchmark_summary_path?: string;
   };
   gate_result: GateResult;
 }
@@ -205,6 +234,9 @@ export function buildAbComparisonReport(
     benchmarkManifests?: BenchmarkCaseManifest[];
     benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
     benchmarkHomogeneity?: BenchmarkHomogeneitySummary;
+    artifactRefs?: {
+      benchmark_summary_path?: string;
+    };
   }
 ): AbComparisonReport {
   const a = rows.find((row) => row.profile === groupA);
@@ -252,6 +284,23 @@ export function buildAbComparisonReport(
       a: a.scorecard ?? null,
       b: b.scorecard ?? null,
     },
+    benchmark_scorecards: {
+      a: a.benchmark_scorecard ?? null,
+      b: b.benchmark_scorecard ?? null,
+    },
+    benchmark_case_summaries: {
+      a: a.benchmark_case_summary ?? null,
+      b: b.benchmark_case_summary ?? null,
+    },
+    benchmark_judge_summaries: {
+      a: a.benchmark_judge_summary ?? null,
+      b: b.benchmark_judge_summary ?? null,
+    },
+    benchmark_judge_disagreements: {
+      a: a.benchmark_judge_disagreement ?? null,
+      b: b.benchmark_judge_disagreement ?? null,
+    },
+    artifact_refs: options?.artifactRefs,
     gate_result: gateResult,
   };
 }

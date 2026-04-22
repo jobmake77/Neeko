@@ -29,3 +29,9 @@ The pack is suitable for contract validation and rollout wiring. It is not yet s
 - Development work should load this pack without mutating checked-in case content at runtime.
 - Testing should add dedicated fixtures under `test/fixtures/benchmarks/` instead of rewriting this seed pack.
 - Promotion gating must treat this pack as `draft` until later phases upgrade the status flow.
+
+## P1 Governance Notes
+
+- If P1 reports include `benchmark_scorecard`, treat it as case-based benchmark evidence, not as a replacement for `proxy_scorecard`.
+- If dual-judge evaluation reports disagreement or disputed cases, governance surfaces should keep that signal visible and conservative.
+- This pack still does not qualify as a human-calibrated official benchmark pack, even if benchmark judge fields are emitted.

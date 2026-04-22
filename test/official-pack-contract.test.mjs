@@ -41,6 +41,41 @@ function scorecard(overall) {
   };
 }
 
+function benchmarkScorecard(overall, overrides = {}) {
+  return {
+    version: 'benchmark-judge-v1',
+    summary: 'benchmark scorecard',
+    overall,
+    pass_rate: overall,
+    case_count: 2,
+    disputed_case_count: 0,
+    ...overrides,
+  };
+}
+
+function benchmarkCaseSummary(overrides = {}) {
+  return {
+    total_cases: 2,
+    passed_cases: 2,
+    failed_cases: 0,
+    disputed_cases: 0,
+    artifact_format: 'benchmark-judgments-v1',
+    artifact_path: '/tmp/persona-core-v1.benchmark-judgments.json',
+    ...overrides,
+  };
+}
+
+function benchmarkJudgeDisagreement(overrides = {}) {
+  return {
+    active: true,
+    judge_count: 2,
+    disagreement_rate: 0.5,
+    verdict_conflicts: 1,
+    high_delta_cases: ['persona-core-v1-001'],
+    ...overrides,
+  };
+}
+
 function officialPackDescriptor() {
   return {
     pack_id: 'persona-core-v1',
@@ -104,6 +139,36 @@ function officialRows() {
       run_quality: 'clean',
       scorecard: scorecard(0.81),
       benchmark_context: officialBenchmarkContext(),
+    },
+  ];
+}
+
+function officialRowsWithBenchmarkArtifacts() {
+  return [
+    {
+      ...officialRows()[0],
+      benchmark_scorecard: benchmarkScorecard(0.74, {
+        disputed_case_count: 1,
+      }),
+      benchmark_case_summary: benchmarkCaseSummary({
+        passed_cases: 1,
+        failed_cases: 0,
+        disputed_cases: 1,
+      }),
+      benchmark_judge_disagreement: benchmarkJudgeDisagreement(),
+    },
+    {
+      ...officialRows()[1],
+      benchmark_scorecard: benchmarkScorecard(0.86),
+      benchmark_case_summary: benchmarkCaseSummary({
+        artifact_path: '/tmp/persona-core-v1-full.benchmark-judgments.json',
+      }),
+      benchmark_judge_disagreement: benchmarkJudgeDisagreement({
+        active: false,
+        disagreement_rate: 0,
+        verdict_conflicts: 0,
+        high_delta_cases: [],
+      }),
     },
   ];
 }
@@ -192,4 +257,43 @@ test('experiment report official-pack contract is ready to assert once a report 
   assert.ok(Array.isArray(report.summary_rows));
   assert.ok(Array.isArray(report.official_summary_rows));
   assert.equal(report.artifact_refs.report_path, '/tmp/experiment-report.json');
+});
+
+test('experiment report preserves row-level benchmark artifacts and disagreement summaries for official-pack runs', async (t) => {
+  const experimentModule =
+    (await importOptional(join(repoRoot, 'dist', 'testing', 'experiment-test-entry.js'))) ??
+    (await importOptional(join(repoRoot, 'dist', 'cli', 'commands', 'experiment.js')));
+  const buildExperimentReport =
+    experimentModule?.__experimentTestables?.buildExperimentReport ??
+    experimentModule?.buildExperimentReport ??
+    null;
+
+  if (!buildExperimentReport) {
+    t.skip('Blocker: no experiment report builder test entry is available for benchmark artifact contract tests.');
+    return;
+  }
+
+  const rows = officialRowsWithBenchmarkArtifacts();
+  const report = buildExperimentReport({
+    slug: 'onevcat',
+    summary_rows: rows,
+    official_summary_rows: rows,
+    benchmark_pack: officialPackDescriptor(),
+    artifact_refs: {
+      benchmark_pack_path: '/tmp/persona-core-v1',
+      benchmark_judgments_path: '/tmp/persona-core-v1.benchmark-judgments.json',
+      benchmark_summary_path: '/tmp/persona-core-v1.benchmark-summary.json',
+      report_path: '/tmp/experiment-report.json',
+    },
+  });
+
+  assert.equal(report.summary_rows[0].benchmark_scorecard.version, 'benchmark-judge-v1');
+  assert.equal(report.summary_rows[0].benchmark_case_summary.artifact_format, 'benchmark-judgments-v1');
+  assert.equal(report.summary_rows[0].benchmark_judge_disagreement.disagreement_rate, 0.5);
+  assert.equal(report.summary_rows[1].benchmark_case_summary.artifact_path, '/tmp/persona-core-v1-full.benchmark-judgments.json');
+  assert.equal(report.official_summary_rows[1].benchmark_scorecard.case_count, 2);
+  assert.equal(report.artifact_refs.benchmark_judgments_path, '/tmp/persona-core-v1.benchmark-judgments.json');
+  assert.equal(report.artifact_refs.benchmark_summary_path, '/tmp/persona-core-v1.benchmark-summary.json');
+  assert.equal(report.evaluation_v2.official_pack_id, 'persona-core-v1');
+  assert.equal(report.evaluation_v2.official_status, 'available');
 });

@@ -11,6 +11,26 @@ interface ExperimentSummaryRow {
   duplicationRate: number;
   coverage: number;
   run_quality?: string;
+  benchmark_scorecard?: {
+    overall_score?: number;
+    pass_rate?: number;
+    disputed_case_count?: number;
+    scored_case_count?: number;
+  };
+  benchmark_case_summary?: {
+    total_cases?: number;
+    passed_cases?: number;
+    failed_cases?: number;
+    abstained_cases?: number;
+    disputed_cases?: number;
+  };
+  benchmark_judge_disagreement?: {
+    active?: boolean;
+    judge_count?: number;
+    disagreement_rate?: number;
+    verdict_conflicts?: number;
+    high_delta_cases?: string[];
+  };
 }
 
 type ExperimentPromotionReadiness = 'blocked' | 'provisional' | 'promotable';
@@ -36,6 +56,32 @@ interface ExperimentReport {
     suite_type?: string;
     suite_tier?: string;
     status?: string;
+  };
+  benchmark_scorecards?: Array<{
+    profile?: string;
+    overall_score?: number;
+    pass_rate?: number;
+    disputed_case_count?: number;
+    case_count?: number;
+  }>;
+  benchmark_judge_summary?: {
+    judge_mode?: string;
+    scorecard_mode?: 'proxy_only' | 'benchmark_only' | 'both';
+    proxy_scorecard_present?: boolean;
+    benchmark_scorecard_present?: boolean;
+    disputed_case_count?: number;
+    disagreement_rate?: number;
+  };
+  benchmark_significance?: {
+    method?: string;
+    metric?: string;
+    delta_mean?: number;
+    ci_low?: number;
+    ci_high?: number;
+    significant?: boolean;
+    favors?: 'a' | 'b' | 'neither';
+    replicas_a?: number;
+    replicas_b?: number;
   };
   benchmark_governance?: {
     version?: string;

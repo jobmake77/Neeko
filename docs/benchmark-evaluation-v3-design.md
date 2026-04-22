@@ -429,6 +429,42 @@ Acceptance:
 - at least one small human-labeled pack exists in repo,
 - official promotion path requires governance status instead of raw score alone.
 
+### 9.1 Execution Blueprint
+
+The phase plan above defines scope. This section defines execution order, ownership, and review checkpoints.
+
+#### Phase Entry Rules
+
+- each phase starts only after the previous phase is green on lint, build, and targeted tests,
+- each phase must remain additive to existing V2 report readers,
+- each phase must leave the repository in a releasable state before the next phase begins.
+
+#### Phase Exit Artifacts
+
+Every phase must end with:
+
+- code or docs merged into the main working branch,
+- one acceptance checklist document for the phase,
+- one rollout note document for the phase,
+- updated tests or explicit rationale for why no new tests were required,
+- a short verification record covering lint, build, and targeted test commands.
+
+#### Detailed Phase Contract
+
+| Phase | Primary goal | Main files/modules | Required outputs | Gate to next phase |
+| --- | --- | --- | --- | --- |
+| P0 | checked-in official benchmark identity | `benchmarks/packs/**`, `src/core/training/benchmark-pack.ts`, CLI command wiring, report types | pack loader, validator, official-pack artifacts, docs | stable pack id/version recorded in reports |
+| P1 | benchmark judge and explicit disagreement visibility | `src/core/training/benchmark-judge.ts`, `src/core/training/ab-report.ts`, experiment/ab CLI, minimal Web/API compatibility | case judgments, benchmark scorecards, disagreement summaries, P1 docs | proxy and benchmark outputs coexist without semantic collision |
+| P2 | repeated measurement and benchmark-aware promotion gating | `src/core/training/significance.ts`, `src/core/training/loop.ts`, `src/core/training/ab-report.ts`, CLI replica/significance flow, governance docs | replica aggregation, significance summary, governance status update, P2 docs/tests | promotion decisions become evidence-aware instead of threshold-only |
+| P3 | governance surface and human-calibrated seed pack | `benchmarks/packs/**`, Web/workbench governance UI, docs | pack status flow, human-labeled seed pack, promotable-vs-provisional UI, P3 docs/tests | official promotion path is blocked unless governance evidence is promotable |
+
+#### Rollback Boundary
+
+- P0 can be rolled back by removing `official_benchmark` pack wiring while keeping V2 unchanged.
+- P1 can be rolled back by disabling benchmark-judge artifact emission without deleting pack registry support.
+- P2 can be rolled back by treating significance fields as absent and keeping governance in `provisional`.
+- P3 can be rolled back by hiding governance UI while preserving benchmark artifacts on disk.
+
 ## 10. Testing Strategy
 
 ### Unit Tests
@@ -512,6 +548,46 @@ Responsibilities:
 - wire governance fields into surface behavior,
 - maintain the acceptance checklist for P0-P3.
 
+### 11.1 Agent Operating Contract
+
+The agents do not share write ownership for the same files within a phase.
+
+#### Development Agent Handoff
+
+Must provide:
+
+- changed files,
+- new or changed report fields,
+- any assumptions that affect testing or governance,
+- commands the main agent should run to validate the change.
+
+#### Testing Agent Handoff
+
+Must provide:
+
+- changed test files and fixtures,
+- test matrix that was added or updated,
+- uncovered edge cases or remaining blind spots,
+- whether failures indicate product behavior bugs or test-contract drift.
+
+#### Governance / Control Agent Handoff
+
+Must provide:
+
+- changed docs or UI/API files,
+- acceptance checklist deltas,
+- rollout wording or promotion-semantics risks,
+- any mismatch between implementation and design that blocks signoff.
+
+#### Main Agent Integration Rule
+
+The main agent integrates work phase by phase:
+
+1. review development outputs for correctness and boundary discipline,
+2. review testing outputs for coverage and contract stability,
+3. review governance outputs for wording, gating, and rollout safety,
+4. run consolidated verification before commit and push.
+
 ## 12. Delivery Order
 
 Execution will proceed in the following order:
@@ -522,6 +598,29 @@ Execution will proceed in the following order:
 4. P3 UI governance and human-calibrated pack seed
 
 The implementation should keep the repository usable at the end of each phase.
+
+### 12.1 Concrete Delivery Checklist
+
+Before starting a phase:
+
+- confirm the previous phase is committed or at least locally verified and integration-ready,
+- confirm unrelated worktree changes are excluded from staging,
+- restate the agent file boundaries for the phase.
+
+During a phase:
+
+- Development agent changes only runtime and CLI code in scope,
+- Testing agent changes only tests and test-only fixtures,
+- Governance / Control agent changes only docs and approved UI/API surface files,
+- main agent resolves interface mismatches and keeps report field names stable.
+
+Before finishing a phase:
+
+- lint passes,
+- build passes,
+- targeted benchmark tests pass,
+- docs for the phase match the actual emitted fields and gating behavior,
+- only in-scope files are staged for commit.
 
 ## 13. Risks and Mitigations
 

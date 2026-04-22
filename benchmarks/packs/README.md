@@ -27,3 +27,9 @@ Current status:
 
 - `persona-core-v1` is a P0 seed pack for registry and governance wiring.
 - It is intentionally marked `draft` and should not be treated as a human-calibrated official pack yet.
+
+P1 governance note:
+
+- benchmark-judge outputs derived from these packs must stay distinct from V2-style proxy scorecards,
+- disagreement or disputed cases must be surfaced explicitly rather than averaged away in governance views,
+- checked-in pack identity does not by itself imply promotion-grade evidence.

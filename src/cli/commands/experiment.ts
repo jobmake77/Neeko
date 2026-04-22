@@ -31,6 +31,15 @@ import {
   type RuntimeFallbackSummary,
 } from '../../core/training/evaluation-v2.js';
 import {
+  collectBenchmarkRunCaseTraces,
+  judgeBenchmarkRun,
+  type BenchmarkCaseSummary,
+  type BenchmarkJudgeDisagreement,
+  type BenchmarkJudgeSummary,
+  type BenchmarkRunJudgmentArtifact,
+  type BenchmarkScorecard,
+} from '../../core/training/benchmark-judge.js';
+import {
   loadBenchmarkPack,
   type LoadedBenchmarkPack,
 } from '../../core/training/benchmark-pack.js';
@@ -81,6 +90,7 @@ export interface ExperimentRunResult {
   rows: ExperimentSummaryRow[];
   roundHistories: Record<string, ExperimentRoundHistoryItem[]>;
   benchmarkCaseManifests: FrozenBenchmarkCaseManifest[];
+  benchmarkJudgments: ExperimentBenchmarkRunArtifact[];
   failures?: Array<{ profile: TrainingProfile; error: string }>;
 }
 
@@ -111,6 +121,10 @@ interface InputRoutingComparisonRow {
   contamination: EvaluationContamination;
   scorecard: EvaluationScorecard;
   judge_provenance: JudgeProvenance;
+  benchmark_scorecard?: BenchmarkScorecard;
+  benchmark_case_summary?: BenchmarkCaseSummary;
+  benchmark_judge_summary?: BenchmarkJudgeSummary;
+  benchmark_judge_disagreement?: BenchmarkJudgeDisagreement;
   benchmark_context: BenchmarkContext;
   observability: InputRoutingObservability;
   scaling_observability?: {
@@ -138,6 +152,7 @@ interface InputRoutingComparisonSummary {
   routingDecisionRecord: RoutingDecisionRecord | null;
   rows: InputRoutingComparisonRow[];
   benchmarkCaseManifests: FrozenBenchmarkCaseManifest[];
+  benchmarkJudgments: ExperimentBenchmarkRunArtifact[];
 }
 
 interface CurrentGrayPathRecommendation {
@@ -171,8 +186,17 @@ interface BenchmarkReplayMeta {
 interface ExperimentReportArtifactRefs {
   benchmark_manifest_path: string;
   benchmark_pack_path?: string;
+  benchmark_judgments_path?: string;
+  benchmark_summary_path?: string;
   report_path: string;
   report_csv_path: string;
+}
+
+interface ExperimentBenchmarkRunArtifact extends BenchmarkRunJudgmentArtifact {
+  run_label: string;
+  scope: 'profile_sweep' | 'routing_compare';
+  profile?: TrainingProfile;
+  variant?: string;
 }
 
 interface ExperimentReportInput {
@@ -199,6 +223,7 @@ interface ExperimentReportInput {
   currentGrayPathRecommendation?: CurrentGrayPathRecommendation;
   benchmarkManifests?: BenchmarkCaseManifest[];
   benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
+  benchmarkJudgments?: ExperimentBenchmarkRunArtifact[];
   benchmarkReplayMeta?: BenchmarkReplayMeta;
   artifactRefs?: ExperimentReportArtifactRefs;
   artifact_refs?: ExperimentReportArtifactRefs;
@@ -229,11 +254,13 @@ function buildExperimentReport(input: ExperimentReportInput) {
     dynamicScalingRecommendation: null,
     routingDecisionRecord: null,
     benchmarkCaseManifests: [],
+    benchmarkJudgments: [],
   };
   const strictOfficialComparisonRows = input.strictOfficialComparisonRows ?? [];
   const compatibleOfficialComparisonRows = input.compatibleOfficialComparisonRows ?? strictOfficialComparisonRows;
   const benchmarkManifests = input.benchmarkManifests ?? [];
   const benchmarkCaseManifests = input.benchmarkCaseManifests ?? [];
+  const benchmarkJudgments = input.benchmarkJudgments ?? [];
   const benchmarkReplayMeta = input.benchmarkReplayMeta ?? { active: false };
   const artifactRefs = input.artifactRefs ?? input.artifact_refs ?? {
     benchmark_manifest_path: '',
@@ -263,6 +290,12 @@ function buildExperimentReport(input: ExperimentReportInput) {
     },
     summary: 'test helper default',
   };
+  const benchmarkReportRows = collectBenchmarkReportRows(rows, inputRoutingComparison.rows);
+  const benchmarkJudgeSummary = buildExperimentBenchmarkJudgeSummary(
+    benchmarkReportRows,
+    benchmarkPack?.pack_id,
+    benchmarkPack?.pack_version
+  );
 
   return {
     schema_version: 2,
@@ -284,12 +317,28 @@ function buildExperimentReport(input: ExperimentReportInput) {
     input_routing_comparison: inputRoutingComparison.rows,
     official_input_routing_comparison: strictOfficialComparisonRows,
     benchmark_pack: benchmarkPack,
+    benchmark_scorecards: benchmarkReportRows.map((item) => ({
+      label: item.label,
+      scope: item.scope,
+      profile: item.profile,
+      overall: item.scorecard.overall,
+      pass_rate: item.scorecard.pass_rate,
+      abstain_rate: item.scorecard.abstain_rate,
+      disputed_rate: item.scorecard.disputed_rate,
+      case_count: item.scorecard.case_count,
+      scorecard: item.scorecard,
+      case_summary: item.caseSummary,
+      judge_summary: item.judgeSummary,
+      disagreement: item.disagreement,
+    })),
+    benchmark_judge_summary: benchmarkJudgeSummary,
     input_routing_recommendation: inputRoutingComparison.recommendation,
     dynamic_scaling_recommendation: inputRoutingComparison.dynamicScalingRecommendation,
     routing_decision_record: inputRoutingComparison.routingDecisionRecord,
     current_gray_path_recommendation: currentGrayPathRecommendation,
     benchmark_manifests: benchmarkManifests,
     benchmark_case_manifests: benchmarkCaseManifests,
+    benchmark_judgments: benchmarkJudgments,
     benchmark_replay: benchmarkReplayMeta,
     artifact_refs: artifactRefs,
     evaluation_v2: {
@@ -317,6 +366,97 @@ function buildExperimentReport(input: ExperimentReportInput) {
       suite_tiers_present: [...new Set(benchmarkManifests.map((item) => item.suite_tier))],
     },
     gate_result: gateResult,
+  };
+}
+
+function collectBenchmarkReportRows(
+  rows: ExperimentSummaryRow[],
+  comparisonRows: InputRoutingComparisonRow[]
+): Array<{
+  label: string;
+  scope: 'profile_sweep' | 'routing_compare';
+  profile: TrainingProfile;
+  scorecard: BenchmarkScorecard;
+  caseSummary: BenchmarkCaseSummary;
+  judgeSummary: BenchmarkJudgeSummary;
+  disagreement: BenchmarkJudgeDisagreement;
+}> {
+  const fromSummaryRows = rows
+    .filter((row): row is ExperimentSummaryRow & {
+      benchmark_scorecard: BenchmarkScorecard;
+      benchmark_case_summary: BenchmarkCaseSummary;
+      benchmark_judge_summary: BenchmarkJudgeSummary;
+      benchmark_judge_disagreement: BenchmarkJudgeDisagreement;
+    } => Boolean(
+      row.benchmark_scorecard &&
+      row.benchmark_case_summary &&
+      row.benchmark_judge_summary &&
+      row.benchmark_judge_disagreement
+    ))
+    .map((row) => ({
+      label: row.profile,
+      scope: 'profile_sweep' as const,
+      profile: row.profile,
+      scorecard: row.benchmark_scorecard,
+      caseSummary: row.benchmark_case_summary,
+      judgeSummary: row.benchmark_judge_summary,
+      disagreement: row.benchmark_judge_disagreement,
+    }));
+
+  const fromComparisonRows = comparisonRows
+    .filter((row): row is InputRoutingComparisonRow & {
+      benchmark_scorecard: BenchmarkScorecard;
+      benchmark_case_summary: BenchmarkCaseSummary;
+      benchmark_judge_summary: BenchmarkJudgeSummary;
+      benchmark_judge_disagreement: BenchmarkJudgeDisagreement;
+    } => Boolean(
+      row.benchmark_scorecard &&
+      row.benchmark_case_summary &&
+      row.benchmark_judge_summary &&
+      row.benchmark_judge_disagreement
+    ))
+    .map((row) => ({
+      label: row.label,
+      scope: 'routing_compare' as const,
+      profile: row.profile,
+      scorecard: row.benchmark_scorecard,
+      caseSummary: row.benchmark_case_summary,
+      judgeSummary: row.benchmark_judge_summary,
+      disagreement: row.benchmark_judge_disagreement,
+    }));
+
+  return [...fromSummaryRows, ...fromComparisonRows];
+}
+
+function buildExperimentBenchmarkJudgeSummary(
+  rows: ReturnType<typeof collectBenchmarkReportRows>,
+  packId?: string,
+  packVersion?: string
+) {
+  const judgedRowCount = rows.length;
+  const disputedCaseCount = rows.reduce((sum, item) => sum + item.caseSummary.disputed_case_count, 0);
+  const disagreementRateMean = judgedRowCount === 0
+    ? 0
+    : rows.reduce((sum, item) => sum + item.disagreement.disagreement_rate, 0) / judgedRowCount;
+
+  return {
+    version: 'benchmark-judge-report-summary-v1',
+    available: judgedRowCount > 0,
+    pack_id: packId ?? null,
+    pack_version: packVersion ?? null,
+    row_count: judgedRowCount,
+    disputed_case_count: disputedCaseCount,
+    disagreement_rate_mean: disagreementRateMean,
+    judge_modes: [...new Set(rows.map((item) => item.judgeSummary.judge_mode))],
+    rows: rows.map((item) => ({
+      label: item.label,
+      scope: item.scope,
+      profile: item.profile,
+      overall: item.scorecard.overall,
+      pass_rate: item.scorecard.pass_rate,
+      disputed_case_count: item.caseSummary.disputed_case_count,
+      disagreement_rate: item.disagreement.disagreement_rate,
+    })),
   };
 }
 
@@ -553,6 +693,34 @@ function buildExperimentBenchmarkArtifacts(input: {
   };
 }
 
+async function buildBenchmarkJudgeArtifactForRun(input: {
+  pack?: LoadedBenchmarkPack | null;
+  history?: TrainingProgress[];
+  runLabel: string;
+  scope: 'profile_sweep' | 'routing_compare';
+  profile?: TrainingProfile;
+  variant?: string;
+}): Promise<ExperimentBenchmarkRunArtifact | null> {
+  if (!input.pack || !input.history || input.history.length === 0) {
+    return null;
+  }
+
+  const traces = collectBenchmarkRunCaseTraces(input.history);
+  const judged = await judgeBenchmarkRun({
+    pack: input.pack,
+    traces,
+    dualJudge: true,
+  });
+
+  return {
+    ...judged,
+    run_label: input.runLabel,
+    scope: input.scope,
+    profile: input.profile,
+    variant: input.variant,
+  };
+}
+
 function toRuntimeObservabilitySnapshot(input: {
   trainerFallbacks: number;
   personaFallbacks: number;
@@ -600,6 +768,7 @@ export async function runExperimentProfiles(
   const rows: ExperimentSummaryRow[] = [];
   const roundHistories: Record<string, ExperimentRoundHistoryItem[]> = {};
   const benchmarkCaseManifests: FrozenBenchmarkCaseManifest[] = [];
+  const benchmarkJudgments: ExperimentBenchmarkRunArtifact[] = [];
   const failures: Array<{ profile: TrainingProfile; error: string }> = [];
   const providerName = resolvePreferredProviderName();
   const trainingSeedMode = normalizeTrainingSeedMode(options?.trainingSeedMode);
@@ -757,8 +926,18 @@ export async function runExperimentProfiles(
     if (benchmarkArtifacts.benchmarkCaseManifest) {
       benchmarkCaseManifests.push(benchmarkArtifacts.benchmarkCaseManifest);
     }
+    const benchmarkJudgeArtifact = await buildBenchmarkJudgeArtifactForRun({
+      pack: officialPack,
+      history,
+      runLabel: profile,
+      scope: 'profile_sweep',
+      profile,
+    });
+    if (benchmarkJudgeArtifact) {
+      benchmarkJudgments.push(benchmarkJudgeArtifact);
+    }
 
-    rows.push({
+      rows.push({
       profile,
       totalRounds: result.totalRounds,
       avgQuality,
@@ -776,6 +955,10 @@ export async function runExperimentProfiles(
         runtimeObservability: runtimeSnapshot,
       }),
       judge_provenance: judgeProvenance,
+      benchmark_scorecard: benchmarkJudgeArtifact?.scorecard,
+      benchmark_case_summary: benchmarkJudgeArtifact?.case_summary,
+      benchmark_judge_summary: benchmarkJudgeArtifact?.judge_summary,
+      benchmark_judge_disagreement: benchmarkJudgeArtifact?.disagreement,
       benchmark_context: benchmarkArtifacts.benchmarkContext,
       runtime_observability: runtimeSnapshot,
     });
@@ -794,6 +977,7 @@ export async function runExperimentProfiles(
     rows,
     roundHistories,
     benchmarkCaseManifests: collectFrozenBenchmarkCaseManifests(benchmarkCaseManifests),
+    benchmarkJudgments,
     failures,
   };
 }
@@ -882,8 +1066,14 @@ export async function cmdExperiment(
     );
   }
 
-  const { rows, roundHistories, benchmarkCaseManifests: profileBenchmarkCaseManifests, failures } = options.skipProfileSweep
-    ? { rows: [], roundHistories: {}, benchmarkCaseManifests: [], failures: [] }
+  const {
+    rows,
+    roundHistories,
+    benchmarkCaseManifests: profileBenchmarkCaseManifests,
+    benchmarkJudgments: profileBenchmarkJudgments,
+    failures,
+  } = options.skipProfileSweep
+    ? { rows: [], roundHistories: {}, benchmarkCaseManifests: [], benchmarkJudgments: [], failures: [] }
     : await runExperimentProfiles(slug, rounds, profiles, {
       kimiStabilityMode,
       trainingSeedMode,
@@ -921,6 +1111,7 @@ export async function cmdExperiment(
       dynamicScalingRecommendation: null,
       routingDecisionRecord: null,
       benchmarkCaseManifests: [],
+      benchmarkJudgments: [],
     };
 
   const strictOfficialSummaryRows = selectStrictOfficialRows(rows);
@@ -961,6 +1152,12 @@ export async function cmdExperiment(
   const jsonPath = join(outputDir, `experiment-${slug}-${timestamp}.json`);
   const csvPath = join(outputDir, `experiment-${slug}-${timestamp}.csv`);
   const manifestPath = join(outputDir, `experiment-${slug}-${timestamp}.benchmark-manifest.json`);
+  const benchmarkJudgmentsPath = join(outputDir, `experiment-${slug}-${timestamp}.benchmark-judgments.json`);
+  const benchmarkSummaryPath = join(outputDir, `experiment-${slug}-${timestamp}.benchmark-summary.json`);
+  const benchmarkJudgments = [
+    ...profileBenchmarkJudgments,
+    ...inputRoutingComparison.benchmarkJudgments,
+  ];
 
   const gateResult = evaluateGate(rows, {
     enabled: options.gate === true,
@@ -993,10 +1190,13 @@ export async function cmdExperiment(
     currentGrayPathRecommendation,
     benchmarkManifests,
     benchmarkCaseManifests,
+    benchmarkJudgments,
     benchmarkReplayMeta,
     artifactRefs: {
       benchmark_manifest_path: manifestPath,
       benchmark_pack_path: officialPack?.source.resolved_pack_path,
+      benchmark_judgments_path: benchmarkJudgments.length > 0 ? benchmarkJudgmentsPath : undefined,
+      benchmark_summary_path: benchmarkJudgments.length > 0 ? benchmarkSummaryPath : undefined,
       report_path: jsonPath,
       report_csv_path: csvPath,
     },
@@ -1004,6 +1204,39 @@ export async function cmdExperiment(
     officialPack,
   });
   writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf-8');
+  if (benchmarkJudgments.length > 0) {
+    writeFileSync(
+      benchmarkJudgmentsPath,
+      JSON.stringify(
+        {
+          schema_version: 1,
+          generated_at: report.generated_at,
+          slug,
+          benchmark_pack: officialPack?.summary,
+          runs: benchmarkJudgments,
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+    writeFileSync(
+      benchmarkSummaryPath,
+      JSON.stringify(
+        {
+          schema_version: 1,
+          generated_at: report.generated_at,
+          slug,
+          benchmark_pack: officialPack?.summary,
+          benchmark_scorecards: report.benchmark_scorecards ?? [],
+          benchmark_judge_summary: report.benchmark_judge_summary ?? null,
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+  }
   writeFileSync(
     manifestPath,
     JSON.stringify(
@@ -1041,6 +1274,10 @@ export async function cmdExperiment(
   console.log(chalk.dim(`JSON report: ${jsonPath}`));
   console.log(chalk.dim(`CSV report:  ${csvPath}`));
   console.log(chalk.dim(`Manifest:    ${manifestPath}`));
+  if (benchmarkJudgments.length > 0) {
+    console.log(chalk.dim(`Benchmark judgments: ${benchmarkJudgmentsPath}`));
+    console.log(chalk.dim(`Benchmark summary:   ${benchmarkSummaryPath}`));
+  }
   if (inputRoutingComparison.rows.length > 0) {
     console.log(chalk.dim('Input routing comparison:'));
     for (const row of inputRoutingComparison.rows) {
@@ -1156,6 +1393,7 @@ async function runInputRoutingComparison(
       dynamicScalingRecommendation: null,
       routingDecisionRecord: null,
       benchmarkCaseManifests: [],
+      benchmarkJudgments: [],
     };
   }
 
@@ -1169,6 +1407,7 @@ async function runInputRoutingComparison(
       dynamicScalingRecommendation: null,
       routingDecisionRecord: null,
       benchmarkCaseManifests: [],
+      benchmarkJudgments: [],
     };
   }
 
@@ -1181,6 +1420,7 @@ async function runInputRoutingComparison(
   const aggregator = new SoulAggregator();
   const rows: InputRoutingComparisonRow[] = [];
   const producedBenchmarkCaseManifests: FrozenBenchmarkCaseManifest[] = [];
+  const producedBenchmarkJudgments: ExperimentBenchmarkRunArtifact[] = [];
   const providerName = resolvePreferredProviderName();
   const replayManifestIndex = buildReplayManifestIndex(replayBenchmarkCaseManifests);
   const comparisonTimeoutMs = resolveComparisonTimeoutMs(docs.length, rounds);
@@ -1331,6 +1571,17 @@ async function runInputRoutingComparison(
       if (benchmarkArtifacts.benchmarkCaseManifest) {
         producedBenchmarkCaseManifests.push(benchmarkArtifacts.benchmarkCaseManifest);
       }
+      const benchmarkJudgeArtifact = await buildBenchmarkJudgeArtifactForRun({
+        pack: officialPack,
+        history,
+        runLabel: `${profile}+${strategy}+${trainingSeedSelection.mode}`,
+        scope: 'routing_compare',
+        profile,
+        variant: `${strategy}:${trainingSeedSelection.mode}`,
+      });
+      if (benchmarkJudgeArtifact) {
+        producedBenchmarkJudgments.push(benchmarkJudgeArtifact);
+      }
 
       rows.push({
         label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
@@ -1366,6 +1617,10 @@ async function runInputRoutingComparison(
           runtimeObservability: fallbackMetrics,
         }),
         judge_provenance: judgeProvenance,
+        benchmark_scorecard: benchmarkJudgeArtifact?.scorecard,
+        benchmark_case_summary: benchmarkJudgeArtifact?.case_summary,
+        benchmark_judge_summary: benchmarkJudgeArtifact?.judge_summary,
+        benchmark_judge_disagreement: benchmarkJudgeArtifact?.disagreement,
         benchmark_context: benchmarkArtifacts.benchmarkContext,
         observability: routed.observability,
         scaling_observability: {
@@ -1504,6 +1759,7 @@ async function runInputRoutingComparison(
     dynamicScalingRecommendation,
     routingDecisionRecord,
     benchmarkCaseManifests: collectFrozenBenchmarkCaseManifests(producedBenchmarkCaseManifests),
+    benchmarkJudgments: producedBenchmarkJudgments,
   };
 }
 

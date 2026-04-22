@@ -138,6 +138,13 @@ export async function cmdAbRegression(
     benchmarkCaseManifests,
     benchmarkManifestIds
   );
+  const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
+  mkdirSync(outputDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const baseName = `ab-regression-${slug}-${timestamp}`;
+  const benchmarkSummaryPath = join(outputDir, `${baseName}.benchmark-summary.json`);
+  const hasBenchmarkJudging =
+    Boolean(selectedRows[0]?.benchmark_scorecard || selectedRows[1]?.benchmark_scorecard);
   const gateResult = evaluateGate(selectedRows, {
     enabled: options.gate === true,
     maxQualityDrop: parseFloat(options.maxQualityDrop ?? '0.02'),
@@ -161,6 +168,7 @@ export async function cmdAbRegression(
     benchmarkManifests,
     benchmarkCaseManifests: selectedBenchmarkCaseManifests,
     benchmarkHomogeneity: summarizeBenchmarkHomogeneity(benchmarkManifests),
+    artifactRefs: hasBenchmarkJudging ? { benchmark_summary_path: benchmarkSummaryPath } : undefined,
   });
 
   console.log(renderAbComparisonTable(report));
@@ -170,11 +178,6 @@ export async function cmdAbRegression(
       : chalk.red(`Quality gate: failed (${gateResult.reason})`);
     console.log(`\n${gateLine}`);
   }
-
-  const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
-  mkdirSync(outputDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const baseName = `ab-regression-${slug}-${timestamp}`;
 
   if (format === 'all' || format === 'json') {
     const jsonPath = join(outputDir, `${baseName}.json`);
@@ -198,6 +201,27 @@ export async function cmdAbRegression(
     console.log(chalk.dim(`MD report:   ${mdPath}`));
     const latestMdPath = join(outputDir, `ab-regression-latest-${slug}.md`);
     writeFileSync(latestMdPath, mdContent, 'utf-8');
+  }
+  if (hasBenchmarkJudging) {
+    writeFileSync(
+      benchmarkSummaryPath,
+      JSON.stringify(
+        {
+          schema_version: 1,
+          generated_at: report.generated_at,
+          slug,
+          benchmark_pack: officialPack?.summary,
+          benchmark_scorecards: report.benchmark_scorecards ?? null,
+          benchmark_case_summaries: report.benchmark_case_summaries ?? null,
+          benchmark_judge_summaries: report.benchmark_judge_summaries ?? null,
+          benchmark_judge_disagreements: report.benchmark_judge_disagreements ?? null,
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+    console.log(chalk.dim(`Benchmark summary: ${benchmarkSummaryPath}`));
   }
 
   if (gateResult.enabled && !gateResult.passed) {

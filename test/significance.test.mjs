@@ -68,11 +68,12 @@ async function requireSignificanceApi(t) {
     api.summarizeBenchmarkSignificance ??
     api.pairedBootstrapSignificance ??
     null;
+  const buildGovernance = api.buildBenchmarkGovernanceSummary ?? null;
   if (!compute) {
     t.skip('Blocker: significance module exists, but no public significance summary function is testable yet.');
     return null;
   }
-  return { compute };
+  return { compute, buildGovernance };
 }
 
 async function callWithVariants(fn, scenario) {
@@ -208,4 +209,69 @@ test('significance flow does not overclaim when replica evidence is insufficient
     assert.ok(summary.ciLow <= 0);
     assert.ok(summary.ciHigh >= 0);
   }
+});
+
+test('governance stays provisional when benchmark significance evidence is insufficient', async (t) => {
+  const api = await requireSignificanceApi(t);
+  if (!api?.buildGovernance) {
+    t.skip('Blocker: governance summary builder is not available yet.');
+    return;
+  }
+
+  const governance = api.buildGovernance({
+    pack: {
+      pack_id: 'persona-core-v1',
+      pack_version: '2026-04-22',
+      status: 'official',
+    },
+    judgeMode: 'benchmark_dual',
+    homogeneity: {
+      homogeneous: true,
+      reasons: [],
+      manifest_versions: ['benchmark-case-manifest-v1'],
+      freeze_levels: ['frozen_cases'],
+      suite_labels: ['official_benchmark:persona-core-v1'],
+      pack_versions: ['2026-04-22'],
+      provider_fingerprints: ['provider-demo'],
+      runtime_fingerprints: ['runtime-demo'],
+      judge_fingerprints: ['judge-demo'],
+    },
+    replicaSummary: {
+      version: 'benchmark-replica-summary-v1',
+      replica_group: 'demo',
+      metric: 'benchmark_overall',
+      replica_count: 1,
+      clean_replica_count: 1,
+      excluded_replica_count: 0,
+      benchmark_overall: { mean: 0.8, min: 0.8, max: 0.8, range: 0, stddev: 0 },
+      avg_quality: { mean: 0.8, min: 0.8, max: 0.8, range: 0, stddev: 0 },
+      coverage: { mean: 0.8, min: 0.8, max: 0.8, range: 0, stddev: 0 },
+      contradiction_rate: { mean: 0.1, min: 0.1, max: 0.1, range: 0, stddev: 0 },
+      duplication_rate: { mean: 0.1, min: 0.1, max: 0.1, range: 0, stddev: 0 },
+      pass_rate: { mean: 0.8, min: 0.8, max: 0.8, range: 0, stddev: 0 },
+      disputed_rate: { mean: 0, min: 0, max: 0, range: 0, stddev: 0 },
+      disagreement_rate: { mean: 0, min: 0, max: 0, range: 0, stddev: 0 },
+    },
+    significance: {
+      version: 'benchmark-significance-v1',
+      method: 'paired_bootstrap',
+      metric: 'benchmark_overall',
+      replicas_a: 1,
+      replicas_b: 1,
+      clean_pairs: 1,
+      bootstrap_samples: 1000,
+      delta_mean: null,
+      ci_low: null,
+      ci_high: null,
+      significant: false,
+      significance_status: 'insufficient_evidence',
+      favors: 'neither',
+      explanation: 'paired bootstrap requires at least 2 clean replica pairs',
+    },
+    requiredMinCleanReplicas: 1,
+    judgeDisagreementRate: 0,
+  });
+
+  assert.equal(governance.significance_status, 'insufficient_evidence');
+  assert.equal(governance.promotion_readiness, 'provisional');
 });

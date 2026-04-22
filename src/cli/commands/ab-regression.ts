@@ -25,12 +25,14 @@ import {
 import { TrainingProfile } from '../../core/training/types.js';
 import {
   loadBenchmarkCaseManifestsFromArtifact,
+  __experimentTestables,
   runExperimentProfiles,
 } from './experiment.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
 
 const VALID_PROFILES: TrainingProfile[] = ['baseline', 'a1', 'a2', 'a3', 'a4', 'full'];
 const AB_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_AB_PROFILE_TIMEOUT_MS ?? 60_000);
+const { resolveOfficialReplicaCount } = __experimentTestables;
 
 function normalizeProfile(input: string | undefined, fallback: TrainingProfile): TrainingProfile {
   const value = String(input ?? fallback).toLowerCase();
@@ -116,10 +118,12 @@ export async function cmdAbRegression(
   const officialPack: LoadedBenchmarkPack | null = options.officialPack
     ? loadBenchmarkPack(options.officialPack, { repoRoot: process.cwd() })
     : null;
-  const requestedReplicas = Math.max(1, parseInt(options.replicas ?? '1', 10));
+  const parsedRequestedReplicas =
+    options.replicas === undefined ? undefined : Math.max(1, parseInt(options.replicas, 10));
   if ((options.replicas || options.significance) && !officialPack) {
     throw new Error('--replicas and --significance require --official-pack');
   }
+  const requestedReplicas = resolveOfficialReplicaCount(parsedRequestedReplicas, officialPack);
   const replayBenchmarkCaseManifests = options.benchmarkManifest
     ? loadBenchmarkCaseManifestsFromArtifact(options.benchmarkManifest)
     : [];

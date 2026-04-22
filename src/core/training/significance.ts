@@ -240,7 +240,7 @@ export function buildBenchmarkGovernanceSummary(input: {
       promotionReadiness = 'provisional';
       reasons.push('benchmark significance is not strong enough for promotion');
     } else {
-      promotionReadiness = 'blocked';
+      promotionReadiness = 'provisional';
       reasons.push('benchmark significance does not yet have enough evidence');
     }
   }

@@ -107,6 +107,13 @@ function benchmarkGovernance(overrides = {}) {
   };
 }
 
+async function loadExperimentTestables() {
+  const experimentModule =
+    (await importOptional(join(repoRoot, 'dist', 'testing', 'experiment-test-entry.js'))) ??
+    (await importOptional(join(repoRoot, 'dist', 'cli', 'commands', 'experiment.js')));
+  return experimentModule?.__experimentTestables ?? experimentModule ?? null;
+}
+
 function officialPackDescriptor() {
   return {
     pack_id: 'persona-core-v1',
@@ -256,6 +263,27 @@ test('ab-regression official-pack report wiring can carry benchmark pack identit
   assert.equal(report.metrics.avg_quality.b, 0.9);
   assert.equal(report.run_quality.a, 'clean');
   assert.equal(report.run_quality.b, 'clean');
+});
+
+test('official pack replica resolution falls back to pack defaults when CLI replicas are omitted', async (t) => {
+  const testables = await loadExperimentTestables();
+  const resolveOfficialReplicaCount = testables?.resolveOfficialReplicaCount ?? null;
+  if (!resolveOfficialReplicaCount) {
+    t.skip('Blocker: experiment test helpers do not expose official replica resolution yet.');
+    return;
+  }
+
+  assert.equal(resolveOfficialReplicaCount(undefined, {
+    definition: {
+      default_replicas: 3,
+    },
+  }), 3);
+  assert.equal(resolveOfficialReplicaCount(2, {
+    definition: {
+      default_replicas: 3,
+    },
+  }), 2);
+  assert.equal(resolveOfficialReplicaCount(undefined, null), 1);
 });
 
 test('experiment report official-pack contract is ready to assert once a report builder test entry exists', async (t) => {

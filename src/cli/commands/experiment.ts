@@ -808,6 +808,19 @@ function resolveDualJudgeMode(mode?: BenchmarkReportJudgeMode): boolean {
   return mode !== 'benchmark_single' && mode !== 'proxy';
 }
 
+function resolveOfficialReplicaCount(
+  requestedReplicas: number | undefined,
+  officialPack?: LoadedBenchmarkPack | null
+): number {
+  if (typeof requestedReplicas === 'number' && Number.isFinite(requestedReplicas)) {
+    return Math.max(1, Math.floor(requestedReplicas));
+  }
+  if (officialPack?.definition.default_replicas) {
+    return Math.max(1, officialPack.definition.default_replicas);
+  }
+  return 1;
+}
+
 async function buildBenchmarkJudgeArtifactForRun(input: {
   pack?: LoadedBenchmarkPack | null;
   history?: TrainingProgress[];
@@ -1652,7 +1665,9 @@ export async function runExperimentProfiles(
       rounds: effectiveRounds,
       explicitKimiStabilityMode: options?.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
-    const effectiveReplicas = officialPack ? Math.max(1, options?.replicas ?? 1) : 1;
+    const effectiveReplicas = officialPack
+      ? resolveOfficialReplicaCount(options?.replicas, officialPack)
+      : 1;
     const replicaGroup = officialPack && effectiveReplicas > 1
       ? `${slug}:${profile}:${stamp}`
       : undefined;
@@ -1792,7 +1807,8 @@ export async function cmdExperiment(
   const officialPack = options.officialPack
     ? loadBenchmarkPack(options.officialPack, { repoRoot: process.cwd() })
     : null;
-  const requestedReplicas = Math.max(1, parseInt(options.replicas ?? '1', 10));
+  const parsedRequestedReplicas =
+    options.replicas === undefined ? undefined : Math.max(1, parseInt(options.replicas, 10));
   if ((options.replicas || options.significance) && !officialPack) {
     throw new Error('--replicas and --significance require --official-pack');
   }
@@ -1808,6 +1824,7 @@ export async function cmdExperiment(
     : {
       active: false,
     };
+  const requestedReplicas = resolveOfficialReplicaCount(parsedRequestedReplicas, officialPack);
   const significanceEnabled = Boolean(officialPack && (options.significance || requestedReplicas > 1 || options.gate));
 
   if (benchmarkReplayMeta.active) {
@@ -2563,6 +2580,7 @@ async function runInputRoutingComparison(
 
 export const __experimentTestables = {
   buildExperimentReport,
+  resolveOfficialReplicaCount,
 };
 
 function resolveComparisonTimeoutMs(rawDocCount: number, rounds: number): number {

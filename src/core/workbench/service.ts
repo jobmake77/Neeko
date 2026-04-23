@@ -1471,6 +1471,7 @@ function parseTranscriptSourceFile(sourcePath: string): RawDocument[] | null {
 export class WorkbenchService {
   private readonly collectionReviewTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly collectionContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly postCreateSourceSyncTimers = new Map<string, ReturnType<typeof setInterval>>();
   private static readonly REMOTE_SOURCE_HOST_FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
   constructor(
@@ -1742,6 +1743,8 @@ export class WorkbenchService {
     if (!personaSummary) {
       return false;
     }
+
+    this.stopPersonaLifecycleWork(slug);
 
     this.store.deleteConversationsByPersona(slug);
     this.store.deletePromotionHandoffsByPersona(slug);
@@ -4031,6 +4034,48 @@ export class WorkbenchService {
     }
   }
 
+  private clearPostCreateSourceSync(slug: string): void {
+    const timer = this.postCreateSourceSyncTimers.get(slug);
+    if (timer) {
+      clearInterval(timer);
+      this.postCreateSourceSyncTimers.delete(slug);
+    }
+  }
+
+  private stopPersonaLifecycleWork(slug: string): void {
+    this.clearCollectionReview(slug);
+    this.clearCollectionContinuation(slug);
+    this.clearPostCreateSourceSync(slug);
+
+    for (const run of this.listRuns(slug)) {
+      if (!['create', 'source_sync', 'train'].includes(run.type)) continue;
+      if (!['running', 'queued'].includes(run.status)) continue;
+
+      if (run.pid && this.isPidAlive(run.pid)) {
+        try {
+          process.kill(run.pid, 'SIGTERM');
+        } catch {
+          // Best effort only.
+        }
+        setTimeout(() => {
+          if (!run.pid || !this.isPidAlive(run.pid)) return;
+          try {
+            process.kill(run.pid, 'SIGKILL');
+          } catch {
+            // Best effort only.
+          }
+        }, 750);
+      }
+
+      this.store.updateRun(run.id, {
+        status: 'failed',
+        recovery_state: 'idle',
+        finished_at: new Date().toISOString(),
+        summary: 'Persona deleted while this run was in progress.',
+      });
+    }
+  }
+
   private scheduleCollectionReview(slug: string, runId: string, runType: 'source_sync' | 'train'): void {
     this.clearCollectionReview(slug);
     const startedAt = Date.now();
@@ -4443,6 +4488,7 @@ export class WorkbenchService {
   }
 
   private schedulePostCreateSourceSync(config: PersonaConfig, createRunId: string): void {
+    this.clearPostCreateSourceSync(config.persona_slug);
     const enabledSources = config.sources.filter((item) => item.enabled);
     if (enabledSources.length <= 1) return;
 
@@ -4457,17 +4503,21 @@ export class WorkbenchService {
       const run = this.getRunStatus(createRunId);
       if (!run || run.status === 'failed') {
         clearInterval(timer);
+        this.postCreateSourceSyncTimers.delete(config.persona_slug);
         return;
       }
       if (run.status !== 'completed') {
         if (Date.now() - startedAt > 30 * 60 * 1000) {
           clearInterval(timer);
+          this.postCreateSourceSyncTimers.delete(config.persona_slug);
         }
         return;
       }
       clearInterval(timer);
+      this.postCreateSourceSyncTimers.delete(config.persona_slug);
       void this.continueCultivationFromSelectedSources(config.persona_slug, followupSourceIds).catch(() => undefined);
     }, 4000);
+    this.postCreateSourceSyncTimers.set(config.persona_slug, timer);
   }
 
   private async continueCultivationFromSelectedSources(

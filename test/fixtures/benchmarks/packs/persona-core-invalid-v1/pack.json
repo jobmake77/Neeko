@@ -1,0 +1,19 @@
+{
+  "pack_id": "persona-core-invalid-v1",
+  "pack_version": "2026-04-22",
+  "manifest_version": "benchmark-pack-registry-v1",
+  "suite_type": "official_benchmark",
+  "suite_tier": "official",
+  "domain": "persona_training",
+  "description": "Invalid benchmark pack fixture for validator coverage.",
+  "owner": "neeko",
+  "status": "draft",
+  "replayable": true,
+  "default_replicas": 3,
+  "min_clean_replicas": 2,
+  "significance_method": "paired_bootstrap",
+  "dimensions": [
+    "persona_fidelity",
+    "groundedness"
+  ]
+}

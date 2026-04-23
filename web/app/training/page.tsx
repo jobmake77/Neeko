@@ -100,13 +100,38 @@ interface ExperimentSummaryRow {
   duplicationRate: number;
   coverage: number;
   run_quality?: string;
+  benchmark_scorecard?: {
+    overall_score?: number;
+    pass_rate?: number;
+    disputed_case_count?: number;
+    scored_case_count?: number;
+  };
+  benchmark_case_summary?: {
+    total_cases?: number;
+    passed_cases?: number;
+    failed_cases?: number;
+    abstained_cases?: number;
+    disputed_cases?: number;
+  };
+  benchmark_judge_disagreement?: {
+    active?: boolean;
+    judge_count?: number;
+    disagreement_rate?: number;
+    verdict_conflicts?: number;
+    high_delta_cases?: string[];
+  };
 }
 
 type ExperimentSuiteTier = 'official' | 'regression' | 'smoke' | 'ad_hoc';
+type ExperimentPromotionReadiness = 'blocked' | 'provisional' | 'promotable';
+type ExperimentSignificanceStatus = 'improved' | 'regressed' | 'not_significant' | 'insufficient_evidence';
+type ExperimentPackStatus = 'draft' | 'candidate' | 'official';
 
 interface ExperimentBenchmarkManifest {
   suite_tier?: ExperimentSuiteTier;
   suite_label?: string;
+  pack_id?: string;
+  pack_version?: string;
 }
 
 interface ExperimentEvaluationSummary {
@@ -118,6 +143,56 @@ interface ExperimentEvaluationSummary {
   compatible_official_fallback_used?: boolean;
 }
 
+interface ExperimentBenchmarkPack {
+  pack_id?: string;
+  pack_version?: string;
+  suite_type?: string;
+  suite_tier?: ExperimentSuiteTier | string;
+  status?: ExperimentPackStatus | string;
+}
+
+interface ExperimentBenchmarkGovernance {
+  version?: string;
+  pack_id?: string;
+  pack_version?: string;
+  judge_mode?: string;
+  official_benchmark_status?: 'available' | 'unavailable';
+  promotion_readiness?: ExperimentPromotionReadiness;
+  clean_replica_count?: number;
+  benchmark_homogeneous?: boolean;
+  significance_status?: ExperimentSignificanceStatus;
+  judge_disagreement_rate?: number;
+}
+
+interface ExperimentBenchmarkScorecardSummary {
+  profile?: string;
+  overall_score?: number;
+  pass_rate?: number;
+  disputed_case_count?: number;
+  case_count?: number;
+}
+
+interface ExperimentBenchmarkJudgeSummary {
+  judge_mode?: string;
+  scorecard_mode?: 'proxy_only' | 'benchmark_only' | 'both';
+  proxy_scorecard_present?: boolean;
+  benchmark_scorecard_present?: boolean;
+  disputed_case_count?: number;
+  disagreement_rate?: number;
+}
+
+interface ExperimentBenchmarkSignificance {
+  method?: string;
+  metric?: string;
+  delta_mean?: number;
+  ci_low?: number;
+  ci_high?: number;
+  significant?: boolean;
+  favors?: 'a' | 'b' | 'neither';
+  replicas_a?: number;
+  replicas_b?: number;
+}
+
 interface ExperimentReportData {
   generated_at: string;
   rounds_per_profile: number;
@@ -125,6 +200,11 @@ interface ExperimentReportData {
   summary_rows: ExperimentSummaryRow[];
   official_summary_rows?: ExperimentSummaryRow[];
   benchmark_manifests?: ExperimentBenchmarkManifest[];
+  benchmark_pack?: ExperimentBenchmarkPack;
+  benchmark_scorecards?: ExperimentBenchmarkScorecardSummary[];
+  benchmark_judge_summary?: ExperimentBenchmarkJudgeSummary;
+  benchmark_significance?: ExperimentBenchmarkSignificance;
+  benchmark_governance?: ExperimentBenchmarkGovernance;
   evaluation_v2?: ExperimentEvaluationSummary;
 }
 
@@ -242,14 +322,137 @@ function getExperimentSuiteTier(report: ExperimentReportData): ExperimentSuiteTi
 }
 
 function getExperimentOfficialStatus(report: ExperimentReportData): 'available' | 'unavailable' {
-  return report.evaluation_v2?.official_status ?? 'unavailable';
+  return report.benchmark_governance?.official_benchmark_status
+    ?? report.evaluation_v2?.official_status
+    ?? 'unavailable';
 }
 
-function getExperimentPrimaryProfile(report: ExperimentReportData): string | null {
-  if (getExperimentOfficialStatus(report) === 'available') {
-    return report.evaluation_v2?.official_best_profile ?? report.best_profile ?? null;
+function getExperimentPromotionReadiness(report: ExperimentReportData): ExperimentPromotionReadiness | null {
+  return report.benchmark_governance?.promotion_readiness ?? null;
+}
+
+function getExperimentOfficialWinner(report: ExperimentReportData): string | null {
+  if (getExperimentOfficialStatus(report) !== 'available') return null;
+  return report.evaluation_v2?.official_best_profile ?? report.best_profile ?? null;
+}
+
+function getExperimentBenchmarkPackLabel(report: ExperimentReportData): string | null {
+  const packId = report.benchmark_governance?.pack_id
+    ?? report.benchmark_pack?.pack_id
+    ?? report.benchmark_manifests?.[0]?.pack_id;
+  const packVersion = report.benchmark_governance?.pack_version
+    ?? report.benchmark_pack?.pack_version
+    ?? report.benchmark_manifests?.[0]?.pack_version;
+  if (!packId) return null;
+  return packVersion ? `${packId}@${packVersion}` : packId;
+}
+
+function formatPercentValue(value: number | null | undefined, digits = 1): string {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-';
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function formatExperimentScorecardMode(report: ExperimentReportData): string | null {
+  const explicitMode = report.benchmark_judge_summary?.scorecard_mode;
+  if (explicitMode === 'both') return 'proxy + benchmark';
+  if (explicitMode === 'benchmark_only') return 'benchmark only';
+  if (explicitMode === 'proxy_only') return 'proxy only';
+
+  const hasBenchmarkRow = getExperimentDisplayRows(report).some(
+    (row) => Boolean(row.benchmark_scorecard || row.benchmark_case_summary || row.benchmark_judge_disagreement)
+  );
+  const hasBenchmarkTopLevel = Boolean(
+    (Array.isArray(report.benchmark_scorecards) && report.benchmark_scorecards.length > 0)
+    || report.benchmark_judge_summary?.benchmark_scorecard_present
+  );
+  const hasProxy = report.summary_rows.length > 0 || report.benchmark_judge_summary?.proxy_scorecard_present;
+  if ((hasBenchmarkRow || hasBenchmarkTopLevel) && hasProxy) return 'proxy + benchmark';
+  if (hasBenchmarkRow || hasBenchmarkTopLevel) return 'benchmark only';
+  if (hasProxy) return 'proxy only';
+  return null;
+}
+
+function getExperimentJudgeDisagreementRate(report: ExperimentReportData): number | null {
+  const governanceRate = report.benchmark_governance?.judge_disagreement_rate;
+  if (typeof governanceRate === 'number') return governanceRate;
+  const summaryRate = report.benchmark_judge_summary?.disagreement_rate;
+  return typeof summaryRate === 'number' ? summaryRate : null;
+}
+
+function getExperimentDisputedCaseCount(report: ExperimentReportData): number | null {
+  const summaryCount = report.benchmark_judge_summary?.disputed_case_count;
+  if (typeof summaryCount === 'number') return summaryCount;
+  const scorecardCount = report.benchmark_scorecards?.reduce((sum, item) => {
+    return sum + (typeof item.disputed_case_count === 'number' ? item.disputed_case_count : 0);
+  }, 0);
+  return typeof scorecardCount === 'number' && scorecardCount > 0 ? scorecardCount : null;
+}
+
+function formatBenchmarkSignificanceInline(summary: ExperimentBenchmarkSignificance): string {
+  const parts = [
+    summary.method ? `method=${summary.method}` : null,
+    summary.metric ? `metric=${summary.metric}` : null,
+    typeof summary.delta_mean === 'number' ? `delta=${summary.delta_mean.toFixed(3)}` : null,
+    typeof summary.ci_low === 'number' && typeof summary.ci_high === 'number'
+      ? `ci=[${summary.ci_low.toFixed(3)}, ${summary.ci_high.toFixed(3)}]`
+      : null,
+    typeof summary.significant === 'boolean' ? `significant=${summary.significant ? 'yes' : 'no'}` : null,
+    summary.favors ? `favors=${summary.favors}` : null,
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function formatRowBenchmarkSummary(row: ExperimentSummaryRow): string | null {
+  const parts = [
+    typeof row.benchmark_scorecard?.overall_score === 'number'
+      ? `benchmark score=${formatPercentValue(row.benchmark_scorecard.overall_score)}`
+      : null,
+    typeof row.benchmark_scorecard?.pass_rate === 'number'
+      ? `pass=${formatPercentValue(row.benchmark_scorecard.pass_rate)}`
+      : null,
+    typeof row.benchmark_case_summary?.total_cases === 'number'
+      ? `cases=${row.benchmark_case_summary.total_cases}`
+      : null,
+    typeof row.benchmark_case_summary?.disputed_cases === 'number'
+      ? `disputed=${row.benchmark_case_summary.disputed_cases}`
+      : typeof row.benchmark_scorecard?.disputed_case_count === 'number'
+        ? `disputed=${row.benchmark_scorecard.disputed_case_count}`
+        : null,
+    typeof row.benchmark_judge_disagreement?.disagreement_rate === 'number'
+      ? `judge disagreement=${formatPercentValue(row.benchmark_judge_disagreement.disagreement_rate)}`
+      : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function formatExperimentPromotionReadiness(readiness: ExperimentPromotionReadiness): string {
+  switch (readiness) {
+    case 'promotable':
+      return 'promotable';
+    case 'blocked':
+      return 'blocked';
+    default:
+      return 'provisional';
   }
-  return report.best_profile ?? null;
+}
+
+function formatExperimentSignificanceStatus(status: ExperimentSignificanceStatus): string {
+  switch (status) {
+    case 'improved':
+      return 'improved';
+    case 'regressed':
+      return 'regressed';
+    case 'insufficient_evidence':
+      return 'insufficient_evidence';
+    default:
+      return 'not_significant';
+  }
+}
+
+function formatExperimentHomogeneous(value: boolean | undefined): string {
+  if (value === true) return 'yes';
+  if (value === false) return 'no';
+  return '-';
 }
 
 function getExperimentDisplayRows(report: ExperimentReportData): ExperimentSummaryRow[] {
@@ -261,11 +464,25 @@ function getExperimentDisplayRows(report: ExperimentReportData): ExperimentSumma
 
 function canUseExperimentAsDefault(report: ExperimentReportData): boolean {
   const suiteTier = getExperimentSuiteTier(report);
+  const readiness = getExperimentPromotionReadiness(report);
+  if (readiness) {
+    return readiness === 'promotable'
+      && getExperimentOfficialStatus(report) === 'available'
+      && suiteTier !== 'smoke'
+      && suiteTier !== 'regression';
+  }
   return getExperimentOfficialStatus(report) === 'available' && suiteTier !== 'smoke' && suiteTier !== 'regression';
 }
 
 function getExperimentDefaultDisabledReason(report: ExperimentReportData): string {
   const suiteTier = getExperimentSuiteTier(report);
+  const readiness = getExperimentPromotionReadiness(report);
+  if (readiness === 'blocked') {
+    return 'benchmark governance 标记为 blocked，当前结果不能设为默认';
+  }
+  if (readiness === 'provisional') {
+    return 'benchmark governance 仍为 provisional，需等待后续 judge/significance 验收';
+  }
   if (getExperimentOfficialStatus(report) !== 'available') {
     return '当前实验没有 strict official 结论';
   }
@@ -276,6 +493,50 @@ function getExperimentDefaultDisabledReason(report: ExperimentReportData): strin
     return 'A/B regression 结果只用于回归判断，不能直接设为默认';
   }
   return '';
+}
+
+function getExperimentGovernanceNote(report: ExperimentReportData): string | null {
+  const governance = report.benchmark_governance;
+  if (!governance) {
+    if (report.benchmark_significance || report.benchmark_judge_summary || report.benchmark_pack) {
+      return 'benchmark governance summary is missing, so this report should be treated as observed evidence only';
+    }
+    return null;
+  }
+
+  if (governance.official_benchmark_status !== 'available') {
+    return 'strict official benchmark evidence is unavailable, so this report remains observed evidence only';
+  }
+
+  if (governance.benchmark_homogeneous === false) {
+    return 'clean benchmark evidence is not homogeneous across replicas, so promotion stays non-promotable';
+  }
+
+  if (governance.promotion_readiness === 'blocked') {
+    if (governance.significance_status === 'regressed') {
+      return 'governance is blocked by a benchmark regression signal';
+    }
+    return 'governance is blocked, so the official winner must not be used as a default candidate';
+  }
+
+  if (governance.promotion_readiness === 'provisional') {
+    if (governance.significance_status === 'insufficient_evidence') {
+      return 'governance is still provisional because significance evidence is insufficient';
+    }
+    if (governance.significance_status === 'not_significant') {
+      return 'governance is still provisional because benchmark improvement is not significant yet';
+    }
+    if (!report.benchmark_significance) {
+      return 'governance is still provisional because the significance summary is not emitted yet';
+    }
+    return 'governance is still provisional and requires more evidence or review';
+  }
+
+  if (governance.promotion_readiness === 'promotable') {
+    return 'governance is promotable; only the strict official winner can be used as the default candidate';
+  }
+
+  return null;
 }
 
 function formatExperimentSuiteTier(suiteTier: ExperimentSuiteTier): string {
@@ -1064,9 +1325,17 @@ export default function TrainingPage() {
             {experimentReports.map((item) => {
               const suiteTier = getExperimentSuiteTier(item.report);
               const officialStatus = getExperimentOfficialStatus(item.report);
-              const recommendedProfile = getExperimentPrimaryProfile(item.report);
+              const promotionReadiness = getExperimentPromotionReadiness(item.report);
+              const benchmarkPackLabel = getExperimentBenchmarkPackLabel(item.report);
+              const significanceStatus = item.report.benchmark_governance?.significance_status;
+              const scorecardMode = formatExperimentScorecardMode(item.report);
+              const disagreementRate = getExperimentJudgeDisagreementRate(item.report);
+              const disputedCaseCount = getExperimentDisputedCaseCount(item.report);
+              const officialWinner = getExperimentOfficialWinner(item.report);
               const displayRows = getExperimentDisplayRows(item.report);
-              const canSetDefault = canUseExperimentAsDefault(item.report) && Boolean(recommendedProfile);
+              const defaultCandidate = canUseExperimentAsDefault(item.report) ? officialWinner : null;
+              const governanceNote = getExperimentGovernanceNote(item.report);
+              const canSetDefault = Boolean(defaultCandidate);
               const disabledReason = getExperimentDefaultDisabledReason(item.report);
 
               return (
@@ -1080,7 +1349,7 @@ export default function TrainingPage() {
                         {new Date(item.report.generated_at).toLocaleString()}
                       </p>
                       <p className="text-[12px] text-[oklch(0.58_0_0)] mt-0.5">
-                        rounds/profile: {item.report.rounds_per_profile} · best: {item.report.best_profile ?? '-'} · strict official: {recommendedProfile ?? '-'}
+                        rounds/profile: {item.report.rounds_per_profile} · observed best: {item.report.best_profile ?? '-'} · official winner: {officialWinner ?? '-'} · default candidate: {defaultCandidate ?? 'gated'}
                       </p>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.02_240)] text-[oklch(0.36_0.1_240)]">
@@ -1095,6 +1364,31 @@ export default function TrainingPage() {
                         >
                           {formatExperimentOfficialStatus(item.report)}
                         </span>
+                        {benchmarkPackLabel && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.01_220)] text-[oklch(0.34_0.07_220)]">
+                            pack: {benchmarkPackLabel}
+                          </span>
+                        )}
+                        {promotionReadiness && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.97_0.01_80)] text-[oklch(0.42_0.07_80)]">
+                            governance: {formatExperimentPromotionReadiness(promotionReadiness)}
+                          </span>
+                        )}
+                        {scorecardMode && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.01_120)] text-[oklch(0.33_0.09_120)]">
+                            scorecards: {scorecardMode}
+                          </span>
+                        )}
+                        {significanceStatus && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.96_0.01_180)] text-[oklch(0.34_0.07_180)]">
+                            significance: {formatExperimentSignificanceStatus(significanceStatus)}
+                          </span>
+                        )}
+                        {typeof disputedCaseCount === 'number' && (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.97_0.01_40)] text-[oklch(0.44_0.05_40)]">
+                            disputed cases: {disputedCaseCount}
+                          </span>
+                        )}
                         {item.report.evaluation_v2?.compatible_official_fallback_used && (
                           <span className="text-[11px] px-2 py-0.5 rounded-full bg-[oklch(0.97_0.01_40)] text-[oklch(0.44_0.05_40)]">
                             observed fallback kept for compatibility
@@ -1114,12 +1408,12 @@ export default function TrainingPage() {
                         {expandedExperiment === item.filename ? '收起' : '展开'}
                       </button>
                       <button
-                        onClick={() => recommendedProfile && setAsDefaultTrainingProfile(recommendedProfile)}
-                        disabled={!canSetDefault || savingProfile === recommendedProfile}
+                        onClick={() => defaultCandidate && setAsDefaultTrainingProfile(defaultCandidate)}
+                        disabled={!canSetDefault || savingProfile === defaultCandidate}
                         title={canSetDefault ? undefined : disabledReason}
                         className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-[oklch(0.85_0.03_142)] bg-[oklch(0.95_0.03_142)] text-[oklch(0.3_0.12_142)] hover:bg-[oklch(0.93_0.03_142)] disabled:opacity-60"
                       >
-                        {recommendedProfile ? `设默认(${recommendedProfile})` : '设默认不可用'}
+                        {defaultCandidate ? `设默认(${defaultCandidate})` : '设默认不可用'}
                       </button>
                       <button
                         onClick={() => downloadExperimentJson(item)}
@@ -1136,7 +1430,13 @@ export default function TrainingPage() {
                     </div>
                   </div>
 
-                  {disabledReason && (
+                  {governanceNote && (
+                    <p className="mt-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                      治理说明：{governanceNote}
+                    </p>
+                  )}
+
+                  {!governanceNote && disabledReason && (
                     <p className="mt-2 text-[11.5px] text-[oklch(0.56_0_0)]">
                       默认推荐限制：{disabledReason}
                     </p>
@@ -1147,6 +1447,34 @@ export default function TrainingPage() {
                       <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
                         当前表格展示：{officialStatus === 'available' ? 'strict official rows' : 'observed rows'}
                       </p>
+                      {item.report.benchmark_governance && (
+                        <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                          benchmark governance：official={officialStatus} ·
+                          promotion={promotionReadiness ? formatExperimentPromotionReadiness(promotionReadiness) : '-'} ·
+                          judge={item.report.benchmark_governance.judge_mode ?? '-'} ·
+                          clean replicas={item.report.benchmark_governance.clean_replica_count ?? '-'} ·
+                          homogeneous={formatExperimentHomogeneous(item.report.benchmark_governance.benchmark_homogeneous)} ·
+                          disagreement={formatPercentValue(disagreementRate)}
+                        </p>
+                      )}
+                      {item.report.benchmark_judge_summary && (
+                        <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                          benchmark judge：mode={item.report.benchmark_judge_summary.judge_mode ?? item.report.benchmark_governance?.judge_mode ?? '-'} ·
+                          scorecards={scorecardMode ?? '-'} ·
+                          disputed={typeof disputedCaseCount === 'number' ? disputedCaseCount : '-'} ·
+                          disagreement={formatPercentValue(disagreementRate)}
+                        </p>
+                      )}
+                      {item.report.benchmark_significance && (
+                        <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                          benchmark significance：{formatBenchmarkSignificanceInline(item.report.benchmark_significance)}
+                        </p>
+                      )}
+                      {!item.report.benchmark_significance && significanceStatus && (
+                        <p className="mb-2 text-[11.5px] text-[oklch(0.56_0_0)]">
+                          benchmark significance：{formatExperimentSignificanceStatus(significanceStatus)} · summary not emitted
+                        </p>
+                      )}
                       <table className="w-full text-[12.5px]">
                         <thead>
                           <tr className="text-left text-[oklch(0.55_0_0)] border-b border-[oklch(0.92_0_0)]">
@@ -1162,10 +1490,18 @@ export default function TrainingPage() {
                         </thead>
                         <tbody>
                           {displayRows.map((r) => {
-                            const rowCanSetDefault = canSetDefault && r.profile === recommendedProfile;
+                            const rowCanSetDefault = canSetDefault && r.profile === defaultCandidate;
+                            const rowBenchmarkSummary = formatRowBenchmarkSummary(r);
                             return (
                               <tr key={`${item.filename}-${r.profile}`} className="border-b border-[oklch(0.95_0_0)]">
-                                <td className="py-2 pr-3">{r.profile}</td>
+                                <td className="py-2 pr-3">
+                                  <div>{r.profile}</div>
+                                  {rowBenchmarkSummary && (
+                                    <div className="text-[11px] text-[oklch(0.56_0_0)]">
+                                      {rowBenchmarkSummary}
+                                    </div>
+                                  )}
+                                </td>
                                 <td className="py-2 pr-3">{r.totalRounds}</td>
                                 <td className="py-2 pr-3">{(r.avgQuality * 100).toFixed(1)}%</td>
                                 <td className="py-2 pr-3">{(r.contradictionRate * 100).toFixed(1)}%</td>

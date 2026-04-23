@@ -8,6 +8,7 @@ import { checkConvergence, ConvergenceState } from './convergence.js';
 import { TrainingPolicy } from './policy.js';
 import { GovernanceDecision, MemoryGovernance } from './governance.js';
 import { RoundObservability, TrainingProfile, TrainingQuestion } from './types.js';
+import type { BenchmarkRunCaseTrace } from './benchmark-judge.js';
 import { settings } from '../../config/settings.js';
 import { computeCoverageByOrigin, loadSkillLibrary } from '../skills/library.js';
 import { PersonaSkillLibrary } from '../skills/types.js';
@@ -49,6 +50,7 @@ export interface TrainingProgress {
     directorDecisionSource: 'llm' | 'fallback' | 'heuristic_skip';
   };
   question_trace: TrainingQuestion[];
+  evaluation_trace: BenchmarkRunCaseTrace[];
   status: 'running' | 'converged' | 'max_rounds_reached';
 }
 
@@ -159,6 +161,7 @@ export class TrainingLoop {
       // ── Step 2: Run conversations + evaluate ───────────────────────────────
       const dialogueEvalStartedAt = Date.now();
       const roundEvaluations: Evaluation[] = [];
+      const evaluationTrace: BenchmarkRunCaseTrace[] = [];
       const dimensionCoverage = new Set<string>();
       let nodesWrittenThisRound = 0;
       let nodesReinforcedThisRound = 0;
@@ -173,7 +176,8 @@ export class TrainingLoop {
         working: 0,
       };
 
-      for (const qItem of questionSet) {
+      for (let index = 0; index < questionSet.length; index += 1) {
+        const qItem = questionSet[index]!;
         dimensionCoverage.add(qItem.target_dimension);
         const trainingResponse = await this.personaAgent.respond(qItem.question, [], {
           maxTokens: runtime.personaMaxTokens,
@@ -203,6 +207,22 @@ export class TrainingLoop {
         );
 
         roundEvaluations.push(evaluation);
+        evaluationTrace.push({
+          round,
+          ordinal: index + 1,
+          question: qItem.question,
+          strategy: qItem.strategy,
+          target_dimension: qItem.target_dimension,
+          expected_challenge_level: qItem.expected_challenge_level,
+          response: trainingResponse,
+          proxy_evaluation: {
+            consistency_score: evaluation.consistency_score,
+            authenticity_score: evaluation.authenticity_score,
+            depth_score: evaluation.depth_score,
+            overall_score: evaluation.overall_score,
+            verdict: evaluation.verdict,
+          },
+        });
 
         // ── Step 3: Apply evaluation verdicts ──────────────────────────────
         if (evaluation.verdict === 'write') {
@@ -370,6 +390,7 @@ export class TrainingLoop {
           directorDecisionSource: directorDecision.decision_source,
         },
         question_trace: questionSet.map((item) => ({ ...item })),
+        evaluation_trace: evaluationTrace,
         status: 'running',
       };
 

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "method": "paired_bootstrap",
+  "metric": "benchmark_overall",
+  "bootstrap_samples": 2000,
+  "scenarios": [
+    {
+      "name": "improved",
+      "replicas_a": [0.61, 0.62, 0.6],
+      "replicas_b": [0.72, 0.71, 0.73],
+      "expected": {
+        "significant": true,
+        "favors": "b",
+        "status": "improved"
+      }
+    },
+    {
+      "name": "regressed",
+      "replicas_a": [0.82, 0.81, 0.83],
+      "replicas_b": [0.71, 0.69, 0.7],
+      "expected": {
+        "significant": true,
+        "favors": "a",
+        "status": "regressed"
+      }
+    },
+    {
+      "name": "not_significant",
+      "replicas_a": [0.75, 0.74, 0.76],
+      "replicas_b": [0.76, 0.73, 0.75],
+      "expected": {
+        "significant": false,
+        "favors": "neither",
+        "status": "not_significant"
+      }
+    },
+    {
+      "name": "insufficient_evidence",
+      "replicas_a": [0.77],
+      "replicas_b": [0.79],
+      "expected": {
+        "significant": false,
+        "favors": "neither",
+        "status": "insufficient_evidence"
+      }
+    }
+  ]
+}

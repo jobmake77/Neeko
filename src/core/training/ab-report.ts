@@ -1,4 +1,11 @@
 import { TrainingProfile } from './types.js';
+import type { BenchmarkPackSummary } from './benchmark-pack.js';
+import type {
+  BenchmarkCaseSummary,
+  BenchmarkJudgeDisagreement,
+  BenchmarkJudgeSummary,
+  BenchmarkScorecard,
+} from './benchmark-judge.js';
 import type {
   BenchmarkCaseManifest,
   BenchmarkContext,
@@ -9,6 +16,11 @@ import type {
   FrozenBenchmarkCaseManifest,
   JudgeProvenance,
 } from './evaluation-v2.js';
+import type {
+  BenchmarkGovernanceSummary,
+  BenchmarkReplicaSummary,
+  BenchmarkSignificanceSummary,
+} from './significance.js';
 
 export interface ExperimentSummaryRow {
   profile: TrainingProfile;
@@ -21,6 +33,12 @@ export interface ExperimentSummaryRow {
   contamination?: EvaluationContamination;
   scorecard?: EvaluationScorecard;
   judge_provenance?: JudgeProvenance;
+  benchmark_scorecard?: BenchmarkScorecard;
+  benchmark_case_summary?: BenchmarkCaseSummary;
+  benchmark_judge_summary?: BenchmarkJudgeSummary;
+  benchmark_judge_disagreement?: BenchmarkJudgeDisagreement;
+  benchmark_replica_summary?: BenchmarkReplicaSummary;
+  benchmark_governance?: BenchmarkGovernanceSummary;
   benchmark_context?: BenchmarkContext;
   runtime_observability?: {
     trainer_fallbacks: number;
@@ -56,6 +74,7 @@ export interface AbComparisonReport {
   report_quality: 'complete' | 'timeout_limited';
   group_a: TrainingProfile;
   group_b: TrainingProfile;
+  benchmark_pack?: BenchmarkPackSummary;
   benchmark_context?: BenchmarkContext;
   benchmark_manifests?: BenchmarkCaseManifest[];
   benchmark_case_manifests?: FrozenBenchmarkCaseManifest[];
@@ -88,6 +107,31 @@ export interface AbComparisonReport {
     a: EvaluationScorecard | null;
     b: EvaluationScorecard | null;
   };
+  benchmark_scorecards?: {
+    a: BenchmarkScorecard | null;
+    b: BenchmarkScorecard | null;
+  };
+  benchmark_case_summaries?: {
+    a: BenchmarkCaseSummary | null;
+    b: BenchmarkCaseSummary | null;
+  };
+  benchmark_judge_summaries?: {
+    a: BenchmarkJudgeSummary | null;
+    b: BenchmarkJudgeSummary | null;
+  };
+  benchmark_judge_disagreements?: {
+    a: BenchmarkJudgeDisagreement | null;
+    b: BenchmarkJudgeDisagreement | null;
+  };
+  benchmark_replica_summaries?: {
+    a: BenchmarkReplicaSummary | null;
+    b: BenchmarkReplicaSummary | null;
+  };
+  benchmark_significance?: BenchmarkSignificanceSummary | null;
+  benchmark_governance?: BenchmarkGovernanceSummary | null;
+  artifact_refs?: {
+    benchmark_summary_path?: string;
+  };
   gate_result: GateResult;
 }
 
@@ -100,6 +144,7 @@ export function evaluateGate(
     maxDuplicationRise: number;
     baselineProfile?: TrainingProfile;
     compareProfile?: TrainingProfile;
+    benchmarkGovernance?: BenchmarkGovernanceSummary | null;
   }
 ): GateResult {
   const baselineProfile = cfg.baselineProfile ?? 'baseline';
@@ -154,21 +199,25 @@ export function evaluateGate(
   const qualityOk = qualityDrop <= cfg.maxQualityDrop;
   const contradictionOk = contradictionRise <= cfg.maxContradictionRise;
   const duplicationOk = duplicationRise <= cfg.maxDuplicationRise;
-  const passed = qualityOk && contradictionOk && duplicationOk;
+  const governance = cfg.benchmarkGovernance ?? null;
+  const governancePassed = !governance || governance.promotion_readiness === 'promotable';
+  const passed = qualityOk && contradictionOk && duplicationOk && governancePassed;
 
+  const failureReasons = [
+    !qualityOk ? `quality drop ${qualityDrop.toFixed(4)} > ${cfg.maxQualityDrop.toFixed(4)}` : null,
+    !contradictionOk
+      ? `contradiction rise ${contradictionRise.toFixed(4)} > ${cfg.maxContradictionRise.toFixed(4)}`
+      : null,
+    !duplicationOk
+      ? `duplication rise ${duplicationRise.toFixed(4)} > ${cfg.maxDuplicationRise.toFixed(4)}`
+      : null,
+    !governancePassed && governance
+      ? `benchmark governance=${governance.promotion_readiness} (${governance.reasons.join('; ') || governance.significance_status})`
+      : null,
+  ].filter(Boolean);
   const reason = passed
     ? `${compareProfile} is within regression thresholds vs ${baselineProfile}`
-    : [
-      !qualityOk ? `quality drop ${qualityDrop.toFixed(4)} > ${cfg.maxQualityDrop.toFixed(4)}` : null,
-      !contradictionOk
-        ? `contradiction rise ${contradictionRise.toFixed(4)} > ${cfg.maxContradictionRise.toFixed(4)}`
-        : null,
-      !duplicationOk
-        ? `duplication rise ${duplicationRise.toFixed(4)} > ${cfg.maxDuplicationRise.toFixed(4)}`
-        : null,
-    ]
-      .filter(Boolean)
-      .join('; ');
+    : failureReasons.join('; ');
 
   return {
     enabled: true,
@@ -198,10 +247,16 @@ export function buildAbComparisonReport(
     reportQuality?: 'complete' | 'timeout_limited';
     elapsedMs?: number;
     fastFailures?: Array<{ profile: TrainingProfile; error: string }>;
+    benchmarkPack?: BenchmarkPackSummary;
     benchmarkContext?: BenchmarkContext;
     benchmarkManifests?: BenchmarkCaseManifest[];
     benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
     benchmarkHomogeneity?: BenchmarkHomogeneitySummary;
+    benchmarkSignificance?: BenchmarkSignificanceSummary | null;
+    benchmarkGovernance?: BenchmarkGovernanceSummary | null;
+    artifactRefs?: {
+      benchmark_summary_path?: string;
+    };
   }
 ): AbComparisonReport {
   const a = rows.find((row) => row.profile === groupA);
@@ -216,6 +271,7 @@ export function buildAbComparisonReport(
     report_quality: options?.reportQuality ?? 'complete',
     group_a: groupA,
     group_b: groupB,
+    benchmark_pack: options?.benchmarkPack,
     benchmark_context: options?.benchmarkContext,
     benchmark_manifests: options?.benchmarkManifests,
     benchmark_case_manifests: options?.benchmarkCaseManifests,
@@ -248,6 +304,29 @@ export function buildAbComparisonReport(
       a: a.scorecard ?? null,
       b: b.scorecard ?? null,
     },
+    benchmark_scorecards: {
+      a: a.benchmark_scorecard ?? null,
+      b: b.benchmark_scorecard ?? null,
+    },
+    benchmark_case_summaries: {
+      a: a.benchmark_case_summary ?? null,
+      b: b.benchmark_case_summary ?? null,
+    },
+    benchmark_judge_summaries: {
+      a: a.benchmark_judge_summary ?? null,
+      b: b.benchmark_judge_summary ?? null,
+    },
+    benchmark_judge_disagreements: {
+      a: a.benchmark_judge_disagreement ?? null,
+      b: b.benchmark_judge_disagreement ?? null,
+    },
+    benchmark_replica_summaries: {
+      a: a.benchmark_replica_summary ?? null,
+      b: b.benchmark_replica_summary ?? null,
+    },
+    benchmark_significance: options?.benchmarkSignificance ?? null,
+    benchmark_governance: options?.benchmarkGovernance ?? null,
+    artifact_refs: options?.artifactRefs,
     gate_result: gateResult,
   };
 }

@@ -17,6 +17,7 @@ import {
   buildFrozenCaseManifest,
   buildJudgeProvenance,
   classifyEvaluationRun,
+  summarizeBenchmarkHomogeneity,
   toFrozenQuestionRounds,
   type BenchmarkCaseEntry,
   type BenchmarkCaseManifest,
@@ -30,6 +31,30 @@ import {
   type JudgeProvenance,
   type RuntimeFallbackSummary,
 } from '../../core/training/evaluation-v2.js';
+import {
+  collectBenchmarkRunCaseTraces,
+  judgeBenchmarkRun,
+  type BenchmarkCaseSummary,
+  type BenchmarkJudgeMode,
+  type BenchmarkJudgeDisagreement,
+  type BenchmarkJudgeSummary,
+  type BenchmarkRunJudgmentArtifact,
+  type BenchmarkScorecard,
+} from '../../core/training/benchmark-judge.js';
+import {
+  loadBenchmarkPack,
+  type LoadedBenchmarkPack,
+} from '../../core/training/benchmark-pack.js';
+import {
+  buildBenchmarkGovernanceSummary,
+  buildBenchmarkReplicaSummary,
+  computePairedBootstrapSignificance,
+  type BenchmarkGovernanceSummary,
+  type BenchmarkReplicaMeasurement,
+  type BenchmarkReplicaSummary,
+  type BenchmarkReportJudgeMode,
+  type BenchmarkSignificanceSummary,
+} from '../../core/training/significance.js';
 import { TrainingProfile, type TrainingQuestion } from '../../core/training/types.js';
 import { runModelPreflight } from '../../core/training/preflight.js';
 import {
@@ -77,6 +102,8 @@ export interface ExperimentRunResult {
   rows: ExperimentSummaryRow[];
   roundHistories: Record<string, ExperimentRoundHistoryItem[]>;
   benchmarkCaseManifests: FrozenBenchmarkCaseManifest[];
+  benchmarkJudgments: ExperimentBenchmarkRunArtifact[];
+  replicaMeasurements: Record<string, BenchmarkReplicaMeasurement[]>;
   failures?: Array<{ profile: TrainingProfile; error: string }>;
 }
 
@@ -107,6 +134,12 @@ interface InputRoutingComparisonRow {
   contamination: EvaluationContamination;
   scorecard: EvaluationScorecard;
   judge_provenance: JudgeProvenance;
+  benchmark_scorecard?: BenchmarkScorecard;
+  benchmark_case_summary?: BenchmarkCaseSummary;
+  benchmark_judge_summary?: BenchmarkJudgeSummary;
+  benchmark_judge_disagreement?: BenchmarkJudgeDisagreement;
+  benchmark_replica_summary?: BenchmarkReplicaSummary;
+  benchmark_governance?: BenchmarkGovernanceSummary;
   benchmark_context: BenchmarkContext;
   observability: InputRoutingObservability;
   scaling_observability?: {
@@ -134,6 +167,7 @@ interface InputRoutingComparisonSummary {
   routingDecisionRecord: RoutingDecisionRecord | null;
   rows: InputRoutingComparisonRow[];
   benchmarkCaseManifests: FrozenBenchmarkCaseManifest[];
+  benchmarkJudgments: ExperimentBenchmarkRunArtifact[];
 }
 
 interface CurrentGrayPathRecommendation {
@@ -164,6 +198,77 @@ interface BenchmarkReplayMeta {
   replay_manifest_count?: number;
 }
 
+interface ExperimentReportArtifactRefs {
+  benchmark_manifest_path: string;
+  benchmark_pack_path?: string;
+  benchmark_judgments_path?: string;
+  benchmark_summary_path?: string;
+  report_path: string;
+  report_csv_path: string;
+}
+
+interface ExperimentBenchmarkRunArtifact extends BenchmarkRunJudgmentArtifact {
+  run_label: string;
+  scope: 'profile_sweep' | 'routing_compare';
+  profile?: TrainingProfile;
+  variant?: string;
+  replica_id?: string;
+}
+
+interface ExperimentSingleRunResult {
+  row: ExperimentSummaryRow;
+  roundHistory: ExperimentRoundHistoryItem[];
+  benchmarkCaseManifest: FrozenBenchmarkCaseManifest | null;
+  benchmarkJudgment: ExperimentBenchmarkRunArtifact | null;
+  replicaMeasurement: BenchmarkReplicaMeasurement;
+  failure?: string;
+}
+
+interface BenchmarkAggregationResult {
+  row: ExperimentSummaryRow;
+  roundHistory: ExperimentRoundHistoryItem[];
+  benchmarkCaseManifests: FrozenBenchmarkCaseManifest[];
+  benchmarkJudgments: ExperimentBenchmarkRunArtifact[];
+  replicaMeasurements: BenchmarkReplicaMeasurement[];
+}
+
+interface ExperimentReportInput {
+  slug: string;
+  profiles?: TrainingProfile[];
+  reportRounds?: number;
+  reportQuestionsPerRound?: number;
+  rows?: ExperimentSummaryRow[];
+  summary_rows?: ExperimentSummaryRow[];
+  strictOfficialSummaryRows?: ExperimentSummaryRow[];
+  official_summary_rows?: ExperimentSummaryRow[];
+  compatibleOfficialSummaryRows?: ExperimentSummaryRow[];
+  observedBestProfile?: TrainingProfile | null;
+  effectiveBestProfile?: TrainingProfile | null;
+  roundHistories?: Record<string, ExperimentRoundHistoryItem[]>;
+  failures?: Array<{ profile: TrainingProfile; error: string }>;
+  effectiveInputRouting?: InputRoutingStrategy;
+  providerName?: string;
+  kimiStabilityMode?: string;
+  effectiveTrainingSeedMode?: TrainingSeedMode;
+  inputRoutingComparison?: InputRoutingComparisonSummary;
+  strictOfficialComparisonRows?: InputRoutingComparisonRow[];
+  compatibleOfficialComparisonRows?: InputRoutingComparisonRow[];
+  currentGrayPathRecommendation?: CurrentGrayPathRecommendation;
+  benchmarkManifests?: BenchmarkCaseManifest[];
+  benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
+  benchmarkJudgments?: ExperimentBenchmarkRunArtifact[];
+  benchmarkReplayMeta?: BenchmarkReplayMeta;
+  artifactRefs?: ExperimentReportArtifactRefs;
+  artifact_refs?: ExperimentReportArtifactRefs;
+  gateResult?: ReturnType<typeof evaluateGate>;
+  officialPack?: LoadedBenchmarkPack | null;
+  benchmark_pack?: LoadedBenchmarkPack['summary'];
+  benchmarkSignificance?: BenchmarkSignificanceSummary | null;
+  benchmarkGovernance?: BenchmarkGovernanceSummary | null;
+  benchmark_significance?: BenchmarkSignificanceSummary | null;
+  benchmark_governance?: BenchmarkGovernanceSummary | null;
+}
+
 const EXPERIMENT_PROFILE_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_PROFILE_TIMEOUT_MS ?? 90_000);
 const EXPERIMENT_COMPARISON_TIMEOUT_MS = Number(process.env.NEEKO_EXPERIMENT_COMPARISON_TIMEOUT_MS ?? 0);
 
@@ -174,6 +279,255 @@ function selectCompatibleOfficialRows<T extends { run_quality?: EvaluationRunQua
 
 function selectStrictOfficialRows<T extends { run_quality?: EvaluationRunQuality }>(rows: T[]): T[] {
   return rows.filter((row) => row.run_quality === 'clean');
+}
+
+function buildExperimentReport(input: ExperimentReportInput) {
+  const rows = input.rows ?? input.summary_rows ?? [];
+  const strictOfficialSummaryRows = input.strictOfficialSummaryRows ?? input.official_summary_rows ?? [];
+  const compatibleOfficialSummaryRows = input.compatibleOfficialSummaryRows ?? strictOfficialSummaryRows;
+  const inputRoutingComparison = input.inputRoutingComparison ?? {
+    rows: [],
+    recommendation: null,
+    dynamicScalingRecommendation: null,
+    routingDecisionRecord: null,
+    benchmarkCaseManifests: [],
+    benchmarkJudgments: [],
+  };
+  const strictOfficialComparisonRows = input.strictOfficialComparisonRows ?? [];
+  const compatibleOfficialComparisonRows = input.compatibleOfficialComparisonRows ?? strictOfficialComparisonRows;
+  const benchmarkManifests = input.benchmarkManifests ?? [];
+  const benchmarkCaseManifests = input.benchmarkCaseManifests ?? [];
+  const benchmarkJudgments = input.benchmarkJudgments ?? [];
+  const benchmarkReplayMeta = input.benchmarkReplayMeta ?? { active: false };
+  const artifactRefs = input.artifactRefs ?? input.artifact_refs ?? {
+    benchmark_manifest_path: '',
+    report_path: '',
+    report_csv_path: '',
+  };
+  const gateResult = input.gateResult ?? {
+    enabled: false,
+    passed: true,
+    reason: 'gate disabled',
+    baseline_profile: 'baseline' as TrainingProfile,
+    compare_profile: 'full' as TrainingProfile,
+  };
+  const benchmarkPack = input.benchmark_pack ?? input.officialPack?.summary;
+  const profiles = input.profiles ?? [...new Set(rows.map((row) => row.profile))];
+  const effectiveInputRouting = input.effectiveInputRouting ?? 'legacy';
+  const effectiveTrainingSeedMode = input.effectiveTrainingSeedMode ?? 'off';
+  const currentGrayPathRecommendation = input.currentGrayPathRecommendation ?? {
+    version: 'test',
+    safe_default: {
+      input_routing: 'legacy',
+      training_seed_mode: 'off',
+    },
+    recommended_gray_path: {
+      input_routing: 'legacy',
+      training_seed_mode: 'off',
+    },
+    summary: 'test helper default',
+  };
+  const benchmarkReportRows = collectBenchmarkReportRows(rows, inputRoutingComparison.rows);
+  const benchmarkJudgeSummary = buildExperimentBenchmarkJudgeSummary(
+    benchmarkReportRows,
+    benchmarkPack?.pack_id,
+    benchmarkPack?.pack_version
+  );
+  const benchmarkReplicaSummaries = collectBenchmarkReplicaRows(rows, inputRoutingComparison.rows);
+
+  return {
+    schema_version: 2,
+    generated_at: new Date().toISOString(),
+    slug: input.slug,
+    rounds_per_profile: input.reportRounds ?? 0,
+    profiles,
+    questions_per_round: input.reportQuestionsPerRound ?? 0,
+    summary_rows: rows,
+    official_summary_rows: strictOfficialSummaryRows,
+    best_profile: input.effectiveBestProfile ?? null,
+    observed_best_profile: input.observedBestProfile ?? null,
+    round_histories: input.roundHistories ?? {},
+    failures: input.failures ?? [],
+    input_routing_strategy: effectiveInputRouting,
+    provider: input.providerName,
+    kimi_stability_mode: input.kimiStabilityMode ?? 'auto',
+    training_seed_mode: effectiveTrainingSeedMode,
+    input_routing_comparison: inputRoutingComparison.rows,
+    official_input_routing_comparison: strictOfficialComparisonRows,
+    benchmark_pack: benchmarkPack,
+    benchmark_scorecards: benchmarkReportRows.map((item) => ({
+      label: item.label,
+      scope: item.scope,
+      profile: item.profile,
+      overall: item.scorecard.overall,
+      pass_rate: item.scorecard.pass_rate,
+      abstain_rate: item.scorecard.abstain_rate,
+      disputed_rate: item.scorecard.disputed_rate,
+      case_count: item.scorecard.case_count,
+      scorecard: item.scorecard,
+      case_summary: item.caseSummary,
+      judge_summary: item.judgeSummary,
+      disagreement: item.disagreement,
+    })),
+    benchmark_replica_summaries: benchmarkReplicaSummaries,
+    benchmark_judge_summary: benchmarkJudgeSummary,
+    benchmark_significance: input.benchmarkSignificance ?? input.benchmark_significance ?? null,
+    benchmark_governance: input.benchmarkGovernance ?? input.benchmark_governance ?? null,
+    input_routing_recommendation: inputRoutingComparison.recommendation,
+    dynamic_scaling_recommendation: inputRoutingComparison.dynamicScalingRecommendation,
+    routing_decision_record: inputRoutingComparison.routingDecisionRecord,
+    current_gray_path_recommendation: currentGrayPathRecommendation,
+    benchmark_manifests: benchmarkManifests,
+    benchmark_case_manifests: benchmarkCaseManifests,
+    benchmark_judgments: benchmarkJudgments,
+    benchmark_replay: benchmarkReplayMeta,
+    artifact_refs: artifactRefs,
+    evaluation_v2: {
+      version: 'evaluation-v2-p2',
+      smoke_mode: (input.reportRounds ?? 0) === 1 && (input.reportQuestionsPerRound ?? 0) === 1,
+      official_status: strictOfficialSummaryRows.length > 0 || strictOfficialComparisonRows.length > 0 ? 'available' : 'unavailable',
+      official_best_profile: input.effectiveBestProfile ?? null,
+      observed_best_profile: input.observedBestProfile ?? null,
+      official_run_count: strictOfficialSummaryRows.length + strictOfficialComparisonRows.length,
+      contaminated_run_count:
+        rows.filter((row) => row.run_quality === 'contaminated').length +
+        inputRoutingComparison.rows.filter((row) => row.run_quality === 'contaminated').length,
+      failed_run_count:
+        rows.filter((row) => row.run_quality === 'failed').length +
+        inputRoutingComparison.rows.filter((row) => row.run_quality === 'failed').length,
+      inconclusive_run_count:
+        rows.filter((row) => row.run_quality === 'inconclusive').length +
+        inputRoutingComparison.rows.filter((row) => row.run_quality === 'inconclusive').length,
+      compatible_official_fallback_used:
+        compatibleOfficialSummaryRows.length !== strictOfficialSummaryRows.length ||
+        compatibleOfficialComparisonRows.length !== strictOfficialComparisonRows.length,
+      official_pack_id: benchmarkPack?.pack_id,
+      official_pack_version: benchmarkPack?.pack_version,
+      suite_types_present: [...new Set(benchmarkManifests.map((item) => item.suite_label.split(':')[0]))],
+      suite_tiers_present: [...new Set(benchmarkManifests.map((item) => item.suite_tier))],
+    },
+    gate_result: gateResult,
+  };
+}
+
+function collectBenchmarkReplicaRows(
+  rows: ExperimentSummaryRow[],
+  comparisonRows: InputRoutingComparisonRow[]
+) {
+  const fromSummaryRows = rows
+    .filter((row): row is ExperimentSummaryRow & {
+      benchmark_replica_summary: BenchmarkReplicaSummary;
+    } => Boolean(row.benchmark_replica_summary))
+    .map((row) => ({
+      label: row.profile,
+      scope: 'profile_sweep' as const,
+      profile: row.profile,
+      replica_summary: row.benchmark_replica_summary,
+    }));
+
+  const fromComparisonRows = comparisonRows
+    .filter((row): row is InputRoutingComparisonRow & {
+      benchmark_replica_summary: BenchmarkReplicaSummary;
+    } => Boolean(row.benchmark_replica_summary))
+    .map((row) => ({
+      label: row.label,
+      scope: 'routing_compare' as const,
+      profile: row.profile,
+      replica_summary: row.benchmark_replica_summary,
+    }));
+
+  return [...fromSummaryRows, ...fromComparisonRows];
+}
+
+function collectBenchmarkReportRows(
+  rows: ExperimentSummaryRow[],
+  comparisonRows: InputRoutingComparisonRow[]
+): Array<{
+  label: string;
+  scope: 'profile_sweep' | 'routing_compare';
+  profile: TrainingProfile;
+  scorecard: BenchmarkScorecard;
+  caseSummary: BenchmarkCaseSummary;
+  judgeSummary: BenchmarkJudgeSummary;
+  disagreement: BenchmarkJudgeDisagreement;
+}> {
+  const fromSummaryRows = rows
+    .filter((row): row is ExperimentSummaryRow & {
+      benchmark_scorecard: BenchmarkScorecard;
+      benchmark_case_summary: BenchmarkCaseSummary;
+      benchmark_judge_summary: BenchmarkJudgeSummary;
+      benchmark_judge_disagreement: BenchmarkJudgeDisagreement;
+    } => Boolean(
+      row.benchmark_scorecard &&
+      row.benchmark_case_summary &&
+      row.benchmark_judge_summary &&
+      row.benchmark_judge_disagreement
+    ))
+    .map((row) => ({
+      label: row.profile,
+      scope: 'profile_sweep' as const,
+      profile: row.profile,
+      scorecard: row.benchmark_scorecard,
+      caseSummary: row.benchmark_case_summary,
+      judgeSummary: row.benchmark_judge_summary,
+      disagreement: row.benchmark_judge_disagreement,
+    }));
+
+  const fromComparisonRows = comparisonRows
+    .filter((row): row is InputRoutingComparisonRow & {
+      benchmark_scorecard: BenchmarkScorecard;
+      benchmark_case_summary: BenchmarkCaseSummary;
+      benchmark_judge_summary: BenchmarkJudgeSummary;
+      benchmark_judge_disagreement: BenchmarkJudgeDisagreement;
+    } => Boolean(
+      row.benchmark_scorecard &&
+      row.benchmark_case_summary &&
+      row.benchmark_judge_summary &&
+      row.benchmark_judge_disagreement
+    ))
+    .map((row) => ({
+      label: row.label,
+      scope: 'routing_compare' as const,
+      profile: row.profile,
+      scorecard: row.benchmark_scorecard,
+      caseSummary: row.benchmark_case_summary,
+      judgeSummary: row.benchmark_judge_summary,
+      disagreement: row.benchmark_judge_disagreement,
+    }));
+
+  return [...fromSummaryRows, ...fromComparisonRows];
+}
+
+function buildExperimentBenchmarkJudgeSummary(
+  rows: ReturnType<typeof collectBenchmarkReportRows>,
+  packId?: string,
+  packVersion?: string
+) {
+  const judgedRowCount = rows.length;
+  const disputedCaseCount = rows.reduce((sum, item) => sum + item.caseSummary.disputed_case_count, 0);
+  const disagreementRateMean = judgedRowCount === 0
+    ? 0
+    : rows.reduce((sum, item) => sum + item.disagreement.disagreement_rate, 0) / judgedRowCount;
+
+  return {
+    version: 'benchmark-judge-report-summary-v1',
+    available: judgedRowCount > 0,
+    pack_id: packId ?? null,
+    pack_version: packVersion ?? null,
+    row_count: judgedRowCount,
+    disputed_case_count: disputedCaseCount,
+    disagreement_rate_mean: disagreementRateMean,
+    judge_modes: [...new Set(rows.map((item) => item.judgeSummary.judge_mode))],
+    rows: rows.map((item) => ({
+      label: item.label,
+      scope: item.scope,
+      profile: item.profile,
+      overall: item.scorecard.overall,
+      pass_rate: item.scorecard.pass_rate,
+      disputed_case_count: item.caseSummary.disputed_case_count,
+      disagreement_rate: item.disagreement.disagreement_rate,
+    })),
+  };
 }
 
 function computeObservedBestProfile(rows: ExperimentSummaryRow[]): TrainingProfile | null {
@@ -241,7 +595,8 @@ function inferSuiteTypeFromManifest(manifest: FrozenBenchmarkCaseManifest): Benc
     suiteType === 'profile_sweep' ||
     suiteType === 'routing_compare' ||
     suiteType === 'smoke_pk' ||
-    suiteType === 'ab_regression'
+    suiteType === 'ab_regression' ||
+    suiteType === 'official_benchmark'
   ) {
     return suiteType;
   }
@@ -341,10 +696,22 @@ function buildExperimentBenchmarkArtifacts(input: {
   history?: TrainingProgress[];
   providerName?: string;
   executionSettings: TrainingExecutionSettings;
+  officialPack?: LoadedBenchmarkPack | null;
 }): {
   benchmarkContext: BenchmarkContext;
   benchmarkCaseManifest: FrozenBenchmarkCaseManifest | null;
 } {
+  if (input.officialPack) {
+    const manifest = withReplicaIdentity(input.officialPack.frozen_manifest, input.replicaGroup, input.replicaId);
+    return {
+      benchmarkContext: {
+        ...input.officialPack.benchmark_context,
+        case_manifest: manifest.manifest,
+      },
+      benchmarkCaseManifest: manifest,
+    };
+  }
+
   const cases = buildBenchmarkCaseEntries(input.history ?? []);
   if (cases.length === 0) {
     return {
@@ -400,6 +767,91 @@ function buildExperimentBenchmarkArtifacts(input: {
   };
 }
 
+function withReplicaIdentity(
+  manifest: FrozenBenchmarkCaseManifest,
+  replicaGroup?: string,
+  replicaId?: string
+): FrozenBenchmarkCaseManifest {
+  if (!replicaGroup && !replicaId) {
+    return manifest;
+  }
+  return {
+    manifest: {
+      ...manifest.manifest,
+      replayable: true,
+      replay_mode: replicaGroup ? 'replica_summary' : manifest.manifest.replay_mode,
+      replica_group: replicaGroup,
+      replica_id: replicaId,
+    },
+    cases: manifest.cases.map((item) => ({ ...item })),
+  };
+}
+
+function normalizeJudgeMode(input?: string): BenchmarkReportJudgeMode {
+  const value = String(input ?? 'both').trim().toLowerCase();
+  if (
+    value === 'proxy' ||
+    value === 'benchmark_single' ||
+    value === 'benchmark_dual' ||
+    value === 'both'
+  ) {
+    return value;
+  }
+  throw new Error('Invalid judge mode. Use proxy|benchmark_single|benchmark_dual|both');
+}
+
+function shouldRunBenchmarkJudge(mode?: BenchmarkReportJudgeMode): boolean {
+  return mode !== 'proxy';
+}
+
+function resolveDualJudgeMode(mode?: BenchmarkReportJudgeMode): boolean {
+  return mode !== 'benchmark_single' && mode !== 'proxy';
+}
+
+function resolveOfficialReplicaCount(
+  requestedReplicas: number | undefined,
+  officialPack?: LoadedBenchmarkPack | null
+): number {
+  if (typeof requestedReplicas === 'number' && Number.isFinite(requestedReplicas)) {
+    return Math.max(1, Math.floor(requestedReplicas));
+  }
+  if (officialPack?.definition.default_replicas) {
+    return Math.max(1, officialPack.definition.default_replicas);
+  }
+  return 1;
+}
+
+async function buildBenchmarkJudgeArtifactForRun(input: {
+  pack?: LoadedBenchmarkPack | null;
+  history?: TrainingProgress[];
+  runLabel: string;
+  scope: 'profile_sweep' | 'routing_compare';
+  profile?: TrainingProfile;
+  variant?: string;
+  replicaId?: string;
+  judgeMode?: BenchmarkReportJudgeMode;
+}): Promise<ExperimentBenchmarkRunArtifact | null> {
+  if (!input.pack || !input.history || input.history.length === 0 || !shouldRunBenchmarkJudge(input.judgeMode)) {
+    return null;
+  }
+
+  const traces = collectBenchmarkRunCaseTraces(input.history);
+  const judged = await judgeBenchmarkRun({
+    pack: input.pack,
+    traces,
+    dualJudge: resolveDualJudgeMode(input.judgeMode),
+  });
+
+  return {
+    ...judged,
+    run_label: input.runLabel,
+    scope: input.scope,
+    profile: input.profile,
+    variant: input.variant,
+    replica_id: input.replicaId,
+  };
+}
+
 function toRuntimeObservabilitySnapshot(input: {
   trainerFallbacks: number;
   personaFallbacks: number;
@@ -414,6 +866,743 @@ function toRuntimeObservabilitySnapshot(input: {
   };
 }
 
+function buildReplicaMeasurement(input: {
+  label: string;
+  replicaId?: string;
+  row: ExperimentSummaryRow;
+}): BenchmarkReplicaMeasurement {
+  return {
+    label: input.label,
+    replica_id: input.replicaId,
+    run_quality: input.row.run_quality,
+    benchmark_overall: input.row.benchmark_scorecard?.overall ?? null,
+    avg_quality: input.row.avgQuality,
+    coverage: input.row.coverage,
+    contradiction_rate: input.row.contradictionRate,
+    duplication_rate: input.row.duplicationRate,
+    pass_rate: input.row.benchmark_scorecard?.pass_rate ?? null,
+    disputed_rate: input.row.benchmark_scorecard?.disputed_rate ?? null,
+    disagreement_rate: input.row.benchmark_judge_disagreement?.disagreement_rate ?? null,
+  };
+}
+
+function aggregateReplicaRunQuality(
+  rows: ExperimentSummaryRow[],
+  requiredMinCleanReplicas: number
+): EvaluationRunQuality {
+  const cleanCount = rows.filter((row) => row.run_quality === 'clean').length;
+  if (cleanCount >= requiredMinCleanReplicas) return 'clean';
+  if (cleanCount > 0) return 'inconclusive';
+  if (rows.every((row) => row.run_quality === 'failed')) return 'failed';
+  if (rows.every((row) => row.run_quality === 'contaminated')) return 'contaminated';
+  if (rows.every((row) => row.run_quality === 'inconclusive')) return 'inconclusive';
+  return rows[0]?.run_quality ?? 'inconclusive';
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+async function runSingleExperimentProfile(input: {
+  slug: string;
+  profile: TrainingProfile;
+  basePersona: Persona;
+  baseSoul: Soul;
+  store: MemoryStore;
+  stamp: string;
+  rounds: number;
+  questionsPerRound?: number;
+  timeoutMs: number;
+  providerName?: string;
+  kimiStabilityMode?: string;
+  trainingSeedHints: string[];
+  replayManifestIndex: Map<string, FrozenBenchmarkCaseManifest> | null;
+  officialPack: LoadedBenchmarkPack | null;
+  judgeMode: BenchmarkReportJudgeMode;
+  replicaGroup?: string;
+  replicaId?: string;
+}): Promise<ExperimentSingleRunResult> {
+  const persona: Persona = {
+    ...input.basePersona,
+    id: crypto.randomUUID(),
+    memory_collection: `${input.basePersona.memory_collection}_exp_${input.profile}_${input.stamp}${input.replicaId ? `_${input.replicaId}` : ''}`,
+    training_rounds: 0,
+    updated_at: new Date().toISOString(),
+  };
+  const soul: Soul = JSON.parse(JSON.stringify(input.baseSoul));
+  soul.training_rounds_completed = 0;
+
+  await input.store.ensureCollection(persona.memory_collection);
+
+  const loop = new TrainingLoop(soul, persona, input.store);
+  const replayManifest = input.officialPack
+    ? input.officialPack.frozen_manifest
+    : findReplayManifest(input.replayManifestIndex, 'profile_sweep', input.profile);
+  const replayQuestionRounds = input.officialPack
+    ? input.officialPack.question_rounds
+    : replayManifest
+      ? toFrozenQuestionRounds(replayManifest)
+      : null;
+  const replayConfig = replayQuestionRounds ? summarizeReplayQuestionRounds(replayQuestionRounds) : null;
+  const effectiveRounds = replayConfig?.rounds ?? input.rounds;
+  const questionsPerRound = replayConfig?.questionsPerRound ?? Math.max(1, input.questionsPerRound ?? 5);
+  const executionSettings = resolveTrainingExecutionSettings({
+    providerName: input.providerName,
+    rounds: effectiveRounds,
+    explicitKimiStabilityMode: input.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
+  });
+
+  snapshotAndResetAgentFallbackMetrics();
+  try {
+    const result = await withTimeout(
+      loop.run({
+        maxRounds: effectiveRounds,
+        profile: input.profile,
+        questionsPerRound,
+        frozenQuestionRounds: replayQuestionRounds ?? undefined,
+        trainingSeedHints: input.trainingSeedHints,
+        runtimePreset: executionSettings.runtimePreset,
+        runtimeOverrides: executionSettings.runtimeOverrides,
+        evaluatorLayered: executionSettings.evaluatorLayered,
+        evaluatorDualReview: executionSettings.evaluatorDualReview,
+        directorReviewInterval: executionSettings.directorReviewInterval,
+        directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
+      }),
+      input.timeoutMs,
+      `experiment profile ${input.profile}${input.replicaId ? ` (${input.replicaId})` : ''}`
+    );
+
+    const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
+    const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
+    const judgeProvenance = buildJudgeProvenance({
+      layeredMode: executionSettings.evaluatorLayered,
+      dualReviewRequested: Boolean(executionSettings.evaluatorDualReview),
+      evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
+    });
+    const history = result.history;
+    const roundHistory = history.map((h) => ({
+      round: h.round,
+      avgQualityScore: h.avgQualityScore,
+      contradictionRate: h.observability.contradictionRate,
+      duplicationRate: h.observability.duplicationRate,
+      nodesWritten: h.nodesWritten,
+      nodesReinforced: h.nodesReinforced,
+    }));
+    const avgQuality = history.length === 0 ? 0 : average(history.map((h) => h.avgQualityScore));
+    const contradictionRate = history.length === 0 ? 0 : average(history.map((h) => h.observability.contradictionRate));
+    const duplicationRate = history.length === 0 ? 0 : average(history.map((h) => h.observability.duplicationRate));
+    const contamination = classifyEvaluationRun({
+      totalRounds: result.totalRounds,
+      runtimeObservability: runtimeSnapshot,
+      judgeProvenance,
+    });
+    const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+      slug: input.slug,
+      suiteType: 'profile_sweep',
+      profile: input.profile,
+      rounds: effectiveRounds,
+      questionsPerRound,
+      smokeMode: effectiveRounds === 1 && questionsPerRound === 1,
+      history,
+      providerName: input.providerName,
+      executionSettings,
+      officialPack: input.officialPack,
+      replicaGroup: input.replicaGroup,
+      replicaId: input.replicaId,
+    });
+    const benchmarkJudgment = await buildBenchmarkJudgeArtifactForRun({
+      pack: input.officialPack,
+      history,
+      runLabel: input.profile,
+      scope: 'profile_sweep',
+      profile: input.profile,
+      replicaId: input.replicaId,
+      judgeMode: input.judgeMode,
+    });
+    const row: ExperimentSummaryRow = {
+      profile: input.profile,
+      totalRounds: result.totalRounds,
+      avgQuality,
+      contradictionRate,
+      duplicationRate,
+      coverage: result.soul.coverage_score,
+      run_quality: contamination.status,
+      contamination,
+      scorecard: buildEvaluationScorecard({
+        avgQuality,
+        contradictionRate,
+        duplicationRate,
+        coverage: result.soul.coverage_score,
+        runQuality: contamination.status,
+        runtimeObservability: runtimeSnapshot,
+      }),
+      judge_provenance: judgeProvenance,
+      benchmark_scorecard: benchmarkJudgment?.scorecard,
+      benchmark_case_summary: benchmarkJudgment?.case_summary,
+      benchmark_judge_summary: benchmarkJudgment?.judge_summary,
+      benchmark_judge_disagreement: benchmarkJudgment?.disagreement,
+      benchmark_context: benchmarkArtifacts.benchmarkContext,
+      runtime_observability: runtimeSnapshot,
+    };
+
+    return {
+      row,
+      roundHistory,
+      benchmarkCaseManifest: benchmarkArtifacts.benchmarkCaseManifest,
+      benchmarkJudgment,
+      replicaMeasurement: buildReplicaMeasurement({
+        label: input.profile,
+        replicaId: input.replicaId,
+        row,
+      }),
+    };
+  } catch (error) {
+    const message = String(error);
+    const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
+    const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
+    const judgeProvenance = buildJudgeProvenance({
+      layeredMode: executionSettings.evaluatorLayered,
+      dualReviewRequested: Boolean(executionSettings.evaluatorDualReview),
+      evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
+    });
+    const contamination = classifyEvaluationRun({
+      totalRounds: 0,
+      runtimeObservability: runtimeSnapshot,
+      judgeProvenance,
+      failureError: message,
+    });
+    const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+      slug: input.slug,
+      suiteType: 'profile_sweep',
+      profile: input.profile,
+      rounds: effectiveRounds,
+      questionsPerRound,
+      smokeMode: effectiveRounds === 1 && questionsPerRound === 1,
+      providerName: input.providerName,
+      executionSettings,
+      officialPack: input.officialPack,
+      replicaGroup: input.replicaGroup,
+      replicaId: input.replicaId,
+    });
+    const row: ExperimentSummaryRow = {
+      profile: input.profile,
+      totalRounds: 0,
+      avgQuality: 0,
+      contradictionRate: 1,
+      duplicationRate: 1,
+      coverage: 0,
+      run_quality: contamination.status,
+      contamination,
+      scorecard: buildEvaluationScorecard({
+        avgQuality: 0,
+        contradictionRate: 1,
+        duplicationRate: 1,
+        coverage: 0,
+        runQuality: contamination.status,
+        runtimeObservability: runtimeSnapshot,
+      }),
+      judge_provenance: judgeProvenance,
+      benchmark_context: benchmarkArtifacts.benchmarkContext,
+      runtime_observability: runtimeSnapshot,
+    };
+    return {
+      row,
+      roundHistory: [],
+      benchmarkCaseManifest: benchmarkArtifacts.benchmarkCaseManifest,
+      benchmarkJudgment: null,
+      replicaMeasurement: buildReplicaMeasurement({
+        label: input.profile,
+        replicaId: input.replicaId,
+        row,
+      }),
+      failure: message,
+    };
+  }
+}
+
+async function runSingleProfileExperiment(input: {
+  slug: string;
+  profile: TrainingProfile;
+  rounds: number;
+  questionsPerRound: number;
+  basePersona: Persona;
+  baseSoul: Soul;
+  store: MemoryStore;
+  stamp: string;
+  providerName?: string;
+  trainingSeedHints: string[];
+  replayManifest?: FrozenBenchmarkCaseManifest | null;
+  replayQuestionRounds?: TrainingQuestion[][] | null;
+  effectiveRounds: number;
+  executionSettings: TrainingExecutionSettings;
+  officialPack?: LoadedBenchmarkPack | null;
+  replicaGroup?: string;
+  replicaId?: string;
+  judgeMode?: BenchmarkReportJudgeMode;
+  timeoutMs: number;
+}): Promise<ExperimentSingleRunResult> {
+  const persona: Persona = {
+    ...input.basePersona,
+    id: crypto.randomUUID(),
+    memory_collection: `${input.basePersona.memory_collection}_exp_${input.profile}_${input.stamp}_${input.replicaId ?? 'single'}`,
+    training_rounds: 0,
+    updated_at: new Date().toISOString(),
+  };
+  const soul: Soul = JSON.parse(JSON.stringify(input.baseSoul));
+  soul.training_rounds_completed = 0;
+
+  await input.store.ensureCollection(persona.memory_collection);
+
+  const loop = new TrainingLoop(soul, persona, input.store);
+  snapshotAndResetAgentFallbackMetrics();
+
+  try {
+    const result = await withTimeout(
+      loop.run({
+        maxRounds: input.effectiveRounds,
+        profile: input.profile,
+        questionsPerRound: input.questionsPerRound,
+        frozenQuestionRounds: input.replayQuestionRounds ?? undefined,
+        trainingSeedHints: input.trainingSeedHints,
+        runtimePreset: input.executionSettings.runtimePreset,
+        runtimeOverrides: input.executionSettings.runtimeOverrides,
+        evaluatorLayered: input.executionSettings.evaluatorLayered,
+        evaluatorDualReview: input.executionSettings.evaluatorDualReview,
+        directorReviewInterval: input.executionSettings.directorReviewInterval,
+        directorAlwaysOnFinalRound: input.executionSettings.directorAlwaysOnFinalRound,
+      }),
+      input.timeoutMs,
+      `experiment profile ${input.profile}${input.replicaId ? ` (${input.replicaId})` : ''}`
+    );
+    const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
+    const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
+    const judgeProvenance = buildJudgeProvenance({
+      layeredMode: input.executionSettings.evaluatorLayered,
+      dualReviewRequested: Boolean(input.executionSettings.evaluatorDualReview),
+      evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
+    });
+    const history = result.history;
+    const roundHistory = history.map((h) => ({
+      round: h.round,
+      avgQualityScore: h.avgQualityScore,
+      contradictionRate: h.observability.contradictionRate,
+      duplicationRate: h.observability.duplicationRate,
+      nodesWritten: h.nodesWritten,
+      nodesReinforced: h.nodesReinforced,
+    }));
+
+    const avgQuality = history.length === 0 ? 0 : history.reduce((sum, h) => sum + h.avgQualityScore, 0) / history.length;
+    const contradictionRate = history.length === 0
+      ? 0
+      : history.reduce((sum, h) => sum + h.observability.contradictionRate, 0) / history.length;
+    const duplicationRate = history.length === 0
+      ? 0
+      : history.reduce((sum, h) => sum + h.observability.duplicationRate, 0) / history.length;
+    const contamination = classifyEvaluationRun({
+      totalRounds: result.totalRounds,
+      runtimeObservability: runtimeSnapshot,
+      judgeProvenance,
+    });
+    const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+      slug: input.slug,
+      suiteType: 'profile_sweep',
+      profile: input.profile,
+      rounds: input.effectiveRounds,
+      questionsPerRound: input.questionsPerRound,
+      smokeMode: input.effectiveRounds === 1 && input.questionsPerRound === 1,
+      history,
+      providerName: input.providerName,
+      executionSettings: input.executionSettings,
+      officialPack: input.officialPack,
+      replicaGroup: input.replicaGroup,
+      replicaId: input.replicaId,
+    });
+    const benchmarkJudgeArtifact = await buildBenchmarkJudgeArtifactForRun({
+      pack: input.officialPack,
+      history,
+      runLabel: input.replicaId ? `${input.profile}:${input.replicaId}` : input.profile,
+      scope: 'profile_sweep',
+      profile: input.profile,
+      replicaId: input.replicaId,
+      judgeMode: input.judgeMode,
+    });
+
+    const row: ExperimentSummaryRow = {
+      profile: input.profile,
+      totalRounds: result.totalRounds,
+      avgQuality,
+      contradictionRate,
+      duplicationRate,
+      coverage: result.soul.coverage_score,
+      run_quality: contamination.status,
+      contamination,
+      scorecard: buildEvaluationScorecard({
+        avgQuality,
+        contradictionRate,
+        duplicationRate,
+        coverage: result.soul.coverage_score,
+        runQuality: contamination.status,
+        runtimeObservability: runtimeSnapshot,
+      }),
+      judge_provenance: judgeProvenance,
+      benchmark_scorecard: benchmarkJudgeArtifact?.scorecard,
+      benchmark_case_summary: benchmarkJudgeArtifact?.case_summary,
+      benchmark_judge_summary: benchmarkJudgeArtifact?.judge_summary,
+      benchmark_judge_disagreement: benchmarkJudgeArtifact?.disagreement,
+      benchmark_context: benchmarkArtifacts.benchmarkContext,
+      runtime_observability: runtimeSnapshot,
+    };
+
+    return {
+      row,
+      roundHistory,
+      benchmarkCaseManifest: benchmarkArtifacts.benchmarkCaseManifest,
+      benchmarkJudgment: benchmarkJudgeArtifact,
+      replicaMeasurement: {
+        label: input.profile,
+        replica_id: input.replicaId,
+        run_quality: contamination.status,
+        benchmark_overall: benchmarkJudgeArtifact?.scorecard.overall ?? null,
+        avg_quality: avgQuality,
+        coverage: result.soul.coverage_score,
+        contradiction_rate: contradictionRate,
+        duplication_rate: duplicationRate,
+        pass_rate: benchmarkJudgeArtifact?.scorecard.pass_rate ?? null,
+        disputed_rate: benchmarkJudgeArtifact?.scorecard.disputed_rate ?? null,
+        disagreement_rate: benchmarkJudgeArtifact?.disagreement.disagreement_rate ?? null,
+      },
+    };
+  } catch (error) {
+    const message = String(error);
+    const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
+    const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
+    const judgeProvenance = buildJudgeProvenance({
+      layeredMode: input.executionSettings.evaluatorLayered,
+      dualReviewRequested: Boolean(input.executionSettings.evaluatorDualReview),
+      evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
+    });
+    const contamination = classifyEvaluationRun({
+      totalRounds: 0,
+      runtimeObservability: runtimeSnapshot,
+      judgeProvenance,
+      failureError: message,
+    });
+    const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+      slug: input.slug,
+      suiteType: 'profile_sweep',
+      profile: input.profile,
+      rounds: input.effectiveRounds,
+      questionsPerRound: input.questionsPerRound,
+      smokeMode: input.effectiveRounds === 1 && input.questionsPerRound === 1,
+      providerName: input.providerName,
+      executionSettings: input.executionSettings,
+      officialPack: input.officialPack,
+      replicaGroup: input.replicaGroup,
+      replicaId: input.replicaId,
+    });
+    return {
+      row: {
+        profile: input.profile,
+        totalRounds: 0,
+        avgQuality: 0,
+        contradictionRate: 1,
+        duplicationRate: 1,
+        coverage: 0,
+        run_quality: contamination.status,
+        contamination,
+        scorecard: buildEvaluationScorecard({
+          avgQuality: 0,
+          contradictionRate: 1,
+          duplicationRate: 1,
+          coverage: 0,
+          runQuality: contamination.status,
+          runtimeObservability: runtimeSnapshot,
+        }),
+        judge_provenance: judgeProvenance,
+        benchmark_context: benchmarkArtifacts.benchmarkContext,
+        runtime_observability: runtimeSnapshot,
+      },
+      roundHistory: [],
+      benchmarkCaseManifest: benchmarkArtifacts.benchmarkCaseManifest,
+      benchmarkJudgment: null,
+      replicaMeasurement: {
+        label: input.profile,
+        replica_id: input.replicaId,
+        run_quality: contamination.status,
+        benchmark_overall: null,
+        avg_quality: 0,
+        coverage: 0,
+        contradiction_rate: 1,
+        duplication_rate: 1,
+        pass_rate: null,
+        disputed_rate: null,
+        disagreement_rate: null,
+      },
+    };
+  }
+}
+
+function aggregateReplicaRuns(input: {
+  profile: TrainingProfile;
+  replicaGroup?: string;
+  replicaRuns: ExperimentSingleRunResult[];
+  judgeMode?: BenchmarkReportJudgeMode;
+}): BenchmarkAggregationResult {
+  const cleanRuns = input.replicaRuns.filter((item) => item.row.run_quality === 'clean');
+  const selectedRuns = cleanRuns.length > 0 ? cleanRuns : input.replicaRuns;
+  const firstRow = input.replicaRuns[0]?.row;
+  if (!firstRow) {
+    throw new Error(`no replica runs available for profile "${input.profile}"`);
+  }
+
+  const runQuality = summarizeAggregateRunQuality(input.replicaRuns.map((item) => item.row.run_quality));
+  const avgQuality = mean(selectedRuns.map((item) => item.row.avgQuality));
+  const contradictionRate = mean(selectedRuns.map((item) => item.row.contradictionRate));
+  const duplicationRate = mean(selectedRuns.map((item) => item.row.duplicationRate));
+  const coverage = mean(selectedRuns.map((item) => item.row.coverage));
+  const runtimeObservability = summarizeRuntimeObservability(selectedRuns.map((item) => item.row.runtime_observability));
+  const benchmarkJudgments = input.replicaRuns
+    .map((item) => item.benchmarkJudgment)
+    .filter((item): item is ExperimentBenchmarkRunArtifact => Boolean(item));
+  const benchmarkScorecard = aggregateBenchmarkScorecard(benchmarkJudgments);
+  const benchmarkCaseSummary = aggregateBenchmarkCaseSummary(benchmarkJudgments);
+  const benchmarkDisagreement = aggregateBenchmarkDisagreement(benchmarkJudgments);
+  const benchmarkJudgeSummary = aggregateBenchmarkJudgeSummary(benchmarkJudgments, benchmarkScorecard, benchmarkCaseSummary, benchmarkDisagreement);
+  const benchmarkReplicaSummary = buildBenchmarkReplicaSummary({
+    replicaGroup: input.replicaGroup,
+    replicas: input.replicaRuns.map((item) => item.replicaMeasurement),
+  });
+
+  return {
+    row: {
+      ...firstRow,
+      totalRounds: Math.round(mean(selectedRuns.map((item) => item.row.totalRounds))),
+      avgQuality,
+      contradictionRate,
+      duplicationRate,
+      coverage,
+      run_quality: runQuality,
+      scorecard: buildEvaluationScorecard({
+        avgQuality,
+        contradictionRate,
+        duplicationRate,
+        coverage,
+        runQuality,
+        runtimeObservability: runtimeObservability ?? undefined,
+      }),
+      benchmark_scorecard: benchmarkScorecard,
+      benchmark_case_summary: benchmarkCaseSummary,
+      benchmark_judge_summary: benchmarkJudgeSummary,
+      benchmark_judge_disagreement: benchmarkDisagreement,
+      benchmark_replica_summary: benchmarkReplicaSummary,
+      runtime_observability: runtimeObservability ?? undefined,
+      judge_provenance: {
+        ...(firstRow.judge_provenance ?? buildJudgeProvenance({
+          layeredMode: false,
+          dualReviewRequested: false,
+          evaluatorFallbacks: 0,
+        })),
+        mode: resolveAggregateJudgeProvenanceMode(input.judgeMode),
+        dual_review_requested: resolveDualJudgeMode(input.judgeMode),
+        dual_review_active: resolveDualJudgeMode(input.judgeMode),
+        fallback_used: (runtimeObservability?.evaluator_fallbacks ?? 0) > 0,
+        evaluator_fallbacks: runtimeObservability?.evaluator_fallbacks ?? 0,
+      },
+    },
+    roundHistory: aggregateRoundHistories(selectedRuns.map((item) => item.roundHistory)),
+    benchmarkCaseManifests: input.replicaRuns
+      .map((item) => item.benchmarkCaseManifest)
+      .filter((item): item is FrozenBenchmarkCaseManifest => Boolean(item)),
+    benchmarkJudgments,
+    replicaMeasurements: input.replicaRuns.map((item) => item.replicaMeasurement),
+  };
+}
+
+function summarizeAggregateRunQuality(
+  qualities: Array<EvaluationRunQuality | undefined>
+): EvaluationRunQuality {
+  const normalized = qualities.map((item) => item ?? 'clean');
+  if (normalized.every((item) => item === 'clean')) return 'clean';
+  if (normalized.some((item) => item === 'clean')) return 'contaminated';
+  if (normalized.every((item) => item === 'failed')) return 'failed';
+  if (normalized.some((item) => item === 'failed')) return 'failed';
+  if (normalized.some((item) => item === 'contaminated')) return 'contaminated';
+  return 'inconclusive';
+}
+
+function summarizeRuntimeObservability(
+  values: Array<ExperimentSummaryRow['runtime_observability'] | undefined>
+): ExperimentSummaryRow['runtime_observability'] | null {
+  const measured = values.filter((item): item is NonNullable<typeof item> => Boolean(item));
+  if (measured.length === 0) return null;
+  return {
+    trainer_fallbacks: measured.reduce((sum, item) => sum + item.trainer_fallbacks, 0),
+    persona_fallbacks: measured.reduce((sum, item) => sum + item.persona_fallbacks, 0),
+    evaluator_fallbacks: measured.reduce((sum, item) => sum + item.evaluator_fallbacks, 0),
+    director_fallbacks: measured.reduce((sum, item) => sum + item.director_fallbacks, 0),
+  };
+}
+
+function aggregateRoundHistories(histories: ExperimentRoundHistoryItem[][]): ExperimentRoundHistoryItem[] {
+  const roundCount = histories.reduce((best, items) => Math.max(best, items.length), 0);
+  const aggregated: ExperimentRoundHistoryItem[] = [];
+  for (let index = 0; index < roundCount; index += 1) {
+    const rows = histories.map((items) => items[index]).filter((item): item is ExperimentRoundHistoryItem => Boolean(item));
+    if (rows.length === 0) continue;
+    aggregated.push({
+      round: index + 1,
+      avgQualityScore: mean(rows.map((item) => item.avgQualityScore)),
+      contradictionRate: mean(rows.map((item) => item.contradictionRate)),
+      duplicationRate: mean(rows.map((item) => item.duplicationRate)),
+      nodesWritten: Math.round(mean(rows.map((item) => item.nodesWritten))),
+      nodesReinforced: Math.round(mean(rows.map((item) => item.nodesReinforced))),
+    });
+  }
+  return aggregated;
+}
+
+function aggregateBenchmarkScorecard(
+  judgments: ExperimentBenchmarkRunArtifact[]
+): BenchmarkScorecard | undefined {
+  if (judgments.length === 0) return undefined;
+  const first = judgments[0]!.scorecard;
+  const dimensionKeys = [...new Set(judgments.flatMap((item) => Object.keys(item.scorecard.dimension_scores)))];
+  return {
+    version: 'benchmark-scorecard-v1',
+    summary: `Aggregated over ${judgments.length} clean replica(s)`,
+    overall: mean(judgments.map((item) => item.scorecard.overall)),
+    pass_rate: mean(judgments.map((item) => item.scorecard.pass_rate)),
+    abstain_rate: mean(judgments.map((item) => item.scorecard.abstain_rate)),
+    disputed_rate: mean(judgments.map((item) => item.scorecard.disputed_rate)),
+    case_count: first.case_count,
+    dimension_scores: Object.fromEntries(
+      dimensionKeys.map((key) => [key, mean(judgments.map((item) => item.scorecard.dimension_scores[key] ?? 0))])
+    ),
+  };
+}
+
+function aggregateBenchmarkCaseSummary(
+  judgments: ExperimentBenchmarkRunArtifact[]
+): BenchmarkCaseSummary | undefined {
+  if (judgments.length === 0) return undefined;
+  const first = judgments[0]!.case_summary;
+  return {
+    case_count: first.case_count,
+    judged_case_count: first.judged_case_count,
+    pass_count: Math.round(mean(judgments.map((item) => item.case_summary.pass_count))),
+    fail_count: Math.round(mean(judgments.map((item) => item.case_summary.fail_count))),
+    abstained_count: Math.round(mean(judgments.map((item) => item.case_summary.abstained_count))),
+    disputed_case_count: Math.round(mean(judgments.map((item) => item.case_summary.disputed_case_count))),
+    missing_trace_count: Math.round(mean(judgments.map((item) => item.case_summary.missing_trace_count))),
+  };
+}
+
+function aggregateBenchmarkDisagreement(
+  judgments: ExperimentBenchmarkRunArtifact[]
+): BenchmarkJudgeDisagreement | undefined {
+  if (judgments.length === 0) return undefined;
+  return {
+    active: judgments.some((item) => item.disagreement.active),
+    judge_count: Math.max(...judgments.map((item) => item.disagreement.judge_count)),
+    disagreement_rate: mean(judgments.map((item) => item.disagreement.disagreement_rate)),
+    verdict_conflicts: Math.round(mean(judgments.map((item) => item.disagreement.verdict_conflicts))),
+    high_delta_cases: [...new Set(judgments.flatMap((item) => item.disagreement.high_delta_cases))],
+    disputed_case_ids: [...new Set(judgments.flatMap((item) => item.disagreement.disputed_case_ids))],
+  };
+}
+
+function aggregateBenchmarkJudgeSummary(
+  judgments: ExperimentBenchmarkRunArtifact[],
+  scorecard?: BenchmarkScorecard,
+  caseSummary?: BenchmarkCaseSummary,
+  disagreement?: BenchmarkJudgeDisagreement
+): BenchmarkJudgeSummary | undefined {
+  if (judgments.length === 0 || !scorecard || !caseSummary || !disagreement) return undefined;
+  const first = judgments[0]!;
+  return {
+    version: 'benchmark-judge-summary-v1',
+    judge_mode: first.judge_mode,
+    pack_id: first.pack_id,
+    pack_version: first.pack_version,
+    case_count: caseSummary.case_count,
+    judged_case_count: caseSummary.judged_case_count,
+    disputed_case_count: caseSummary.disputed_case_count,
+    pass_rate: scorecard.pass_rate,
+    overall: scorecard.overall,
+    disagreement,
+  };
+}
+
+function resolveAggregateJudgeProvenanceMode(mode?: BenchmarkReportJudgeMode): JudgeProvenance['mode'] {
+  if (mode === 'benchmark_dual' || mode === 'both') return 'dual_review';
+  return 'standard';
+}
+
+function mean(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function buildProfileSweepBenchmarkGovernance(input: {
+  rows: ExperimentSummaryRow[];
+  replicaMeasurements: Record<string, BenchmarkReplicaMeasurement[]>;
+  officialPack?: LoadedBenchmarkPack | null;
+  benchmarkManifests: BenchmarkCaseManifest[];
+  judgeMode?: BenchmarkReportJudgeMode;
+  baselineProfile?: TrainingProfile;
+  compareProfile?: TrainingProfile;
+  significanceEnabled?: boolean;
+}) {
+  if (!input.officialPack) {
+    return {
+      benchmarkSignificance: null,
+      benchmarkGovernance: null,
+    };
+  }
+
+  const baselineProfile = input.baselineProfile ?? 'baseline';
+  const compareProfile = input.compareProfile ?? 'full';
+  const baselineRow = input.rows.find((row) => row.profile === baselineProfile) ?? null;
+  const compareRow = input.rows.find((row) => row.profile === compareProfile) ?? null;
+  if (!baselineRow || !compareRow) {
+    return {
+      benchmarkSignificance: null,
+      benchmarkGovernance: null,
+    };
+  }
+  const compareReplicaSummary = compareRow?.benchmark_replica_summary ?? null;
+  const significance =
+    input.significanceEnabled
+      ? computePairedBootstrapSignificance({
+        groupA: input.replicaMeasurements[baselineProfile] ?? [],
+        groupB: input.replicaMeasurements[compareProfile] ?? [],
+        seedKey: `${input.officialPack.summary.pack_id}:${baselineProfile}:${compareProfile}`,
+      })
+      : null;
+  const governance = buildBenchmarkGovernanceSummary({
+    pack: input.officialPack.summary,
+    judgeMode: input.judgeMode ?? 'both',
+    homogeneity: summarizeBenchmarkHomogeneity(input.benchmarkManifests),
+    replicaSummary: compareReplicaSummary,
+    significance,
+    requiredMinCleanReplicas:
+      input.officialPack.definition.min_clean_replicas ??
+      input.officialPack.definition.default_replicas ??
+      2,
+    judgeDisagreementRate: compareRow?.benchmark_judge_disagreement?.disagreement_rate ?? 0,
+  });
+
+  if (compareRow) {
+    compareRow.benchmark_governance = governance;
+  }
+
+  return {
+    benchmarkSignificance: significance,
+    benchmarkGovernance: governance,
+  };
+}
+
 export async function runExperimentProfiles(
   slug: string,
   rounds: number,
@@ -424,6 +1613,9 @@ export async function runExperimentProfiles(
     trainingSeedMode?: string;
     questionsPerRound?: number;
     benchmarkCaseManifests?: FrozenBenchmarkCaseManifest[];
+    officialPack?: LoadedBenchmarkPack | null;
+    replicas?: number;
+    judgeMode?: BenchmarkReportJudgeMode;
   }
 ): Promise<ExperimentRunResult> {
   const dir = settings.getPersonaDir(slug);
@@ -446,30 +1638,25 @@ export async function runExperimentProfiles(
   const rows: ExperimentSummaryRow[] = [];
   const roundHistories: Record<string, ExperimentRoundHistoryItem[]> = {};
   const benchmarkCaseManifests: FrozenBenchmarkCaseManifest[] = [];
+  const benchmarkJudgments: ExperimentBenchmarkRunArtifact[] = [];
+  const replicaMeasurements: Record<string, BenchmarkReplicaMeasurement[]> = {};
   const failures: Array<{ profile: TrainingProfile; error: string }> = [];
   const providerName = resolvePreferredProviderName();
   const trainingSeedMode = normalizeTrainingSeedMode(options?.trainingSeedMode);
   const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
   const replayManifestIndex = buildReplayManifestIndex(options?.benchmarkCaseManifests);
+  const officialPack = options?.officialPack ?? null;
+  const judgeMode = options?.judgeMode ?? 'both';
 
   const profileTimeoutMs = Math.max(10_000, options?.timeoutMs ?? EXPERIMENT_PROFILE_TIMEOUT_MS);
 
   for (const profile of profiles) {
-    const persona: Persona = {
-      ...basePersona,
-      id: crypto.randomUUID(),
-      memory_collection: `${basePersona.memory_collection}_exp_${profile}_${stamp}`,
-      training_rounds: 0,
-      updated_at: new Date().toISOString(),
-    };
-    const soul: Soul = JSON.parse(JSON.stringify(baseSoul));
-    soul.training_rounds_completed = 0;
-
-    await store.ensureCollection(persona.memory_collection);
-
-    const loop = new TrainingLoop(soul, persona, store);
-    const replayManifest = findReplayManifest(replayManifestIndex, 'profile_sweep', profile);
-    const replayQuestionRounds = replayManifest ? toFrozenQuestionRounds(replayManifest) : null;
+    const replayManifest = officialPack ? officialPack.frozen_manifest : findReplayManifest(replayManifestIndex, 'profile_sweep', profile);
+    const replayQuestionRounds = officialPack
+      ? officialPack.question_rounds
+      : replayManifest
+        ? toFrozenQuestionRounds(replayManifest)
+        : null;
     const replayConfig = replayQuestionRounds ? summarizeReplayQuestionRounds(replayQuestionRounds) : null;
     const effectiveRounds = replayConfig?.rounds ?? rounds;
     const questionsPerRound = replayConfig?.questionsPerRound ?? Math.max(1, options?.questionsPerRound ?? 5);
@@ -478,154 +1665,76 @@ export async function runExperimentProfiles(
       rounds: effectiveRounds,
       explicitKimiStabilityMode: options?.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE,
     });
-    let result: Awaited<ReturnType<TrainingLoop['run']>> | null = null;
-    snapshotAndResetAgentFallbackMetrics();
-    try {
-      result = await withTimeout(
-        loop.run({
-          maxRounds: effectiveRounds,
-          profile,
-          questionsPerRound,
-          frozenQuestionRounds: replayQuestionRounds ?? undefined,
-          trainingSeedHints: trainingSeedSelection.hints,
-          runtimePreset: executionSettings.runtimePreset,
-          runtimeOverrides: executionSettings.runtimeOverrides,
-          evaluatorLayered: executionSettings.evaluatorLayered,
-          evaluatorDualReview: executionSettings.evaluatorDualReview,
-          directorReviewInterval: executionSettings.directorReviewInterval,
-          directorAlwaysOnFinalRound: executionSettings.directorAlwaysOnFinalRound,
-        }),
-        profileTimeoutMs,
-        `experiment profile ${profile}`
-      );
-    } catch (error) {
-      const message = String(error);
-      const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
-      const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
-      const judgeProvenance = buildJudgeProvenance({
-        layeredMode: executionSettings.evaluatorLayered,
-        dualReviewRequested: executionSettings.evaluatorDualReview,
-        evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
-      });
-      const contamination = classifyEvaluationRun({
-        totalRounds: 0,
-        runtimeObservability: runtimeSnapshot,
-        judgeProvenance,
-        failureError: message,
-      });
-      const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
+    const effectiveReplicas = officialPack
+      ? resolveOfficialReplicaCount(options?.replicas, officialPack)
+      : 1;
+    const replicaGroup = officialPack && effectiveReplicas > 1
+      ? `${slug}:${profile}:${stamp}`
+      : undefined;
+    const replicaRuns: ExperimentSingleRunResult[] = [];
+
+    for (let replicaIndex = 0; replicaIndex < effectiveReplicas; replicaIndex += 1) {
+      const replicaId = effectiveReplicas > 1 ? `r${String(replicaIndex + 1).padStart(2, '0')}` : undefined;
+      const singleRun = await runSingleProfileExperiment({
         slug,
-        suiteType: 'profile_sweep',
         profile,
-        rounds: effectiveRounds,
+        rounds,
         questionsPerRound,
-        smokeMode: effectiveRounds === 1 && questionsPerRound === 1,
+        basePersona,
+        baseSoul,
+        store,
+        stamp,
         providerName,
+        trainingSeedHints: trainingSeedSelection.hints,
+        replayManifest,
+        replayQuestionRounds,
+        effectiveRounds,
         executionSettings,
+        officialPack,
+        replicaGroup,
+        replicaId,
+        judgeMode,
+        timeoutMs: profileTimeoutMs,
       });
-      failures.push({ profile, error: message });
-      roundHistories[profile] = [];
-      rows.push({
+      replicaRuns.push(singleRun);
+      if (singleRun.row.run_quality !== 'clean') {
+        console.log(
+          chalk.yellow(
+            `${chalk.bold(profile.padEnd(8))}${replicaId ? ` ${replicaId}` : ''} status=${singleRun.row.run_quality}`
+          )
+        );
+      }
+    }
+
+    const aggregated = aggregateReplicaRuns({
+      profile,
+      replicaGroup,
+      replicaRuns,
+      judgeMode,
+    });
+
+    const failedReplicaCount = replicaRuns.filter((item) => item.row.run_quality !== 'clean').length;
+    if (failedReplicaCount > 0) {
+      failures.push({
         profile,
-        totalRounds: 0,
-        avgQuality: 0,
-        contradictionRate: 1,
-        duplicationRate: 1,
-        coverage: 0,
-        run_quality: contamination.status,
-        contamination,
-        scorecard: buildEvaluationScorecard({
-          avgQuality: 0,
-          contradictionRate: 1,
-          duplicationRate: 1,
-          coverage: 0,
-          runQuality: contamination.status,
-          runtimeObservability: runtimeSnapshot,
-        }),
-        judge_provenance: judgeProvenance,
-        benchmark_context: benchmarkArtifacts.benchmarkContext,
-        runtime_observability: runtimeSnapshot,
+        error: `${failedReplicaCount}/${replicaRuns.length} replica(s) were excluded from clean aggregation`,
       });
-      console.log(
-        chalk.yellow(
-          `${chalk.bold(profile.padEnd(8))} fast-fail: ${message.slice(0, 120)}`
-        )
-      );
-      continue;
-    }
-    const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
-    const runtimeSnapshot = toRuntimeObservabilitySnapshot(runtimeObservability);
-    const judgeProvenance = buildJudgeProvenance({
-      layeredMode: executionSettings.evaluatorLayered,
-      dualReviewRequested: executionSettings.evaluatorDualReview,
-      evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
-    });
-    const history = result.history;
-    roundHistories[profile] = history.map((h) => ({
-      round: h.round,
-      avgQualityScore: h.avgQualityScore,
-      contradictionRate: h.observability.contradictionRate,
-      duplicationRate: h.observability.duplicationRate,
-      nodesWritten: h.nodesWritten,
-      nodesReinforced: h.nodesReinforced,
-    }));
-
-    const avgQuality = history.length === 0 ? 0 : history.reduce((sum, h) => sum + h.avgQualityScore, 0) / history.length;
-    const contradictionRate = history.length === 0
-      ? 0
-      : history.reduce((sum, h) => sum + h.observability.contradictionRate, 0) / history.length;
-    const duplicationRate = history.length === 0
-      ? 0
-      : history.reduce((sum, h) => sum + h.observability.duplicationRate, 0) / history.length;
-    const contamination = classifyEvaluationRun({
-      totalRounds: result.totalRounds,
-      runtimeObservability: runtimeSnapshot,
-      judgeProvenance,
-    });
-    const benchmarkArtifacts = buildExperimentBenchmarkArtifacts({
-      slug,
-      suiteType: 'profile_sweep',
-      profile,
-      rounds: effectiveRounds,
-      questionsPerRound,
-      smokeMode: effectiveRounds === 1 && questionsPerRound === 1,
-      history,
-      providerName,
-      executionSettings,
-    });
-    if (benchmarkArtifacts.benchmarkCaseManifest) {
-      benchmarkCaseManifests.push(benchmarkArtifacts.benchmarkCaseManifest);
     }
 
-    rows.push({
-      profile,
-      totalRounds: result.totalRounds,
-      avgQuality,
-      contradictionRate,
-      duplicationRate,
-      coverage: result.soul.coverage_score,
-      run_quality: contamination.status,
-      contamination,
-      scorecard: buildEvaluationScorecard({
-        avgQuality,
-        contradictionRate,
-        duplicationRate,
-        coverage: result.soul.coverage_score,
-        runQuality: contamination.status,
-        runtimeObservability: runtimeSnapshot,
-      }),
-      judge_provenance: judgeProvenance,
-      benchmark_context: benchmarkArtifacts.benchmarkContext,
-      runtime_observability: runtimeSnapshot,
-    });
+    rows.push(aggregated.row);
+    roundHistories[profile] = aggregated.roundHistory;
+    benchmarkCaseManifests.push(...aggregated.benchmarkCaseManifests);
+    benchmarkJudgments.push(...aggregated.benchmarkJudgments);
+    replicaMeasurements[profile] = aggregated.replicaMeasurements;
 
     console.log(
-      `${chalk.bold(profile.padEnd(8))} rounds=${String(result.totalRounds).padEnd(3)} ` +
-      `quality=${(avgQuality * 100).toFixed(1).padStart(5)}% ` +
-      `contra=${(contradictionRate * 100).toFixed(1).padStart(5)}% ` +
-      `dup=${(duplicationRate * 100).toFixed(1).padStart(5)}% ` +
-      `coverage=${(result.soul.coverage_score * 100).toFixed(1).padStart(5)}% ` +
-      `status=${contamination.status}`
+      `${chalk.bold(profile.padEnd(8))} replicas=${String(aggregated.replicaMeasurements.length).padEnd(2)} ` +
+      `clean=${String(aggregated.row.benchmark_replica_summary?.clean_replica_count ?? (aggregated.row.run_quality === 'clean' ? 1 : 0)).padEnd(2)} ` +
+      `quality=${(aggregated.row.avgQuality * 100).toFixed(1).padStart(5)}% ` +
+      `contra=${(aggregated.row.contradictionRate * 100).toFixed(1).padStart(5)}% ` +
+      `dup=${(aggregated.row.duplicationRate * 100).toFixed(1).padStart(5)}% ` +
+      `coverage=${(aggregated.row.coverage * 100).toFixed(1).padStart(5)}% ` +
+      `status=${aggregated.row.run_quality}`
     );
   }
 
@@ -633,6 +1742,8 @@ export async function runExperimentProfiles(
     rows,
     roundHistories,
     benchmarkCaseManifests: collectFrozenBenchmarkCaseManifests(benchmarkCaseManifests),
+    benchmarkJudgments,
+    replicaMeasurements,
     failures,
   };
 }
@@ -644,6 +1755,7 @@ export async function cmdExperiment(
     rounds?: string;
     questionsPerRound?: string;
     benchmarkManifest?: string;
+    officialPack?: string;
     outputDir?: string;
     gate?: boolean;
     maxQualityDrop?: string;
@@ -656,8 +1768,15 @@ export async function cmdExperiment(
     compareTrainingSeed?: boolean;
     compareVariants?: string;
     kimiStabilityMode?: string;
+    replicas?: string;
+    significance?: boolean;
+    judgeMode?: string;
   }
 ): Promise<void> {
+  if (options.benchmarkManifest && options.officialPack) {
+    throw new Error('--benchmark-manifest and --official-pack cannot be used together');
+  }
+
   const rounds = Math.max(1, parseInt(options.rounds ?? '10', 10));
   const questionsPerRound = Math.max(1, parseInt(options.questionsPerRound ?? '5', 10));
   const inputRouting = normalizeInputRoutingStrategy(
@@ -684,6 +1803,15 @@ export async function cmdExperiment(
   const providerName = resolvePreferredProviderName();
   const kimiStabilityMode = options.kimiStabilityMode ?? process.env.NEEKO_KIMI_STABILITY_MODE;
   const trainingSeedMode = normalizeTrainingSeedMode(options.trainingSeedMode);
+  const judgeMode = normalizeJudgeMode(options.judgeMode);
+  const officialPack = options.officialPack
+    ? loadBenchmarkPack(options.officialPack, { repoRoot: process.cwd() })
+    : null;
+  const parsedRequestedReplicas =
+    options.replicas === undefined ? undefined : Math.max(1, parseInt(options.replicas, 10));
+  if ((options.replicas || options.significance) && !officialPack) {
+    throw new Error('--replicas and --significance require --official-pack');
+  }
   const replayBenchmarkCaseManifests = options.benchmarkManifest
     ? loadBenchmarkCaseManifestsFromArtifact(options.benchmarkManifest)
     : [];
@@ -696,6 +1824,8 @@ export async function cmdExperiment(
     : {
       active: false,
     };
+  const requestedReplicas = resolveOfficialReplicaCount(parsedRequestedReplicas, officialPack);
+  const significanceEnabled = Boolean(officialPack && (options.significance || requestedReplicas > 1 || options.gate));
 
   if (benchmarkReplayMeta.active) {
     console.log(
@@ -704,14 +1834,32 @@ export async function cmdExperiment(
       )
     );
   }
+  if (officialPack) {
+    console.log(
+      chalk.dim(
+        `Official benchmark pack: ${officialPack.summary.pack_id}@${officialPack.summary.pack_version} ` +
+        `(${officialPack.summary.case_count} case(s), source=${officialPack.summary.source_kind})`
+      )
+    );
+  }
 
-  const { rows, roundHistories, benchmarkCaseManifests: profileBenchmarkCaseManifests, failures } = options.skipProfileSweep
-    ? { rows: [], roundHistories: {}, benchmarkCaseManifests: [], failures: [] }
+  const {
+    rows,
+    roundHistories,
+    benchmarkCaseManifests: profileBenchmarkCaseManifests,
+    benchmarkJudgments: profileBenchmarkJudgments,
+    replicaMeasurements,
+    failures,
+  } = options.skipProfileSweep
+    ? { rows: [], roundHistories: {}, benchmarkCaseManifests: [], benchmarkJudgments: [], replicaMeasurements: {}, failures: [] }
     : await runExperimentProfiles(slug, rounds, profiles, {
       kimiStabilityMode,
       trainingSeedMode,
       questionsPerRound,
       benchmarkCaseManifests: replayBenchmarkCaseManifests,
+      officialPack,
+      replicas: requestedReplicas,
+      judgeMode,
     });
   const inputRoutingComparison = options.compareTrainingSeed
     ? await runInputRoutingComparison(
@@ -722,7 +1870,9 @@ export async function cmdExperiment(
         true,
         questionsPerRound,
         parseComparisonVariants(options.compareVariants, true),
-        replayBenchmarkCaseManifests
+        replayBenchmarkCaseManifests,
+        officialPack,
+        judgeMode
       )
     : options.compareInputRouting
       ? await runInputRoutingComparison(
@@ -733,7 +1883,9 @@ export async function cmdExperiment(
         false,
         questionsPerRound,
         parseComparisonVariants(options.compareVariants, false),
-        replayBenchmarkCaseManifests
+        replayBenchmarkCaseManifests,
+        officialPack,
+        judgeMode
     )
     : {
       rows: [],
@@ -741,6 +1893,7 @@ export async function cmdExperiment(
       dynamicScalingRecommendation: null,
       routingDecisionRecord: null,
       benchmarkCaseManifests: [],
+      benchmarkJudgments: [],
     };
 
   const strictOfficialSummaryRows = selectStrictOfficialRows(rows);
@@ -763,16 +1916,25 @@ export async function cmdExperiment(
   const benchmarkCaseManifests = collectFrozenBenchmarkCaseManifests([
     ...profileBenchmarkCaseManifests,
     ...inputRoutingComparison.benchmarkCaseManifests,
+    ...(officialPack ? [officialPack.frozen_manifest] : []),
   ]);
   const replayReportShape = inferReplayReportShape(benchmarkCaseManifests);
-  const reportRounds = replayReportShape?.rounds ?? rounds;
-  const reportQuestionsPerRound = replayReportShape?.questionsPerRound ?? questionsPerRound;
+  const reportRounds = replayReportShape?.rounds ?? officialPack?.benchmark_context.rounds ?? rounds;
+  const reportQuestionsPerRound =
+    replayReportShape?.questionsPerRound ?? officialPack?.benchmark_context.questions_per_round ?? questionsPerRound;
   const benchmarkManifests = benchmarkCaseManifests.length > 0
     ? benchmarkCaseManifests.map((item) => item.manifest)
-    : collectBenchmarkManifests([...rows, ...inputRoutingComparison.rows]);
-  const strictOfficialAvailable =
-    strictOfficialSummaryRows.length > 0 ||
-    strictOfficialComparisonRows.length > 0;
+    : officialPack
+      ? [officialPack.frozen_manifest.manifest]
+      : collectBenchmarkManifests([...rows, ...inputRoutingComparison.rows]);
+  const { benchmarkSignificance, benchmarkGovernance } = buildProfileSweepBenchmarkGovernance({
+    rows,
+    replicaMeasurements,
+    officialPack,
+    benchmarkManifests,
+    judgeMode,
+    significanceEnabled,
+  });
 
   const outputDir = options.outputDir ? options.outputDir : join(settings.getPersonaDir(slug), 'experiments');
   mkdirSync(outputDir, { recursive: true });
@@ -780,6 +1942,12 @@ export async function cmdExperiment(
   const jsonPath = join(outputDir, `experiment-${slug}-${timestamp}.json`);
   const csvPath = join(outputDir, `experiment-${slug}-${timestamp}.csv`);
   const manifestPath = join(outputDir, `experiment-${slug}-${timestamp}.benchmark-manifest.json`);
+  const benchmarkJudgmentsPath = join(outputDir, `experiment-${slug}-${timestamp}.benchmark-judgments.json`);
+  const benchmarkSummaryPath = join(outputDir, `experiment-${slug}-${timestamp}.benchmark-summary.json`);
+  const benchmarkJudgments = [
+    ...profileBenchmarkJudgments,
+    ...inputRoutingComparison.benchmarkJudgments,
+  ];
 
   const gateResult = evaluateGate(rows, {
     enabled: options.gate === true,
@@ -788,65 +1956,83 @@ export async function cmdExperiment(
     maxDuplicationRise: parseFloat(options.maxDuplicationRise ?? '0.05'),
     baselineProfile: 'baseline',
     compareProfile: 'full',
+    benchmarkGovernance,
   });
 
-  const report = {
-    schema_version: 2,
-    generated_at: new Date().toISOString(),
+  const report = buildExperimentReport({
     slug,
-    rounds_per_profile: reportRounds,
     profiles,
-    questions_per_round: reportQuestionsPerRound,
-    summary_rows: rows,
-    official_summary_rows: strictOfficialSummaryRows,
-    best_profile: effectiveBestProfile,
-    observed_best_profile: observedBestProfile,
-    round_histories: roundHistories,
+    reportRounds,
+    reportQuestionsPerRound,
+    rows,
+    strictOfficialSummaryRows,
+    compatibleOfficialSummaryRows,
+    observedBestProfile,
+    effectiveBestProfile,
+    roundHistories,
     failures: failures ?? [],
-    input_routing_strategy: effectiveInputRouting,
-    provider: providerName,
-    kimi_stability_mode: kimiStabilityMode ?? 'auto',
-    training_seed_mode: effectiveTrainingSeedMode,
-    input_routing_comparison: inputRoutingComparison.rows,
-    official_input_routing_comparison: strictOfficialComparisonRows,
-    input_routing_recommendation: inputRoutingComparison.recommendation,
-    dynamic_scaling_recommendation: inputRoutingComparison.dynamicScalingRecommendation,
-    routing_decision_record: inputRoutingComparison.routingDecisionRecord,
-    current_gray_path_recommendation: currentGrayPathRecommendation,
-    benchmark_manifests: benchmarkManifests,
-    benchmark_case_manifests: benchmarkCaseManifests,
-    benchmark_replay: benchmarkReplayMeta,
-    artifact_refs: {
+    effectiveInputRouting,
+    providerName,
+    kimiStabilityMode,
+    effectiveTrainingSeedMode,
+    inputRoutingComparison,
+    strictOfficialComparisonRows,
+    compatibleOfficialComparisonRows,
+    currentGrayPathRecommendation,
+    benchmarkManifests,
+    benchmarkCaseManifests,
+    benchmarkJudgments,
+    benchmarkReplayMeta,
+    artifactRefs: {
       benchmark_manifest_path: manifestPath,
+      benchmark_pack_path: officialPack?.source.resolved_pack_path,
+      benchmark_judgments_path: benchmarkJudgments.length > 0 ? benchmarkJudgmentsPath : undefined,
+      benchmark_summary_path: benchmarkJudgments.length > 0 ? benchmarkSummaryPath : undefined,
       report_path: jsonPath,
       report_csv_path: csvPath,
     },
-    evaluation_v2: {
-      version: 'evaluation-v2-p2',
-      smoke_mode: reportRounds === 1 && reportQuestionsPerRound === 1,
-      official_status: strictOfficialAvailable ? 'available' : 'unavailable',
-      official_best_profile: effectiveBestProfile,
-      observed_best_profile: observedBestProfile,
-      official_run_count:
-        strictOfficialSummaryRows.length + strictOfficialComparisonRows.length,
-      contaminated_run_count:
-        rows.filter((row) => row.run_quality === 'contaminated').length +
-        inputRoutingComparison.rows.filter((row) => row.run_quality === 'contaminated').length,
-      failed_run_count:
-        rows.filter((row) => row.run_quality === 'failed').length +
-        inputRoutingComparison.rows.filter((row) => row.run_quality === 'failed').length,
-      inconclusive_run_count:
-        rows.filter((row) => row.run_quality === 'inconclusive').length +
-        inputRoutingComparison.rows.filter((row) => row.run_quality === 'inconclusive').length,
-      compatible_official_fallback_used:
-        compatibleOfficialSummaryRows.length !== strictOfficialSummaryRows.length ||
-        compatibleOfficialComparisonRows.length !== strictOfficialComparisonRows.length,
-      suite_types_present: [...new Set(benchmarkManifests.map((item) => item.suite_label.split(':')[0]))],
-      suite_tiers_present: [...new Set(benchmarkManifests.map((item) => item.suite_tier))],
-    },
-    gate_result: gateResult,
-  };
+    gateResult,
+    officialPack,
+    benchmarkSignificance,
+    benchmarkGovernance,
+  });
   writeFileSync(jsonPath, JSON.stringify(report, null, 2), 'utf-8');
+  if (benchmarkJudgments.length > 0) {
+    writeFileSync(
+      benchmarkJudgmentsPath,
+      JSON.stringify(
+        {
+          schema_version: 1,
+          generated_at: report.generated_at,
+          slug,
+          benchmark_pack: officialPack?.summary,
+          runs: benchmarkJudgments,
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+    writeFileSync(
+      benchmarkSummaryPath,
+      JSON.stringify(
+        {
+          schema_version: 1,
+          generated_at: report.generated_at,
+          slug,
+          benchmark_pack: officialPack?.summary,
+          benchmark_scorecards: report.benchmark_scorecards ?? [],
+          benchmark_judge_summary: report.benchmark_judge_summary ?? null,
+          benchmark_replica_summaries: report.benchmark_replica_summaries ?? [],
+          benchmark_significance: report.benchmark_significance ?? null,
+          benchmark_governance: report.benchmark_governance ?? null,
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+  }
   writeFileSync(
     manifestPath,
     JSON.stringify(
@@ -855,6 +2041,7 @@ export async function cmdExperiment(
         version: 'evaluation-v2-p2',
         generated_at: report.generated_at,
         slug,
+        benchmark_pack: officialPack?.summary,
         benchmark_manifests: benchmarkManifests,
         benchmark_case_manifests: benchmarkCaseManifests,
         benchmark_replay: benchmarkReplayMeta,
@@ -883,6 +2070,10 @@ export async function cmdExperiment(
   console.log(chalk.dim(`JSON report: ${jsonPath}`));
   console.log(chalk.dim(`CSV report:  ${csvPath}`));
   console.log(chalk.dim(`Manifest:    ${manifestPath}`));
+  if (benchmarkJudgments.length > 0) {
+    console.log(chalk.dim(`Benchmark judgments: ${benchmarkJudgmentsPath}`));
+    console.log(chalk.dim(`Benchmark summary:   ${benchmarkSummaryPath}`));
+  }
   if (inputRoutingComparison.rows.length > 0) {
     console.log(chalk.dim('Input routing comparison:'));
     for (const row of inputRoutingComparison.rows) {
@@ -968,6 +2159,23 @@ export async function cmdExperiment(
       process.exitCode = 2;
     }
   }
+  if (benchmarkSignificance) {
+    console.log(
+      chalk.dim(
+        `Benchmark significance: ${benchmarkSignificance.significance_status} ` +
+        `(delta=${(benchmarkSignificance.delta_mean ?? 0).toFixed(4)}, ` +
+        `ci=[${(benchmarkSignificance.ci_low ?? 0).toFixed(4)}, ${(benchmarkSignificance.ci_high ?? 0).toFixed(4)}])`
+      )
+    );
+  }
+  if (benchmarkGovernance) {
+    console.log(
+      chalk.dim(
+        `Benchmark governance: ${benchmarkGovernance.promotion_readiness} ` +
+        `(${benchmarkGovernance.significance_status})`
+      )
+    );
+  }
 
   if (best) {
     console.log(chalk.green(`\nRecommended default profile: ${best.profile}\n`));
@@ -986,7 +2194,9 @@ async function runInputRoutingComparison(
   compareTrainingSeed = false,
   questionsPerRound = 5,
   explicitVariants?: Array<{ strategy: InputRoutingStrategy; trainingSeedMode: TrainingSeedMode }>,
-  replayBenchmarkCaseManifests?: FrozenBenchmarkCaseManifest[]
+  replayBenchmarkCaseManifests?: FrozenBenchmarkCaseManifest[],
+  officialPack?: LoadedBenchmarkPack | null,
+  judgeMode: BenchmarkReportJudgeMode = 'both'
 ): Promise<InputRoutingComparisonSummary> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
@@ -997,6 +2207,7 @@ async function runInputRoutingComparison(
       dynamicScalingRecommendation: null,
       routingDecisionRecord: null,
       benchmarkCaseManifests: [],
+      benchmarkJudgments: [],
     };
   }
 
@@ -1010,6 +2221,7 @@ async function runInputRoutingComparison(
       dynamicScalingRecommendation: null,
       routingDecisionRecord: null,
       benchmarkCaseManifests: [],
+      benchmarkJudgments: [],
     };
   }
 
@@ -1022,6 +2234,7 @@ async function runInputRoutingComparison(
   const aggregator = new SoulAggregator();
   const rows: InputRoutingComparisonRow[] = [];
   const producedBenchmarkCaseManifests: FrozenBenchmarkCaseManifest[] = [];
+  const producedBenchmarkJudgments: ExperimentBenchmarkRunArtifact[] = [];
   const providerName = resolvePreferredProviderName();
   const replayManifestIndex = buildReplayManifestIndex(replayBenchmarkCaseManifests);
   const comparisonTimeoutMs = resolveComparisonTimeoutMs(docs.length, rounds);
@@ -1066,12 +2279,18 @@ async function runInputRoutingComparison(
       providerName,
     });
     const trainingSeedSelection = loadTrainingSeedHints(dir, trainingSeedMode);
-    const replayManifest = findReplayManifest(
-      replayManifestIndex,
-      'routing_compare',
-      `${strategy}:${trainingSeedSelection.mode}`
-    );
-    const replayQuestionRounds = replayManifest ? toFrozenQuestionRounds(replayManifest) : null;
+    const replayManifest = officialPack
+      ? officialPack.frozen_manifest
+      : findReplayManifest(
+        replayManifestIndex,
+        'routing_compare',
+        `${strategy}:${trainingSeedSelection.mode}`
+      );
+    const replayQuestionRounds = officialPack
+      ? officialPack.question_rounds
+      : replayManifest
+        ? toFrozenQuestionRounds(replayManifest)
+        : null;
     const replayConfig = replayQuestionRounds ? summarizeReplayQuestionRounds(replayQuestionRounds) : null;
     const effectiveRounds = replayConfig?.rounds ?? rounds;
     const effectiveQuestionsPerRound = replayConfig?.questionsPerRound ?? Math.max(1, questionsPerRound);
@@ -1135,7 +2354,7 @@ async function runInputRoutingComparison(
       const fallbackMetrics = snapshotAndResetAgentFallbackMetrics();
       const judgeProvenance = buildJudgeProvenance({
         layeredMode: executionSettings.evaluatorLayered,
-        dualReviewRequested: executionSettings.evaluatorDualReview,
+        dualReviewRequested: Boolean(executionSettings.evaluatorDualReview),
         evaluatorFallbacks: fallbackMetrics.evaluatorFallbacks,
       });
       const history = result.history;
@@ -1161,9 +2380,22 @@ async function runInputRoutingComparison(
         history,
         providerName,
         executionSettings,
+        officialPack,
       });
       if (benchmarkArtifacts.benchmarkCaseManifest) {
         producedBenchmarkCaseManifests.push(benchmarkArtifacts.benchmarkCaseManifest);
+      }
+      const benchmarkJudgeArtifact = await buildBenchmarkJudgeArtifactForRun({
+        pack: officialPack,
+        history,
+        runLabel: `${profile}+${strategy}+${trainingSeedSelection.mode}`,
+        scope: 'routing_compare',
+        profile,
+        variant: `${strategy}:${trainingSeedSelection.mode}`,
+        judgeMode,
+      });
+      if (benchmarkJudgeArtifact) {
+        producedBenchmarkJudgments.push(benchmarkJudgeArtifact);
       }
 
       rows.push({
@@ -1200,6 +2432,10 @@ async function runInputRoutingComparison(
           runtimeObservability: fallbackMetrics,
         }),
         judge_provenance: judgeProvenance,
+        benchmark_scorecard: benchmarkJudgeArtifact?.scorecard,
+        benchmark_case_summary: benchmarkJudgeArtifact?.case_summary,
+        benchmark_judge_summary: benchmarkJudgeArtifact?.judge_summary,
+        benchmark_judge_disagreement: benchmarkJudgeArtifact?.disagreement,
         benchmark_context: benchmarkArtifacts.benchmarkContext,
         observability: routed.observability,
         scaling_observability: {
@@ -1234,7 +2470,7 @@ async function runInputRoutingComparison(
       const runtimeObservability = snapshotAndResetAgentFallbackMetrics();
       const judgeProvenance = buildJudgeProvenance({
         layeredMode: executionSettings.evaluatorLayered,
-        dualReviewRequested: executionSettings.evaluatorDualReview,
+        dualReviewRequested: Boolean(executionSettings.evaluatorDualReview),
         evaluatorFallbacks: runtimeObservability.evaluatorFallbacks,
       });
       const contamination = classifyEvaluationRun({
@@ -1252,6 +2488,7 @@ async function runInputRoutingComparison(
         smokeMode: effectiveRounds === 1 && effectiveQuestionsPerRound === 1,
         providerName,
         executionSettings,
+        officialPack,
       });
       rows.push({
         label: `${profile}+${strategy}+${trainingSeedMode}${trainingSeedSelection.mode !== trainingSeedMode ? `->${trainingSeedSelection.mode}` : ''}`,
@@ -1311,10 +2548,10 @@ async function runInputRoutingComparison(
         },
         runtime_observability: {
           kimi_stability_mode: executionSettings.kimiStabilityMode,
-          trainer_fallbacks: runtimeObservability.trainer_fallbacks,
-          persona_fallbacks: runtimeObservability.persona_fallbacks,
-          evaluator_fallbacks: runtimeObservability.evaluator_fallbacks,
-          director_fallbacks: runtimeObservability.director_fallbacks,
+          trainer_fallbacks: runtimeObservability.trainerFallbacks,
+          persona_fallbacks: runtimeObservability.personaFallbacks,
+          evaluator_fallbacks: runtimeObservability.evaluatorFallbacks,
+          director_fallbacks: runtimeObservability.directorFallbacks,
         },
       });
     }
@@ -1337,8 +2574,14 @@ async function runInputRoutingComparison(
     dynamicScalingRecommendation,
     routingDecisionRecord,
     benchmarkCaseManifests: collectFrozenBenchmarkCaseManifests(producedBenchmarkCaseManifests),
+    benchmarkJudgments: producedBenchmarkJudgments,
   };
 }
+
+export const __experimentTestables = {
+  buildExperimentReport,
+  resolveOfficialReplicaCount,
+};
 
 function resolveComparisonTimeoutMs(rawDocCount: number, rounds: number): number {
   const envTimeout = Math.max(0, EXPERIMENT_COMPARISON_TIMEOUT_MS);

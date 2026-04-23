@@ -279,7 +279,7 @@ function parseRelaxedEvaluationText(
   return fallbackCandidate;
 }
 
-function buildProviderAttemptChain(
+export function buildProviderAttemptChain(
   primary?: ModelRuntimeOverride,
   role: ModelRuntimeRole = 'chat'
 ): ModelRuntimeOverride[] {
@@ -305,7 +305,7 @@ function buildProviderAttemptChain(
   return attempts;
 }
 
-async function generateObjectWithProviderFailover<T>({
+export async function generateObjectWithProviderFailover<T>({
   attempts,
   role,
   schema,

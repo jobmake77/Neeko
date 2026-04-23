@@ -57,9 +57,15 @@ export interface RuntimeFallbackSummary {
   director_fallbacks: number;
 }
 
-export type BenchmarkSuiteType = 'profile_sweep' | 'routing_compare' | 'smoke_pk' | 'ab_regression';
+export type BenchmarkSuiteType =
+  | 'profile_sweep'
+  | 'routing_compare'
+  | 'smoke_pk'
+  | 'ab_regression'
+  | 'official_benchmark';
 
 export type BenchmarkSuiteTier = 'official' | 'regression' | 'smoke' | 'ad_hoc';
+export type BenchmarkPackType = 'ad_hoc' | 'smoke' | 'official';
 
 export type BenchmarkReplayMode = 'recipe_only' | 'replica_summary';
 
@@ -109,7 +115,7 @@ export interface FrozenBenchmarkCaseManifest {
 
 export interface BenchmarkContext {
   pack_id: string;
-  pack_type: 'ad_hoc' | 'smoke';
+  pack_type: BenchmarkPackType;
   suite_type: BenchmarkSuiteType;
   suite_tier: BenchmarkSuiteTier;
   case_count: number;
@@ -185,6 +191,8 @@ export function buildBenchmarkContext(input: {
   suiteTier?: BenchmarkSuiteTier;
   replicaGroup?: string;
   replicaId?: string;
+  packId?: string;
+  packType?: BenchmarkPackType;
   caseManifest?: BenchmarkCaseManifest;
 }): BenchmarkContext {
   const flavor = input.profile ?? input.variant ?? 'main';
@@ -217,8 +225,14 @@ export function buildBenchmarkContext(input: {
     replica_id: input.replicaId,
   } satisfies BenchmarkCaseManifest;
   return {
-    pack_id: `${input.suiteType}:${input.slug}:${flavor}:${input.rounds}x${input.questionsPerRound}`,
-    pack_type: suiteTier === 'smoke' ? 'smoke' : 'ad_hoc',
+    pack_id: input.packId ?? `${input.suiteType}:${input.slug}:${flavor}:${input.rounds}x${input.questionsPerRound}`,
+    pack_type:
+      input.packType ??
+      (suiteTier === 'official' || input.suiteType === 'official_benchmark'
+        ? 'official'
+        : suiteTier === 'smoke'
+          ? 'smoke'
+          : 'ad_hoc'),
     suite_type: input.suiteType,
     suite_tier: suiteTier,
     case_count: caseManifest.case_count ?? defaultCaseCount,
@@ -618,11 +632,18 @@ export function normalizeRuntimeFallbackSummary(
     directorFallbacks?: number;
   } | null
 ): RuntimeFallbackSummary {
+  const snake = (input ?? {}) as Partial<RuntimeFallbackSummary>;
+  const camel = (input ?? {}) as {
+    trainerFallbacks?: number;
+    personaFallbacks?: number;
+    evaluatorFallbacks?: number;
+    directorFallbacks?: number;
+  };
   return {
-    trainer_fallbacks: Math.max(0, input?.trainer_fallbacks ?? input?.trainerFallbacks ?? 0),
-    persona_fallbacks: Math.max(0, input?.persona_fallbacks ?? input?.personaFallbacks ?? 0),
-    evaluator_fallbacks: Math.max(0, input?.evaluator_fallbacks ?? input?.evaluatorFallbacks ?? 0),
-    director_fallbacks: Math.max(0, input?.director_fallbacks ?? input?.directorFallbacks ?? 0),
+    trainer_fallbacks: Math.max(0, snake.trainer_fallbacks ?? camel.trainerFallbacks ?? 0),
+    persona_fallbacks: Math.max(0, snake.persona_fallbacks ?? camel.personaFallbacks ?? 0),
+    evaluator_fallbacks: Math.max(0, snake.evaluator_fallbacks ?? camel.evaluatorFallbacks ?? 0),
+    director_fallbacks: Math.max(0, snake.director_fallbacks ?? camel.directorFallbacks ?? 0),
   };
 }
 
@@ -658,6 +679,7 @@ function uniqueReasons(reasons: EvaluationContaminationReason[]): EvaluationCont
 }
 
 function inferBenchmarkSuiteTier(suiteType: BenchmarkSuiteType, smokeMode?: boolean): BenchmarkSuiteTier {
+  if (suiteType === 'official_benchmark') return 'official';
   if (suiteType === 'smoke_pk' || smokeMode) return 'smoke';
   if (suiteType === 'ab_regression') return 'regression';
   return 'ad_hoc';

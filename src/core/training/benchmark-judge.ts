@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { resolvePreferredModelOverride } from '../../config/model.js';
-import { buildProviderAttemptChain, generateObjectWithProviderFailover } from '../agents/index.js';
+import {
+  buildProviderAttemptChain,
+  generateObjectWithProviderFailover,
+  generateTextWithProviderFailover,
+} from '../agents/index.js';
 import type {
   BenchmarkPackCase,
   BenchmarkPackDefinition,
@@ -236,6 +240,7 @@ export const __benchmarkJudgeTestables = {
   buildBenchmarkCaseSummary,
   buildBenchmarkJudgeSummary,
   buildBenchmarkScorecard,
+  parseRelaxedBenchmarkJudgeReview,
   summarizeBenchmarkJudgeDisagreement,
 };
 
@@ -250,6 +255,7 @@ async function runSingleBenchmarkJudge(input: {
   maxResponseChars: number;
 }): Promise<BenchmarkJudgeReview> {
   const reply = input.trace.response.slice(0, input.maxResponseChars);
+  const attempts = buildProviderAttemptChain(resolvePreferredModelOverride('training'), 'training');
   const labelSummary = input.label
     ? JSON.stringify(
         {
@@ -303,10 +309,23 @@ async function runSingleBenchmarkJudge(input: {
     '- dimension_scores may include only benchmark dimensions that are actually evidenced by the reply.',
     '- evidence_spans should be short verbatim snippets from the reply.',
   ].join('\n');
+  const relaxedPrompt = [
+    prompt,
+    '',
+    'If strict JSON cannot be produced, return a compact text block with exactly these fields:',
+    'verdict: <pass|fail|abstain>',
+    'confidence: <0..1>',
+    'overall_score: <0..1>',
+    'dimension_scores:',
+    '- <dimension>: <0..1>',
+    'failure_modes: [..]',
+    'rationale: <short explanation>',
+    'evidence_spans: [..]',
+  ].join('\n');
 
   try {
     const object = await generateObjectWithProviderFailover({
-      attempts: buildProviderAttemptChain(resolvePreferredModelOverride('training'), 'training'),
+      attempts,
       role: 'training',
       schema: BenchmarkJudgeSchema,
       prompt,
@@ -323,8 +342,210 @@ async function runSingleBenchmarkJudge(input: {
       input.reviewerRole
     );
   } catch (error) {
+    if (shouldAttemptRelaxedJudgeFallback(error)) {
+      try {
+        const text = await generateTextWithProviderFailover({
+          attempts,
+          role: 'training',
+          prompt: relaxedPrompt,
+          temperature: 0,
+          label: 'benchmark judge text fallback',
+          timeoutMs: input.timeoutMs,
+          retries: input.retries,
+          logPrefix: 'BenchmarkJudge',
+        });
+        const relaxed = parseRelaxedBenchmarkJudgeReview(
+          text,
+          input.caseEntry,
+          input.pack.dimensions ?? [],
+          input.reviewerRole
+        );
+        if (relaxed) {
+          return relaxed;
+        }
+      } catch (relaxedError) {
+        const baseMessage = String(error ?? 'unknown error');
+        const relaxedMessage = String(relaxedError ?? 'unknown relaxed fallback error');
+        error = new Error(`${baseMessage}; relaxed benchmark fallback failed: ${relaxedMessage}`);
+      }
+    }
     return buildJudgeFallback(input.caseEntry, reply, input.reviewerRole, error);
   }
+}
+
+function shouldAttemptRelaxedJudgeFallback(error: unknown): boolean {
+  const message = String(error ?? '').toLowerCase();
+  return (
+    message.includes('no object generated') ||
+    message.includes('did not match schema') ||
+    message.includes('schema') ||
+    message.includes('json parse failed') ||
+    message.includes('json') ||
+    message.includes('structured output')
+  );
+}
+
+function parseRelaxedBenchmarkJudgeReview(
+  text: string,
+  caseEntry: BenchmarkPackCase,
+  allowedDimensions: string[],
+  reviewerRole: 'primary' | 'secondary'
+): BenchmarkJudgeReview | null {
+  const normalizedText = String(text ?? '').replace(/\*\*/g, '').trim();
+  if (!normalizedText) return null;
+
+  const jsonCandidate = extractFirstJsonObject(normalizedText);
+  if (jsonCandidate) {
+    try {
+      return normalizeBenchmarkJudgeReview(
+        BenchmarkJudgeSchema.parse(JSON.parse(jsonCandidate)),
+        caseEntry,
+        allowedDimensions,
+        reviewerRole
+      );
+    } catch {
+      // Fall through to relaxed line parsing.
+    }
+  }
+
+  const verdict = extractJudgeVerdict(normalizedText);
+  if (!verdict) return null;
+  const overallScore = extractJudgeNumeric(normalizedText, ['overall_score', 'overall'], 0.45);
+  const confidence = extractJudgeNumeric(normalizedText, ['confidence'], verdict === 'abstain' ? 0.35 : 0.7);
+  const dimensionScores = extractDimensionScores(normalizedText, allowedDimensions, caseEntry.target_dimension, overallScore);
+  const failureModes = extractStringList(normalizedText, 'failure_modes');
+  const evidenceSpans = extractStringList(normalizedText, 'evidence_spans');
+  const rationale = extractSection(normalizedText, 'rationale') ?? `${reviewerRole} judge relaxed fallback`;
+
+  return normalizeBenchmarkJudgeReview(
+    {
+      verdict,
+      confidence,
+      overall_score: overallScore,
+      dimension_scores: dimensionScores,
+      failure_modes: failureModes,
+      rationale,
+      evidence_spans: evidenceSpans,
+    },
+    caseEntry,
+    allowedDimensions,
+    reviewerRole
+  );
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? text).trim();
+  const start = candidate.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < candidate.length; index += 1) {
+    const char = candidate[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return candidate.slice(start, index + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function extractJudgeVerdict(text: string): BenchmarkJudgeVerdict | null {
+  const match = text.match(/verdict[^a-z]*(pass|fail|abstain)\b/i) ?? text.match(/\b(pass|fail|abstain)\b/i);
+  if (!match) return null;
+  const verdict = match[1]?.toLowerCase();
+  if (verdict === 'pass' || verdict === 'fail' || verdict === 'abstain') return verdict;
+  return null;
+}
+
+function extractJudgeNumeric(text: string, keys: string[], fallback: number): number {
+  for (const key of keys) {
+    const pattern = new RegExp(`${key}[^0-9\\n-]*([0-9]*\\.?[0-9]+)`, 'i');
+    const match = text.match(pattern);
+    if (!match) continue;
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed)) return clamp01(parsed);
+  }
+  return clamp01(fallback);
+}
+
+function extractDimensionScores(
+  text: string,
+  allowedDimensions: string[],
+  targetDimension: string | undefined,
+  overallScore: number
+): Record<string, number> {
+  const permitted = new Set(
+    [...allowedDimensions, targetDimension].filter((value): value is string => Boolean(value))
+  );
+  const result: Record<string, number> = {};
+  const section = extractSection(text, 'dimension_scores') ?? text;
+  for (const line of section.split('\n')) {
+    const match = line.match(/([a-z_][a-z0-9_]*)\s*[:=]\s*([0-9]*\.?[0-9]+)/i);
+    if (!match) continue;
+    const key = match[1];
+    if (permitted.size > 0 && !permitted.has(key)) continue;
+    result[key] = clamp01(Number(match[2]));
+  }
+  if (Object.keys(result).length === 0 && targetDimension) {
+    result[targetDimension] = clamp01(overallScore);
+  }
+  return result;
+}
+
+function extractStringList(text: string, field: string): string[] {
+  const section = extractSection(text, field);
+  if (!section) return [];
+  const bracketMatch = section.match(/\[([\s\S]*?)\]/);
+  if (bracketMatch) {
+    try {
+      const parsed = JSON.parse(`[${bracketMatch[1]}]`) as unknown[];
+      return parsed
+        .map((item) => String(item).trim())
+        .filter(Boolean)
+        .slice(0, 6);
+    } catch {
+      const quoted = [...bracketMatch[1].matchAll(/"([^"]+)"|'([^']+)'/g)]
+        .map((match) => (match[1] ?? match[2] ?? '').trim())
+        .filter(Boolean);
+      if (quoted.length > 0) {
+        return quoted.slice(0, 6);
+      }
+    }
+  }
+  return section
+    .split('\n')
+    .map((line) => line.replace(/^\s*[-*•\d.)]+\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function extractSection(text: string, field: string): string | null {
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `${escapedField}\\s*[:=]\\s*([\\s\\S]*?)(?=\\n\\s*(?:[A-Za-z_][A-Za-z0-9_]*|\\d+\\.)\\s*[:=]|$)`,
+    'i'
+  );
+  const match = text.match(pattern);
+  const value = match?.[1]?.trim();
+  return value ? value : null;
 }
 
 function alignCasesWithTraces(pack: LoadedBenchmarkPack, traces: BenchmarkRunCaseTrace[]): Array<{

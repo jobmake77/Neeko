@@ -214,6 +214,7 @@ type CultivationPhase =
   | 'normalizing'
   | 'building_evidence'
   | 'training'
+  | 'continuing_collection'
   | 'ready'
   | 'error';
 
@@ -5300,7 +5301,7 @@ export class WorkbenchService {
       || persona.memory_node_count > 0;
     if (this.isPersonaReady(persona)) return 'ready';
     if (sourceItems.some((item) => item.status === 'error') && !hasTrainingArtifacts) return 'error';
-    if (evaluationPassed === false && hasTrainingArtifacts) return 'training';
+    if (evaluationPassed === false && hasTrainingArtifacts) return 'continuing_collection';
     if ((persona.current_stage ?? persona.status) === 'training') return 'training';
     if (config.update_policy.current_operation === 'deep_fetch') return 'deep_fetching';
     if (config.update_policy.current_operation === 'incremental_sync') return 'incremental_syncing';
@@ -6322,6 +6323,7 @@ export class WorkbenchService {
       { key: 'normalizing', label: 'stage_refining' },
       { key: 'building_evidence', label: 'stage_refining' },
       { key: 'training', label: 'stage_training' },
+      { key: 'continuing_collection', label: 'stage_ingesting' },
       { key: 'error', label: 'stage_error' },
       { key: 'ready', label: 'stage_converged' },
     ];

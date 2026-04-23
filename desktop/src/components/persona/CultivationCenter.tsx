@@ -20,6 +20,7 @@ function formatPhaseLabel(phase?: string) {
   if (phase === 'normalizing') return '整理素材中';
   if (phase === 'building_evidence') return '构建训练上下文中';
   if (phase === 'training') return '人格收敛中';
+  if (phase === 'continuing_collection') return '继续培养中';
   if (phase === 'ready') return '可聊天';
   if (phase === 'error') return '待处理';
   return '培养中';

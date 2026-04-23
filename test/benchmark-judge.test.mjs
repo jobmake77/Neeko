@@ -6,8 +6,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const agentSourcePath = fileURLToPath(new URL('../src/core/agents/index.ts', import.meta.url));
+const benchmarkJudgeSourcePath = fileURLToPath(new URL('../src/core/training/benchmark-judge.ts', import.meta.url));
 
 let evaluatorAgentModulePromise;
+let benchmarkJudgeModulePromise;
 
 async function importOptional(specifier) {
   try {
@@ -62,6 +64,47 @@ async function requireEvaluatorAgent(t) {
     return null;
   }
   return mod.EvaluatorAgent;
+}
+
+async function loadBenchmarkJudgeModule() {
+  if (!benchmarkJudgeModulePromise) {
+    benchmarkJudgeModulePromise = (async () => {
+      const esbuild = await importOptional('esbuild');
+      if (!esbuild?.build) return null;
+
+      const tempDir = await mkdtemp(join(repoRoot, '.tmp-benchmark-judge-parser-'));
+      const entryPath = join(tempDir, 'benchmark-judge-parser-entry.ts');
+      const outfile = join(tempDir, 'benchmark-judge-parser-entry.mjs');
+      await writeFile(
+        entryPath,
+        `export * from ${JSON.stringify(benchmarkJudgeSourcePath)};\n`,
+        'utf8'
+      );
+      await esbuild.build({
+        entryPoints: [entryPath],
+        outfile,
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        packages: 'external',
+        absWorkingDir: repoRoot,
+        logLevel: 'silent',
+      });
+      return import(pathToFileURL(outfile).href);
+    })();
+  }
+
+  return benchmarkJudgeModulePromise;
+}
+
+async function requireBenchmarkJudgeParser(t) {
+  const mod = await loadBenchmarkJudgeModule();
+  const parser = mod?.__benchmarkJudgeTestables?.parseRelaxedBenchmarkJudgeReview ?? null;
+  if (!parser) {
+    t.skip('Blocker: benchmark judge relaxed parser is not exposed for tests.');
+    return null;
+  }
+  return parser;
 }
 
 function evaluation(overrides = {}) {
@@ -205,4 +248,43 @@ test('benchmark judge dual-judge mode emits an adjudicated merge when judges mat
     'concrete tradeoff framing',
   ]);
   assert.deepEqual(result.new_memory_candidates, secondary.new_memory_candidates);
+});
+
+test('benchmark judge relaxed parser can recover a markdown fallback review', async (t) => {
+  const parseRelaxedBenchmarkJudgeReview = await requireBenchmarkJudgeParser(t);
+  if (!parseRelaxedBenchmarkJudgeReview) return;
+
+  const review = parseRelaxedBenchmarkJudgeReview(
+    `Evaluation:
+
+1. consistency_score: 1.0
+2. overall_score: 0.93
+3. verdict: pass
+4. confidence: 0.9
+5. dimension_scores:
+   - persona_fidelity: 0.95
+   - boundary_safety: 0.90
+6. failure_modes: []
+7. rationale: The reply stays concrete, respects the requested boundary, and matches the target style.
+8. evidence_spans: ["principles, then test tradeoffs", "avoid perfectionism"]`,
+    {
+      case_id: 'persona-core-human-seed-v1-001',
+      prompt: 'What principle guides your toughest product decisions?',
+      strategy: 'scenario',
+      target_dimension: 'persona_fidelity',
+    },
+    ['persona_fidelity', 'boundary_safety'],
+    'primary'
+  );
+
+  assert.ok(review);
+  assert.equal(review.verdict, 'pass');
+  assert.equal(review.confidence, 0.9);
+  assert.equal(review.overall_score, 0.93);
+  assert.equal(review.dimension_scores.persona_fidelity, 0.95);
+  assert.equal(review.dimension_scores.boundary_safety, 0.9);
+  assert.deepEqual(review.evidence_spans, [
+    'principles, then test tradeoffs',
+    'avoid perfectionism',
+  ]);
 });

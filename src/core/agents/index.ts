@@ -369,7 +369,7 @@ export async function generateObjectWithProviderFailover<T>({
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-async function generateTextWithProviderFailover(options: {
+export async function generateTextWithProviderFailover(options: {
   attempts: ModelRuntimeOverride[];
   role: ModelRuntimeRole;
   prompt: string;

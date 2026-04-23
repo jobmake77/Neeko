@@ -44,7 +44,7 @@ export interface PersonaSkillSummary {
 
 export interface CultivationDetail {
   persona: PersonaSummary;
-  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'ready' | 'error';
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;
@@ -350,7 +350,7 @@ export interface CultivationSummary {
     current_source_label?: string;
     last_update_check_at?: string;
     latest_update_result?: string;
-    phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'ready' | 'error';
+    phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'ready' | 'error';
     last_heartbeat_at?: string;
     completed_windows?: number;
     estimated_total_windows?: number;

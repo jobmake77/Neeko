@@ -275,7 +275,7 @@ export const CultivationSummarySchema = z.object({
     current_source_label: z.string().optional(),
     last_update_check_at: z.string().datetime().optional(),
     latest_update_result: z.string().optional(),
-    phase: z.enum(['queued', 'deep_fetching', 'incremental_syncing', 'normalizing', 'building_evidence', 'training', 'ready', 'error']).optional(),
+    phase: z.enum(['queued', 'deep_fetching', 'incremental_syncing', 'normalizing', 'building_evidence', 'training', 'continuing_collection', 'ready', 'error']).optional(),
     last_heartbeat_at: z.string().datetime().optional(),
     completed_windows: z.number().int().min(0).optional(),
     estimated_total_windows: z.number().int().min(0).optional(),
@@ -431,7 +431,7 @@ export interface PersonaSkillSummary {
 
 export interface CultivationDetail {
   persona: PersonaSummary;
-  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'ready' | 'error';
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;

@@ -10,6 +10,7 @@ web/out/
 desktop/dist/
 desktop/src-tauri/target/
 desktop/runtime/
+.neeko-tools/
 
 # Logs
 *.log

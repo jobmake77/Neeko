@@ -8,8 +8,8 @@
     "neeko": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
+    "build": "node scripts/run-js-bin-with-compatible-node.mjs tsup",
+    "dev": "node scripts/run-js-bin-with-compatible-node.mjs tsup --watch",
     "start": "node dist/cli/index.js",
     "workbench:server": "node dist/cli/index.js workbench-server",
     "prepare:desktop-runtime": "node scripts/prepare-desktop-runtime.mjs",

@@ -1,6 +1,6 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -35,11 +35,7 @@ cpSync(join(repoRoot, 'scripts'), join(runtimeRoot, 'scripts'), {
 });
 
 log('copying bundled Node runtime');
-const nodeBinary = execSync('command -v node', {
-  cwd: repoRoot,
-  stdio: ['ignore', 'pipe', 'ignore'],
-  encoding: 'utf8',
-}).trim();
+const nodeBinary = resolvePreferredNodeBinary();
 if (!nodeBinary) {
   throw new Error('could not locate node binary for desktop runtime');
 }
@@ -69,7 +65,8 @@ log('writing runtime package manifest');
 writeFileSync(join(runtimeRoot, 'package.json'), JSON.stringify(runtimePackage, null, 2));
 
 log('pruning dev dependencies from staged runtime');
-execSync('npm prune --omit=dev --ignore-scripts', {
+const npmCli = resolveNpmCliPath();
+execFileSync(nodeBinary, [npmCli, 'prune', '--omit=dev', '--ignore-scripts'], {
   cwd: runtimeRoot,
   stdio: 'inherit',
 });
@@ -91,3 +88,42 @@ if (!existsSync(join(runtimeBinDir, 'node'))) {
 }
 
 log(`runtime ready at ${runtimeRoot}`);
+
+function resolvePreferredNodeBinary() {
+  const candidates = [
+    '/usr/local/bin/node',
+    '/opt/homebrew/bin/node',
+    '/opt/local/bin/node',
+    process.execPath,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return realpathSync(candidate);
+    }
+  }
+
+  const fromShell = execSync('command -v node', {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8',
+  }).trim();
+  return fromShell ? realpathSync(fromShell) : null;
+}
+
+function resolveNpmCliPath() {
+  const candidates = [
+    process.env.npm_execpath,
+    '/usr/local/lib/node_modules/npm/bin/npm-cli.js',
+    '/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js',
+    '/opt/local/lib/node_modules/npm/bin/npm-cli.js',
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return realpathSync(candidate);
+    }
+  }
+
+  throw new Error('could not locate npm-cli.js for desktop runtime pruning');
+}

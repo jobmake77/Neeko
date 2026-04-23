@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 1420",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 1420",
+    "dev": "node ../scripts/run-js-bin-with-compatible-node.mjs vite --host 127.0.0.1 --port 1420",
+    "build": "tsc --noEmit && node ../scripts/run-js-bin-with-compatible-node.mjs vite build",
+    "preview": "node ../scripts/run-js-bin-with-compatible-node.mjs vite preview --host 127.0.0.1 --port 1420",
     "prepare:runtime": "npm --prefix .. run prepare:desktop-runtime",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:dev": "node ../scripts/run-js-bin-with-compatible-node.mjs @tauri-apps/cli dev",
+    "tauri:build": "node ../scripts/run-js-bin-with-compatible-node.mjs @tauri-apps/cli build"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.2",

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Send, Paperclip, X, Image as ImageIcon, Video, FileAudio, FileText, File, ChevronDown } from 'lucide-react';
 import { CHAT_MODEL_OPTIONS, useChatStore } from '@/stores/chat';
 import { useAppStore } from '@/stores/app';
@@ -40,6 +40,7 @@ export function ChatInput() {
   const { view } = useAppStore();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const valueRef = useRef(draft);
+  const [focused, setFocused] = useState(false);
 
   // Auto-focus when chat view is active
   useEffect(() => {
@@ -163,134 +164,139 @@ export function ChatInput() {
       )}
 
       <div
+        onClick={() => textareaRef.current?.focus()}
         style={{
           display: 'flex',
-          alignItems: 'flex-end',
-          gap: 8,
+          flexDirection: 'column',
+          gap: 10,
           background: 'rgb(var(--bg-card))',
-          border: '1px solid rgb(var(--border))',
-          borderRadius: 22,
-          padding: '12px 14px 10px',
-          minHeight: 132,
+          border: focused ? '1px solid rgb(var(--accent))' : '1px solid rgb(var(--border))',
+          borderRadius: 18,
+          padding: '12px 14px',
+          minHeight: 96,
+          boxShadow: focused ? '0 0 0 3px rgb(var(--accent) / 0.12)' : '0 1px 2px rgb(0 0 0 / 0.04)',
+          cursor: 'text',
+          transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
         }}
       >
-        {/* Attachment button */}
-        <button
-          className="btn btn-icon"
-          onClick={() => void handlePickFiles()}
-          disabled={sending}
-          title="添加附件"
-          style={{
-            width: 28,
-            height: 28,
-            flexShrink: 0,
-            color: 'rgb(var(--text-tertiary))',
-            marginBottom: 2,
-          }}
-        >
-          <Paperclip size={15} />
-        </button>
         <textarea
           ref={textareaRef}
           disabled={sending}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           placeholder={t('typeMessage')}
           rows={1}
           style={{
             flex: 1,
+            width: '100%',
             resize: 'none',
             border: 'none',
             outline: 'none',
             background: 'transparent',
             color: 'rgb(var(--text-primary))',
-            fontSize: 14,
+            fontSize: 14.5,
             lineHeight: '22px',
             fontFamily: 'inherit',
             padding: 0,
+            minHeight: 52,
             maxHeight: 132,
             overflowY: 'auto',
             textAlign: 'left',
-            marginTop: 2,
+            marginTop: 0,
           }}
         />
-        <button
-          className="btn btn-primary"
-          disabled={sending}
-          onClick={submit}
-          title={t('sendHint')}
-          style={{
-            width: 32,
-            height: 32,
-            padding: 0,
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 999,
-            marginBottom: 2,
-          }}
-        >
-          <Send size={15} />
-        </button>
-      </div>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 10,
-          marginTop: -42,
-          padding: '0 48px 8px 44px',
-          pointerEvents: 'none',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, pointerEvents: 'auto' }}>
-          {availableProviders.length > 0 && chatModel ? (
-            <>
-              <div style={{ position: 'relative' }}>
-                <select
-                  value={chatModel.model}
-                  onChange={(e) => setChatModel(e.target.value)}
-                  style={compactSelectStyle(148)}
-                >
-                  {(CHAT_MODEL_OPTIONS[chatModel.provider] ?? []).map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={12} style={compactChevronStyle} />
-              </div>
-              <div style={{ position: 'relative' }}>
-                <select
-                  value={chatModel.provider}
-                  onChange={(e) => setChatProvider(e.target.value as RuntimeModelConfig['provider'])}
-                  style={compactSelectStyle(86)}
-                >
-                  {availableProviders.map((provider) => (
-                    <option key={provider} value={provider}>
-                      {PROVIDER_SHORT_LABELS[provider]}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={12} style={compactChevronStyle} />
-              </div>
-            </>
-          ) : (
-            <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{t('noChatModel')}</span>
-          )}
-        </div>
         <div
           style={{
-            textAlign: 'right',
-            fontSize: 11,
-            color: 'rgb(var(--text-tertiary))',
-            flexShrink: 0,
-            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+            borderTop: '1px solid rgb(var(--border-light))',
+            paddingTop: 10,
           }}
         >
-          {t('sendHint')}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <button
+              className="btn btn-icon"
+              onClick={() => void handlePickFiles()}
+              disabled={sending}
+              title="添加附件"
+              style={{
+                width: 30,
+                height: 30,
+                flexShrink: 0,
+                color: 'rgb(var(--text-tertiary))',
+                borderRadius: 999,
+              }}
+            >
+              <Paperclip size={15} />
+            </button>
+            {availableProviders.length > 0 && chatModel ? (
+              <>
+                <div style={{ position: 'relative' }}>
+                  <select
+                    value={chatModel.model}
+                    onChange={(e) => setChatModel(e.target.value)}
+                    style={compactSelectStyle(156)}
+                  >
+                    {(CHAT_MODEL_OPTIONS[chatModel.provider] ?? []).map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={12} style={compactChevronStyle} />
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <select
+                    value={chatModel.provider}
+                    onChange={(e) => setChatProvider(e.target.value as RuntimeModelConfig['provider'])}
+                    style={compactSelectStyle(92)}
+                  >
+                    {availableProviders.map((provider) => (
+                      <option key={provider} value={provider}>
+                        {PROVIDER_SHORT_LABELS[provider]}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={12} style={compactChevronStyle} />
+                </div>
+              </>
+            ) : (
+              <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{t('noChatModel')}</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            <div
+              style={{
+                textAlign: 'right',
+                fontSize: 11,
+                color: 'rgb(var(--text-tertiary))',
+              }}
+            >
+              {t('sendHint')}
+            </div>
+            <button
+              className="btn btn-primary"
+              disabled={sending}
+              onClick={submit}
+              title={t('sendHint')}
+              style={{
+                width: 34,
+                height: 34,
+                padding: 0,
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 999,
+              }}
+            >
+              <Send size={15} />
+            </button>
+          </div>
         </div>
       </div>
     </div>

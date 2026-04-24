@@ -275,7 +275,7 @@ export const CultivationSummarySchema = z.object({
     current_source_label: z.string().optional(),
     last_update_check_at: z.string().datetime().optional(),
     latest_update_result: z.string().optional(),
-    phase: z.enum(['queued', 'deep_fetching', 'incremental_syncing', 'normalizing', 'building_evidence', 'training', 'continuing_collection', 'ready', 'error']).optional(),
+    phase: z.enum(['queued', 'deep_fetching', 'incremental_syncing', 'normalizing', 'building_evidence', 'training', 'continuing_collection', 'soft_closed', 'ready', 'error']).optional(),
     last_heartbeat_at: z.string().datetime().optional(),
     completed_windows: z.number().int().min(0).optional(),
     estimated_total_windows: z.number().int().min(0).optional(),
@@ -333,6 +333,9 @@ export const CultivationSummarySchema = z.object({
     collection_stop_reason: z.string().optional(),
     history_exhausted: z.boolean().optional(),
     provider_exhausted: z.boolean().optional(),
+    soft_closed: z.boolean().optional(),
+    soft_closed_at: z.string().datetime().optional(),
+    soft_close_reason: z.string().optional(),
     cache_reuse: z.object({
       active: z.boolean(),
       source_id: z.string().optional(),
@@ -366,6 +369,10 @@ export const PersonaConfigSchema = z.object({
     last_training_prep_count: z.number().int().min(0).optional(),
     last_training_baseline_clean_count: z.number().int().min(0).optional(),
     last_training_prep_id: z.string().optional(),
+    last_deep_fetch_settled_clean_count: z.number().int().min(0).optional(),
+    no_progress_deep_fetch_streak: z.number().int().min(0).optional(),
+    soft_closed_at: z.string().datetime().optional(),
+    soft_close_reason: z.enum(['material_exhausted']).optional(),
   }).default({
     auto_check_remote: true,
     check_interval_minutes: 60,
@@ -431,7 +438,7 @@ export interface PersonaSkillSummary {
 
 export interface CultivationDetail {
   persona: PersonaSummary;
-  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'ready' | 'error';
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;
@@ -464,6 +471,9 @@ export interface CultivationDetail {
   collection_stop_reason?: string;
   history_exhausted?: boolean;
   provider_exhausted?: boolean;
+  soft_closed?: boolean;
+  soft_closed_at?: string;
+  soft_close_reason?: string;
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;

@@ -215,6 +215,7 @@ type CultivationPhase =
   | 'building_evidence'
   | 'training'
   | 'continuing_collection'
+  | 'soft_closed'
   | 'ready'
   | 'error';
 
@@ -284,6 +285,7 @@ const AUTO_TRAINING_THRESHOLD = 500;
 const COLLECTION_CONTINUE_DELAY_MS = 2_500;
 const SOURCE_SYNC_HEARTBEAT_STALE_MS = 90_000;
 const COLLECTION_EXHAUSTED_RETRY_LIMIT = 3;
+const SOFT_CLOSE_NO_PROGRESS_LIMIT = 2;
 
 export interface PromotionHandoffExport {
   handoff: PromotionHandoff;
@@ -1522,9 +1524,11 @@ export class WorkbenchService {
     cleanDocumentCount: number;
     threshold: ReturnType<typeof buildTrainingThresholdSummary>;
     evaluationPassed?: boolean;
+    softClosed: boolean;
     stopReason?: string;
   }): boolean {
     if (state.evaluationPassed === true) return false;
+    if (state.softClosed) return false;
     return (
       (state.evaluationPassed === false && state.cleanDocumentCount >= state.threshold.training_threshold)
       || (state.cleanDocumentCount > 0 && state.cleanDocumentCount < state.threshold.training_threshold)
@@ -1711,12 +1715,21 @@ export class WorkbenchService {
       sources: input.sources ?? current.sources,
       update_policy: input.update_policy ?? current.update_policy,
     }, new Date().toISOString());
+    const nextUpdatePolicy = input.sources !== undefined
+      ? this.clearSoftCloseUpdatePolicy(normalized.update_policy, {
+          collection_cycle: 0,
+          collection_stop_reason: undefined,
+          history_exhausted: false,
+          provider_exhausted: false,
+          last_deep_fetch_settled_clean_count: undefined,
+        })
+      : normalized.update_policy;
     const nextConfig: PersonaConfig = {
       ...current,
       persona_slug: slug,
       name: normalized.name,
       sources: normalized.sources,
-      update_policy: normalized.update_policy,
+      update_policy: nextUpdatePolicy,
       updated_at: new Date().toISOString(),
     };
     this.validatePersonaConfig(nextConfig);
@@ -2495,6 +2508,9 @@ export class WorkbenchService {
 
   async checkPersonaUpdates(slug: string): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
     const state = this.summarizeCollectionState(slug);
+    if (state.softClosed) {
+      return this.startSourceSyncRun(slug, 'incremental_sync');
+    }
     if (state.evaluationPassed === false && state.cleanDocumentCount >= state.threshold.training_threshold) {
       return this.startSourceSyncRun(slug, 'deep_fetch');
     }
@@ -2502,6 +2518,9 @@ export class WorkbenchService {
   }
 
   async continueCultivationFromSources(slug: string): Promise<{ imports: WorkbenchEvidenceImport[]; run: WorkbenchRun | null; summary: string }> {
+    if (this.isSoftClosedConfig(this.getPersonaConfig(slug))) {
+      this.reopenSoftClosedPersona(slug, '已恢复继续培养，系统将重新深抓素材来源');
+    }
     return this.startSourceSyncRun(slug, 'deep_fetch');
   }
 
@@ -2532,6 +2551,9 @@ export class WorkbenchService {
     const state = this.summarizeCollectionState(slug);
     if (state.evaluationPassed === true) {
       return { shouldContinue: false, summary: fallbackSummary };
+    }
+    if (state.softClosed) {
+      return { shouldContinue: false, summary: this.buildSoftCloseSummary() };
     }
 
     const summary = state.cleanDocumentCount < state.threshold.training_threshold
@@ -3889,6 +3911,9 @@ export class WorkbenchService {
     cleanDocumentCount: number;
     threshold: ReturnType<typeof buildTrainingThresholdSummary>;
     evaluationPassed?: boolean;
+    softClosed: boolean;
+    softClosedAt?: string;
+    softCloseReason?: string;
     retrain: {
       lastTrainingPrepCount?: number;
       retrainDeltaCount?: number;
@@ -3914,8 +3939,10 @@ export class WorkbenchService {
       .filter((source) => source.enabled && source.type === 'social')
       .map((source) => this.readSourceSyncProgress(source))
       .filter((item): item is SourceSyncProgressState => Boolean(item));
-    const historyExhausted = progressStates.some((item) => item.history_exhausted === true);
-    const providerExhausted = progressStates.some((item) => item.provider_exhausted === true);
+    const historyExhausted = progressStates.some((item) => item.history_exhausted === true)
+      || config.update_policy.history_exhausted === true;
+    const providerExhausted = progressStates.some((item) => item.provider_exhausted === true)
+      || config.update_policy.provider_exhausted === true;
     const stopReason = progressStates
       .map((item) => item.collection_stop_reason)
       .find((item): item is string => Boolean(item))
@@ -3924,6 +3951,9 @@ export class WorkbenchService {
       cleanDocumentCount,
       threshold,
       evaluationPassed,
+      softClosed: this.isSoftClosedConfig(config),
+      softClosedAt: config.update_policy.soft_closed_at,
+      softCloseReason: config.update_policy.soft_close_reason,
       retrain,
       collectionCycle: Math.max(0, config.update_policy.collection_cycle ?? 0),
       historyExhausted,
@@ -3997,6 +4027,148 @@ export class WorkbenchService {
     return retrain.retrainReady
       ? `当前测评未通过，新增素材 ${delta} / ${required}，已达到下一轮训练条件`
       : `当前测评未通过，新增素材 ${delta} / ${required}，系统正在继续补充素材`;
+  }
+
+  private buildSoftCloseSummary(): string {
+    return '公开素材已触边，当前暂无更多可补素材，系统已基于现有语料生成当前版本人格';
+  }
+
+  private isSoftClosedConfig(config?: PersonaConfig | null): boolean {
+    return Boolean(
+      config?.update_policy.soft_closed_at
+      || config?.update_policy.soft_close_reason === 'material_exhausted'
+      || config?.update_policy.collection_stop_reason === 'soft_closed_material_exhausted'
+    );
+  }
+
+  private clearSoftCloseUpdatePolicy(
+    policy: PersonaConfig['update_policy'],
+    overrides: Partial<PersonaConfig['update_policy']> = {},
+  ): PersonaConfig['update_policy'] {
+    return {
+      ...policy,
+      no_progress_deep_fetch_streak: 0,
+      soft_closed_at: undefined,
+      soft_close_reason: undefined,
+      ...overrides,
+    };
+  }
+
+  private hasTrainingArtifacts(slug: string, persona?: PersonaSummary): boolean {
+    const trainingContext = this.readTrainingContext(slug);
+    const trainingReport = this.readTrainingReport(slug);
+    const summary = persona ?? this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug);
+    return (trainingReport?.total_rounds ?? 0) > 0
+      || (trainingContext?.completed_rounds ?? 0) > 0
+      || (summary?.training_rounds ?? 0) > 0
+      || (summary?.memory_node_count ?? 0) > 0;
+  }
+
+  private shouldSoftCloseCollection(
+    slug: string,
+    state: ReturnType<WorkbenchService['summarizeCollectionState']>,
+    noProgressDeepFetchStreak: number,
+  ): boolean {
+    if (state.evaluationPassed !== false) return false;
+    if (!state.threshold.training_threshold_met) return false;
+    if (state.retrain.retrainReady) return false;
+    const reachedNoProgressThreshold = noProgressDeepFetchStreak >= SOFT_CLOSE_NO_PROGRESS_LIMIT;
+    const legacyExhaustionSoftClose = state.historyExhausted && state.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT;
+    if (!reachedNoProgressThreshold && !legacyExhaustionSoftClose) return false;
+    if (!(state.historyExhausted || state.stopReason === 'search_horizon_reached')) return false;
+    return this.hasTrainingArtifacts(slug);
+  }
+
+  private maybeRecoverSoftClosedPersona(slug: string, summary?: PersonaSummary): PersonaSummary | null {
+    const config = this.store.getPersonaConfig(slug);
+    if (!config || this.isSoftClosedConfig(config)) return null;
+    if (config.update_policy.latest_result === this.buildSoftCloseSummary() && this.hasTrainingArtifacts(slug, summary)) {
+      return this.promotePersonaToSoftClosed(slug, summary);
+    }
+    if (this.getActivePersonaRun(slug)) return null;
+    const state = this.summarizeCollectionState(slug, { preferCachedDocumentCount: true });
+    const priorNoProgressDeepFetchStreak = config.update_policy.no_progress_deep_fetch_streak
+      ?? ((state.historyExhausted || state.stopReason === 'search_horizon_reached') && (config.update_policy.collection_cycle ?? 0) > 0 ? 1 : 0);
+    if (!this.shouldSoftCloseCollection(slug, state, priorNoProgressDeepFetchStreak)) {
+      return null;
+    }
+    return this.promotePersonaToSoftClosed(slug, summary);
+  }
+
+  private promotePersonaToSoftClosed(slug: string, summary?: PersonaSummary): PersonaSummary | null {
+    const base = summary ?? this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug);
+    if (!base) return null;
+    const nextUpdatedAt = new Date().toISOString();
+    const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+    if (existsSync(personaPath)) {
+      try {
+        const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+        writeFileSync(personaPath, JSON.stringify({
+          ...persona,
+          status: 'available',
+          updated_at: nextUpdatedAt,
+        }, null, 2), 'utf-8');
+      } catch {
+        // Keep soft-close promotion resilient for partially broken persona assets.
+      }
+    }
+    const config = this.store.getPersonaConfig(slug);
+    if (config) {
+      this.store.savePersonaConfig({
+        ...config,
+        sources: config.sources.map((source) => ({
+          ...source,
+          status: source.enabled ? 'ready' : source.status,
+        })),
+        update_policy: {
+          ...config.update_policy,
+          current_operation: 'idle',
+          current_source_label: undefined,
+          evaluation_passed: false,
+          collection_stop_reason: 'soft_closed_material_exhausted',
+          soft_closed_at: nextUpdatedAt,
+          soft_close_reason: 'material_exhausted',
+          latest_result: this.buildSoftCloseSummary(),
+        },
+        updated_at: nextUpdatedAt,
+      });
+    }
+    return {
+      ...base,
+      status: 'available',
+      updated_at: nextUpdatedAt,
+    };
+  }
+
+  private reopenSoftClosedPersona(slug: string, summaryText: string): void {
+    const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+    const nextUpdatedAt = new Date().toISOString();
+    if (existsSync(personaPath)) {
+      try {
+        const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+        writeFileSync(personaPath, JSON.stringify({
+          ...persona,
+          status: 'training',
+          updated_at: nextUpdatedAt,
+        }, null, 2), 'utf-8');
+      } catch {
+        // Keep soft-close recovery resilient for partially broken persona assets.
+      }
+    }
+    const config = this.store.getPersonaConfig(slug);
+    if (!config) return;
+    this.store.savePersonaConfig({
+      ...config,
+      update_policy: this.clearSoftCloseUpdatePolicy(config.update_policy, {
+        current_operation: 'idle',
+        current_source_label: undefined,
+        collection_stop_reason: undefined,
+        history_exhausted: false,
+        provider_exhausted: false,
+        latest_result: summaryText,
+      }),
+      updated_at: nextUpdatedAt,
+    });
   }
 
   private persistCollectionState(
@@ -4098,13 +4270,59 @@ export class WorkbenchService {
   }
 
   private async handleCollectionRunSettled(slug: string, runType: 'source_sync' | 'train', run: WorkbenchRun): Promise<void> {
+    const config = this.getPersonaConfig(slug);
+    const sourceSyncMode = config.update_policy.current_operation === 'incremental_sync' ? 'incremental_sync' : 'deep_fetch';
+    const wasSoftClosed = this.isSoftClosedConfig(config);
     const state = this.summarizeCollectionState(slug);
+    const hasSettledCleanBaseline = Number.isFinite(config.update_policy.last_deep_fetch_settled_clean_count);
+    const previousSettledCleanCount = hasSettledCleanBaseline
+      ? Math.max(0, config.update_policy.last_deep_fetch_settled_clean_count ?? 0)
+      : state.cleanDocumentCount;
     this.reconcilePersonaDocumentCount(slug, state.cleanDocumentCount);
 
     if (runType === 'source_sync') {
+      const priorNoProgressDeepFetchStreak = config.update_policy.no_progress_deep_fetch_streak
+        ?? ((state.historyExhausted || state.stopReason === 'search_horizon_reached') && (config.update_policy.collection_cycle ?? 0) > 0 ? 1 : 0);
+      const hasAcceptedContentIncrease = !hasSettledCleanBaseline && sourceSyncMode === 'deep_fetch' && (state.historyExhausted || state.stopReason === 'search_horizon_reached')
+        ? false
+        : state.cleanDocumentCount > previousSettledCleanCount;
+      const noProgressDeepFetchStreak = sourceSyncMode === 'deep_fetch'
+        ? hasAcceptedContentIncrease
+          ? 0
+          : Math.max(0, priorNoProgressDeepFetchStreak + 1)
+        : Math.max(0, priorNoProgressDeepFetchStreak);
+      const sourceSyncPatch: Partial<PersonaConfig['update_policy']> = sourceSyncMode === 'deep_fetch'
+        ? {
+            last_deep_fetch_settled_clean_count: state.cleanDocumentCount,
+            no_progress_deep_fetch_streak: noProgressDeepFetchStreak,
+          }
+        : {};
+
+      if (wasSoftClosed && sourceSyncMode === 'incremental_sync' && !hasAcceptedContentIncrease) {
+        const summary = this.buildSoftCloseSummary();
+        this.persistCollectionState(slug, {
+          ...sourceSyncPatch,
+          current_operation: 'idle',
+          current_source_label: undefined,
+          evaluation_passed: false,
+          collection_stop_reason: 'soft_closed_material_exhausted',
+          history_exhausted: state.historyExhausted,
+          provider_exhausted: state.providerExhausted,
+          soft_closed_at: state.softClosedAt,
+          soft_close_reason: state.softCloseReason ?? 'material_exhausted',
+        }, summary);
+        this.appendPersonaRunLog(slug, 'source sync review kept persona soft-closed with no new accepted content', summary);
+        return;
+      }
+
+      if (wasSoftClosed && hasAcceptedContentIncrease) {
+        this.reopenSoftClosedPersona(slug, '检测到新的素材增量，系统已恢复继续培养');
+      }
+
       if (state.cleanDocumentCount < state.threshold.training_threshold) {
         const summary = state.threshold.summary;
         this.persistCollectionState(slug, {
+          ...sourceSyncPatch,
           current_operation: 'idle',
           current_source_label: undefined,
           collection_stop_reason: state.providerExhausted
@@ -4115,6 +4333,8 @@ export class WorkbenchService {
           history_exhausted: state.historyExhausted,
           provider_exhausted: state.providerExhausted,
           evaluation_passed: state.evaluationPassed,
+          soft_closed_at: undefined,
+          soft_close_reason: undefined,
         }, summary);
         this.appendPersonaRunLog(slug, `source sync review clean_docs=${state.cleanDocumentCount} threshold=${state.threshold.training_threshold}`, summary);
         this.scheduleCollectionContinuation(slug, summary, state);
@@ -4127,14 +4347,39 @@ export class WorkbenchService {
         return;
       }
       if (state.evaluationPassed === false) {
+        if (sourceSyncMode === 'deep_fetch' && this.shouldSoftCloseCollection(slug, state, noProgressDeepFetchStreak)) {
+          const summary = this.buildSoftCloseSummary();
+          const softClosedAt = new Date().toISOString();
+          this.persistCollectionState(slug, {
+            ...sourceSyncPatch,
+            current_operation: 'idle',
+            current_source_label: undefined,
+            evaluation_passed: false,
+            collection_stop_reason: 'soft_closed_material_exhausted',
+            history_exhausted: state.historyExhausted,
+            provider_exhausted: state.providerExhausted,
+            soft_closed_at: softClosedAt,
+            soft_close_reason: 'material_exhausted',
+          }, summary);
+          this.promotePersonaToSoftClosed(slug);
+          this.appendPersonaRunLog(
+            slug,
+            `source sync review soft-closed after ${noProgressDeepFetchStreak} no-progress deep fetch cycles`,
+            summary,
+          );
+          return;
+        }
         const summary = this.buildFailedEvaluationSummary(state.retrain);
         this.persistCollectionState(slug, {
+          ...sourceSyncPatch,
           current_operation: 'idle',
           current_source_label: undefined,
           evaluation_passed: false,
           collection_stop_reason: state.retrain.retrainReady ? 'retrain_ready' : 'waiting_retrain_delta',
           history_exhausted: state.historyExhausted,
           provider_exhausted: state.providerExhausted,
+          soft_closed_at: undefined,
+          soft_close_reason: undefined,
         }, summary);
         this.appendPersonaRunLog(
           slug,
@@ -4155,6 +4400,8 @@ export class WorkbenchService {
         collection_stop_reason: 'evaluation_passed',
         history_exhausted: state.historyExhausted,
         provider_exhausted: state.providerExhausted,
+        soft_closed_at: undefined,
+        soft_close_reason: undefined,
       }, '培养已完成，可开始对话');
       return;
     }
@@ -4169,6 +4416,8 @@ export class WorkbenchService {
       collection_stop_reason: state.retrain.retrainReady ? 'retrain_ready' : 'waiting_retrain_delta',
       history_exhausted: state.historyExhausted,
       provider_exhausted: state.providerExhausted,
+      soft_closed_at: undefined,
+      soft_close_reason: undefined,
     }, summary);
     this.appendPersonaRunLog(slug, `train review evaluation_passed=${String(evaluationPassed)} clean_docs=${state.cleanDocumentCount}`, summary);
     this.scheduleCollectionContinuation(slug, summary, state);
@@ -4180,6 +4429,7 @@ export class WorkbenchService {
     state = this.summarizeCollectionState(slug),
   ): void {
     this.clearCollectionContinuation(slug);
+    if (state.softClosed) return;
     const exhaustionRetry = state.historyExhausted || state.providerExhausted;
     const decision = buildCollectionContinuationDecision({
       cleanDocumentCount: state.cleanDocumentCount,
@@ -4901,20 +5151,30 @@ export class WorkbenchService {
       preferCachedCounts: true,
       totalCleanDocumentCount: uniqueDocumentCount,
     });
+    const effectiveCounts = this.resolveEffectiveCultivationCounts(sourceItems, uniqueDocumentCount);
     const recentUniqueDocumentCount = this.computeRecentDeltaCount(evidenceImports, sourceItems);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
     const currentWindow = this.getCurrentWindow(sourceItems);
     const latestWindow = currentWindow ?? this.getActiveWindows(sourceItems)[0];
-    const threshold = buildTrainingThresholdSummary(uniqueDocumentCount, resolveTrainingThreshold(config));
+    const threshold = buildTrainingThresholdSummary(effectiveCounts.cleanDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
-    const retrain = this.computeRetrainState(slug, config, uniqueDocumentCount, evaluationPassed);
+    const retrain = this.computeRetrainState(slug, config, effectiveCounts.cleanDocumentCount, evaluationPassed);
     const progressStates = config.sources
       .filter((item) => item.enabled && item.type === 'social')
       .map((item) => this.readSourceSyncProgress(item))
       .filter((item): item is SourceSyncProgressState => Boolean(item));
-    const historyExhausted = progressStates.some((item) => item.history_exhausted === true);
-    const providerExhausted = progressStates.some((item) => item.provider_exhausted === true);
-    const showThresholdBlock = uniqueDocumentCount > 0 && !threshold.training_threshold_met;
+    const historyExhausted = progressStates.some((item) => item.history_exhausted === true)
+      || config.update_policy.history_exhausted === true;
+    const providerExhausted = progressStates.some((item) => item.provider_exhausted === true)
+      || config.update_policy.provider_exhausted === true;
+    const phase = this.resolveCultivationPhase(
+      persona,
+      config,
+      effectiveCounts.rawDocumentCount,
+      effectiveCounts.cleanDocumentCount,
+      sourceItems,
+    );
+    const showThresholdBlock = effectiveCounts.cleanDocumentCount > 0 && !threshold.training_threshold_met;
     return {
       status: persona.status,
       progress_percent: persona.progress_percent ?? 0,
@@ -4928,12 +5188,13 @@ export class WorkbenchService {
         total_sources: config.sources.length,
         enabled_sources: config.sources.filter((item) => item.enabled).length,
         source_breakdown: buildSourceBreakdown(config.sources),
-        document_count: uniqueDocumentCount,
+        document_count: effectiveCounts.cleanDocumentCount,
         recent_delta_count: recentUniqueDocumentCount,
         current_operation: config.update_policy.current_operation,
         current_source_label: config.update_policy.current_source_label,
         last_update_check_at: config.update_policy.last_checked_at,
         latest_update_result: this.resolveCultivationStatusMessage(persona, config, threshold, evaluationPassed),
+        phase,
         active_window: currentWindow,
         latest_window: latestWindow,
         training_threshold: threshold.training_threshold,
@@ -4941,7 +5202,7 @@ export class WorkbenchService {
         training_block_reason: showThresholdBlock
           ? threshold.training_block_reason
           : undefined,
-        clean_document_count: uniqueDocumentCount,
+        clean_document_count: effectiveCounts.cleanDocumentCount,
         evaluation_passed: evaluationPassed,
         last_training_prep_count: retrain.lastTrainingPrepCount,
         retrain_delta_count: retrain.retrainDeltaCount,
@@ -4952,6 +5213,9 @@ export class WorkbenchService {
         collection_stop_reason: config.update_policy.collection_stop_reason,
         history_exhausted: historyExhausted,
         provider_exhausted: providerExhausted,
+        soft_closed: this.isSoftClosedConfig(config),
+        soft_closed_at: config.update_policy.soft_closed_at,
+        soft_close_reason: config.update_policy.soft_close_reason,
         cache_reuse: cacheReuse,
       },
       last_update_check_at: config.update_policy.last_checked_at,
@@ -5043,6 +5307,21 @@ export class WorkbenchService {
         active_window: sourceProgress?.current_window,
       };
     });
+  }
+
+  private resolveEffectiveCultivationCounts(
+    sourceItems: NonNullable<CultivationDetail['source_items']>,
+    persistedCleanDocumentCount: number,
+  ): {
+    rawDocumentCount: number;
+    cleanDocumentCount: number;
+  } {
+    const liveRawDocumentCount = sourceItems.reduce((sum, item) => sum + Math.max(0, item.raw_count ?? 0), 0);
+    const liveCleanDocumentCount = sourceItems.reduce((sum, item) => sum + Math.max(0, item.clean_count ?? 0), 0);
+    return {
+      rawDocumentCount: Math.max(0, liveRawDocumentCount),
+      cleanDocumentCount: Math.max(0, persistedCleanDocumentCount, liveCleanDocumentCount),
+    };
   }
 
   private computeRecentDeltaCount(
@@ -5217,6 +5496,9 @@ export class WorkbenchService {
     sourceItems: NonNullable<CultivationDetail['source_items']>,
     cleanDocumentCount: number
   ): string {
+    if (this.isSoftClosedConfig(config)) {
+      return '公开素材已触边，系统已基于现有语料生成当前版本人格';
+    }
     if (this.isPersonaReady(persona)) {
       return '已完成培养，可开始对话';
     }
@@ -5316,6 +5598,9 @@ export class WorkbenchService {
     threshold: ReturnType<typeof buildTrainingThresholdSummary>,
     evaluationPassed?: boolean,
   ): string {
+    if (this.isSoftClosedConfig(config)) {
+      return this.buildSoftCloseSummary();
+    }
     if (this.isPersonaReady(persona)) {
       return '培养已完成，可开始对话';
     }
@@ -5349,6 +5634,7 @@ export class WorkbenchService {
       || (trainingContext?.completed_rounds ?? 0) > 0
       || persona.training_rounds > 0
       || persona.memory_node_count > 0;
+    if (this.isSoftClosedConfig(config)) return 'soft_closed';
     if (this.isPersonaReady(persona)) return 'ready';
     if (sourceItems.some((item) => item.status === 'error') && !hasTrainingArtifacts) return 'error';
     if (evaluationPassed === false && hasTrainingArtifacts) return 'continuing_collection';
@@ -5925,14 +6211,22 @@ export class WorkbenchService {
     let base = personaSummary ?? configSummary;
     if (!base) return null;
 
+    let config = this.store.getPersonaConfig(slug);
+    const recoveredSoftClosed = this.maybeRecoverSoftClosedPersona(slug, base);
+    if (recoveredSoftClosed) {
+      base = recoveredSoftClosed;
+      config = this.store.getPersonaConfig(slug);
+    }
+
     const trainingContext = this.readTrainingContext(slug);
     const trainingReport = this.readTrainingReport(slug);
-    if (trainingContext?.state === 'interrupted' && this.isPersonaReady(base)) {
+    const softClosed = this.isSoftClosedConfig(config);
+    if (trainingContext?.state === 'interrupted' && this.isPersonaReady(base) && !softClosed) {
       base = this.demoteInterruptedPersona(slug, base);
     } else if (this.shouldPromotePersonaToReady(base, trainingContext, trainingReport)) {
       base = this.promotePersonaToReady(slug, base, trainingReport);
     }
-    const config = this.store.getPersonaConfig(slug);
+    config = this.store.getPersonaConfig(slug);
     const stage = this.resolveStage(base.status, trainingContext, trainingReport);
     const cleanDocumentCount = Math.max(0, Math.round(base.doc_count ?? 0));
     const realtimeDocumentCount = config
@@ -6125,6 +6419,9 @@ export class WorkbenchService {
           current_source_label: undefined,
           evaluation_passed: true,
           collection_stop_reason: 'evaluation_passed',
+          no_progress_deep_fetch_streak: 0,
+          soft_closed_at: undefined,
+          soft_close_reason: undefined,
           latest_result: '培养已完成，可开始对话',
         },
         updated_at: nextUpdatedAt,
@@ -6162,6 +6459,8 @@ export class WorkbenchService {
           ...config.update_policy,
           evaluation_passed: false,
           collection_stop_reason: 'evaluation_retry_pending',
+          soft_closed_at: undefined,
+          soft_close_reason: undefined,
         },
         updated_at: nextUpdatedAt,
       });
@@ -6179,7 +6478,7 @@ export class WorkbenchService {
     report: ReturnType<typeof this.readTrainingReport>
   ): string {
     if (report && report.total_rounds > 0 && context?.state === 'completed') return 'converged';
-    if (status === 'converged' || status === 'exported') return 'converged';
+    if (status === 'converged' || status === 'exported' || status === 'available' || status === 'ready') return 'converged';
     if (status === 'training') {
       if (context?.state === 'completed') return 'converged';
       if (context?.state === 'interrupted') return 'training';
@@ -6194,7 +6493,7 @@ export class WorkbenchService {
   }
 
   private computeProgressPercent(status: string, currentRound: number, totalRounds: number): number {
-    if (status === 'converged' || status === 'exported') return 100;
+    if (status === 'converged' || status === 'exported' || status === 'available' || status === 'ready') return 100;
     const stageMax: Record<string, number> = { created: 5, ingesting: 25, refining: 45, training: 99, error: 45, converged: 100 };
     const base = stageMax[status] ?? 0;
     if (status === 'training' && totalRounds > 0) {
@@ -6213,12 +6512,14 @@ export class WorkbenchService {
     const config = this.getPersonaConfig(slug);
     const evidenceImports = this.store.listEvidenceImports(slug);
     const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
-    const cleanDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
+    const persistedCleanDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
     let sourceItems = this.buildCultivationSourceItems(config, evidenceImports, {
       preferCachedCounts: true,
-      totalCleanDocumentCount: cleanDocumentCount,
+      totalCleanDocumentCount: persistedCleanDocumentCount,
     });
-    const rawDocumentCount = sourceItems.reduce((sum, item) => sum + item.raw_count, 0);
+    const effectiveCounts = this.resolveEffectiveCultivationCounts(sourceItems, persistedCleanDocumentCount);
+    const rawDocumentCount = effectiveCounts.rawDocumentCount;
+    const cleanDocumentCount = effectiveCounts.cleanDocumentCount;
     const validationSummary = sourceItems.reduce<ValidationSummaryTotals>((acc, item) => {
       acc.accepted_count += item.validation_summary?.accepted_count ?? item.clean_count ?? 0;
       acc.rejected_count += item.validation_summary?.rejected_count ?? 0;
@@ -6283,6 +6584,9 @@ export class WorkbenchService {
       collection_stop_reason: config.update_policy.collection_stop_reason,
       history_exhausted: config.update_policy.history_exhausted,
       provider_exhausted: config.update_policy.provider_exhausted,
+      soft_closed: this.isSoftClosedConfig(config),
+      soft_closed_at: config.update_policy.soft_closed_at,
+      soft_close_reason: config.update_policy.soft_close_reason,
       training_block_reason: showThresholdBlock ? threshold.training_block_reason : undefined,
       latest_activity: this.buildLatestCultivationActivity(persona, config, sourceItems, cleanDocumentCount),
       progress: {
@@ -6352,6 +6656,9 @@ export class WorkbenchService {
         collection_stop_reason: config.update_policy.collection_stop_reason,
         history_exhausted: config.update_policy.history_exhausted,
         provider_exhausted: config.update_policy.provider_exhausted,
+        soft_closed: this.isSoftClosedConfig(config),
+        soft_closed_at: config.update_policy.soft_closed_at,
+        soft_close_reason: config.update_policy.soft_close_reason,
         cache_reuse: cacheReuse,
       } as any,
     };
@@ -6374,6 +6681,7 @@ export class WorkbenchService {
       { key: 'building_evidence', label: 'stage_refining' },
       { key: 'training', label: 'stage_training' },
       { key: 'continuing_collection', label: 'stage_ingesting' },
+      { key: 'soft_closed', label: 'stage_converged' },
       { key: 'error', label: 'stage_error' },
       { key: 'ready', label: 'stage_converged' },
     ];

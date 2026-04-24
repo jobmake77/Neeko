@@ -44,7 +44,7 @@ export interface PersonaSkillSummary {
 
 export interface CultivationDetail {
   persona: PersonaSummary;
-  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'ready' | 'error';
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;
@@ -77,6 +77,9 @@ export interface CultivationDetail {
   collection_stop_reason?: string;
   history_exhausted?: boolean;
   provider_exhausted?: boolean;
+  soft_closed?: boolean;
+  soft_closed_at?: string;
+  soft_close_reason?: string;
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;
@@ -242,6 +245,10 @@ export interface PersonaConfig {
     last_training_prep_count?: number;
     last_training_baseline_clean_count?: number;
     last_training_prep_id?: string;
+    last_deep_fetch_settled_clean_count?: number;
+    no_progress_deep_fetch_streak?: number;
+    soft_closed_at?: string;
+    soft_close_reason?: 'material_exhausted';
   };
 }
 
@@ -350,7 +357,7 @@ export interface CultivationSummary {
     current_source_label?: string;
     last_update_check_at?: string;
     latest_update_result?: string;
-    phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'ready' | 'error';
+    phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
     last_heartbeat_at?: string;
     completed_windows?: number;
     estimated_total_windows?: number;
@@ -408,6 +415,9 @@ export interface CultivationSummary {
     collection_stop_reason?: string;
     history_exhausted?: boolean;
     provider_exhausted?: boolean;
+    soft_closed?: boolean;
+    soft_closed_at?: string;
+    soft_close_reason?: string;
     cache_reuse?: {
       active: boolean;
       source_id?: string;

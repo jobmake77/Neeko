@@ -22,6 +22,8 @@ export const PersonaSchema = z.object({
     'ingesting',    // collecting data
     'refining',     // soul extraction in progress
     'training',     // cultivation loop running
+    'available',    // usable current version after soft close
+    'ready',        // legacy ready state
     'converged',    // training complete
     'exported',     // exported to target format
   ]),

@@ -9,6 +9,7 @@ import * as api from '@/lib/api';
 
 function statusMeta(status: string) {
   if (status === 'error') return { color: '#ef4444', label: t('cultivationFailed') };
+  if (status === 'soft_closed') return { color: '#f59e0b', label: '已按当前素材收口' };
   if (status === 'converged' || status === 'available' || status === 'ready') return { color: '#22c55e', label: t('cultivationComplete') };
   return { color: '#0ea5e9', label: t('cultivating') };
 }
@@ -21,6 +22,7 @@ function formatPhaseLabel(phase?: string) {
   if (phase === 'building_evidence') return '构建训练上下文中';
   if (phase === 'training') return '人格收敛中';
   if (phase === 'continuing_collection') return '继续培养中';
+  if (phase === 'soft_closed') return '已按当前素材收口';
   if (phase === 'ready') return '可聊天';
   if (phase === 'error') return '待处理';
   return '培养中';
@@ -83,6 +85,17 @@ function formatWindowStatus(status?: string) {
   if (status === 'failed') return '失败待处理';
   if (status === 'skipped') return '已跳过';
   return '等待推进';
+}
+
+function formatCollectionStopReasonLabel(reason?: string) {
+  if (!reason) return null;
+  if (reason === 'soft_closed_material_exhausted') return '公开素材已触边，连续 2 轮未获得新增素材';
+  if (reason === 'search_horizon_reached') return '公开素材已触边，当前暂无更多可补素材';
+  if (reason === 'waiting_retrain_delta') return '测评未通过，正在等待累计到下一轮训练阈值';
+  if (reason === 'retrain_ready') return '已达到下一轮训练条件';
+  if (reason === 'evaluation_passed') return '测评已通过';
+  if (reason === 'unable_to_progress') return '多轮重试后仍无法取得新增素材';
+  return reason;
 }
 
 function formatWindowSentence(detail?: CultivationDetail) {
@@ -402,7 +415,8 @@ function TrainingCard({
 }) {
   const stageStatus = persona.current_stage ?? persona.status;
   const progress = persona.progress_percent ?? 0;
-  const finished = isFinishedStatus(stageStatus);
+  const softClosed = detail?.soft_closed ?? detail?.source_summary?.soft_closed ?? false;
+  const finished = isFinishedStatus(stageStatus) || softClosed;
   const phase = detail?.phase ?? (finished ? 'ready' : stageStatus);
   const threshold = detail?.training_threshold ?? detail?.source_summary?.training_threshold;
   const thresholdMet = detail?.training_threshold_met ?? detail?.source_summary?.training_threshold_met;
@@ -413,7 +427,9 @@ function TrainingCard({
   const retrainReady = detail?.retrain_ready ?? detail?.source_summary?.retrain_ready;
   const rawDocumentCount = detail?.raw_document_count ?? detail?.source_summary?.document_count ?? 0;
   const cleanDocumentCount = detail?.clean_document_count ?? detail?.source_summary?.clean_document_count ?? detail?.source_summary?.document_count ?? 0;
-  const displayPhaseLabel = evaluationPassed === false && thresholdMet
+  const displayPhaseLabel = softClosed
+    ? '已按当前素材收口'
+    : evaluationPassed === false && thresholdMet
     ? (retrainReady ? '准备进入下一轮训练' : '继续培养中')
     : formatPhaseLabel(detail?.phase);
   const meta = statusMeta(phase);
@@ -443,6 +459,7 @@ function TrainingCard({
   const cacheReuse = detail?.cache_reuse;
   const collectionCycle = detail?.collection_cycle ?? detail?.source_summary?.collection_cycle;
   const collectionStopReason = detail?.collection_stop_reason ?? detail?.source_summary?.collection_stop_reason;
+  const collectionStopReasonLabel = formatCollectionStopReasonLabel(collectionStopReason);
   const historyExhausted = detail?.history_exhausted ?? detail?.source_summary?.history_exhausted;
   const providerExhausted = detail?.provider_exhausted ?? detail?.source_summary?.provider_exhausted;
   const thresholdLabel = threshold ? `${cleanDocumentCount} / ${threshold}` : null;
@@ -456,7 +473,9 @@ function TrainingCard({
     : null;
   const evaluationHint = evaluationPassed === true
     ? '测评已通过'
-    : evaluationPassed === false
+    : softClosed
+      ? '当前版本未完全通过测评'
+      : evaluationPassed === false
       ? retrainReady
         ? '测评未通过，已达到下一轮训练条件'
         : '测评未通过，系统会继续补充素材'
@@ -513,6 +532,11 @@ function TrainingCard({
             {cacheReuse?.active ? <span>缓存复用 {cacheReuse.reused_document_count}</span> : null}
             {currentWindowText ? <span>{currentWindowText}</span> : null}
           </div>
+          {softClosed ? (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'rgb(var(--text-secondary))' }}>
+              公开素材已触边，当前暂无更多可补素材，系统已基于现有语料生成当前版本人格。
+            </div>
+          ) : null}
           {thresholdHint ? (
             <div style={{ marginTop: 8, fontSize: 11, color: thresholdMet ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
               {thresholdHint}
@@ -532,8 +556,8 @@ function TrainingCard({
           ) : null}
           {collectionStopReason || historyExhausted || providerExhausted ? (
             <div style={{ marginTop: 8, fontSize: 11, color: 'rgb(var(--text-secondary))' }}>
-              {collectionStopReason ? `收口状态：${collectionStopReason}` : null}
-              {historyExhausted ? `${collectionStopReason ? ' · ' : ''}历史窗口已触边` : null}
+              {collectionStopReasonLabel ? `收口状态：${collectionStopReasonLabel}` : null}
+              {historyExhausted ? `${collectionStopReasonLabel ? ' · ' : ''}历史窗口已触边` : null}
               {providerExhausted ? `${collectionStopReason || historyExhausted ? ' · ' : ''}Provider 待恢复` : null}
             </div>
           ) : null}
@@ -578,9 +602,14 @@ function TrainingCard({
                 {detail.training_block_reason}
               </div>
             ) : null}
-            {collectionStopReason ? (
+            {collectionStopReasonLabel ? (
               <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
-                当前收口原因：{collectionStopReason}
+                当前收口原因：{collectionStopReasonLabel}
+              </div>
+            ) : null}
+            {softClosed ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
+                当前版本未完全通过测评，但公开素材已触边，系统已按现有语料收口；补充新来源或手动继续培养后可继续优化。
               </div>
             ) : null}
             {evaluationPassed === false && retrainRequiredDelta ? (
@@ -651,6 +680,11 @@ function TrainingCard({
                 {pendingOperation === 'deep_fetch' ? '深抓取中…' : '继续培养'}
               </button>
             )}
+            {softClosed ? (
+              <button className="btn btn-secondary" onClick={() => void onContinue()} style={{ fontSize: 12 }} disabled={Boolean(pendingOperation)}>
+                {pendingOperation === 'deep_fetch' ? '深抓取中…' : '继续培养'}
+              </button>
+            ) : null}
             {stageStatus === 'error' ? <button className="btn btn-ghost" onClick={onReload} style={{ fontSize: 12 }}>{t('retry')}</button> : null}
           </div>
         </div>

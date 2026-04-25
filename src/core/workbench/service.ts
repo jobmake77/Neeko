@@ -64,6 +64,7 @@ import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
 import { getDefaultModelForProvider, resolveModelForOverride, type ProviderName } from '../../config/model.js';
 import { loadRawDocsCache, writeRawDocsCache } from '../pipeline/evidence-routing.js';
+import { ensurePersonaWebArtifacts } from '../pipeline/persona-web.js';
 
 export interface WorkbenchCreateInput {
   target?: string;
@@ -213,6 +214,7 @@ type CultivationPhase =
   | 'incremental_syncing'
   | 'normalizing'
   | 'building_evidence'
+  | 'building_network'
   | 'training'
   | 'continuing_collection'
   | 'soft_closed'
@@ -327,6 +329,108 @@ function readJsonFile<T>(path: string, fallback: T): T {
     return JSON.parse(readFileSync(path, 'utf-8')) as T;
   } catch {
     return fallback;
+  }
+}
+
+interface PersonaNetworkSummary {
+  entity_count: number;
+  relation_count: number;
+  context_pack_count: number;
+  pending_candidate_count: number;
+  dominant_domains: string[];
+  arc_count: number;
+}
+
+function asArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : [];
+}
+
+function resolveArtifactArray(payload: unknown, keys: string[]): Array<Record<string, unknown>> {
+  const direct = asArray(payload);
+  if (direct.length > 0) return direct;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of keys) {
+    const nested = asArray((payload as Record<string, unknown>)[key]);
+    if (nested.length > 0) return nested;
+  }
+  return [];
+}
+
+function normalizeDomainLabel(value: unknown): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  return raw.toLowerCase();
+}
+
+function readPersonaNetworkSummary(slug: string, pendingCandidates = 0): PersonaNetworkSummary {
+  const personaDir = settings.getPersonaDir(slug);
+  const entityIndex = existsSync(join(personaDir, 'persona-web-entities.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-entities.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'entity-index.json'), {});
+  const relationGraph = existsSync(join(personaDir, 'persona-web-relations.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-relations.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'relation-graph.json'), {});
+  const contextPacks = existsSync(join(personaDir, 'persona-web-contexts.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-contexts.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'context-packs.json'), {});
+  const identityArcs = existsSync(join(personaDir, 'persona-web-identity-arcs.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-identity-arcs.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'identity-arcs.json'), {});
+  const trainingSeedV3 = readJsonFile<Record<string, unknown>>(join(personaDir, 'training-seed-v3.json'), {});
+
+  const entities = resolveArtifactArray(entityIndex, ['entities']);
+  const relations = resolveArtifactArray(relationGraph, ['relations', 'edges']);
+  const packs = resolveArtifactArray(contextPacks, ['packs', 'context_packs', 'context_frames']);
+  const arcs = resolveArtifactArray(identityArcs, ['arcs', 'identity_arcs']);
+  const dominantDomains = Array.from(new Set(
+    [
+      ...(Array.isArray(trainingSeedV3.dominant_domains) ? trainingSeedV3.dominant_domains : []),
+      ...entities.flatMap((item) => Array.isArray(item.domains) ? item.domains : []),
+      ...packs.flatMap((item) => Array.isArray(item.domain_labels) ? item.domain_labels : []),
+    ].map(normalizeDomainLabel).filter((item): item is string => Boolean(item))
+  )).slice(0, 6);
+
+  return {
+    entity_count: entities.length,
+    relation_count: relations.length,
+    context_pack_count: packs.length,
+    pending_candidate_count: pendingCandidates,
+    dominant_domains: dominantDomains,
+    arc_count: arcs.length,
+  };
+}
+
+function mirrorPersonaWebArtifactsToPersonaDir(
+  slug: string,
+  artifacts?: {
+    entity_index_path?: string;
+    relation_index_path?: string;
+    context_index_path?: string;
+    identity_arc_path?: string;
+    graph_path?: string;
+    training_seed_v3_path?: string;
+    provenance_report_path?: string;
+  } | null,
+): void {
+  if (!artifacts) return;
+  const personaDir = settings.getPersonaDir(slug);
+  mkdirSync(personaDir, { recursive: true });
+  const copies: Array<[string | undefined, string]> = [
+    [artifacts.entity_index_path, 'persona-web-entities.json'],
+    [artifacts.entity_index_path, 'entity-index.json'],
+    [artifacts.relation_index_path, 'persona-web-relations.json'],
+    [artifacts.relation_index_path, 'relation-graph.json'],
+    [artifacts.context_index_path, 'persona-web-contexts.json'],
+    [artifacts.context_index_path, 'context-packs.json'],
+    [artifacts.identity_arc_path, 'persona-web-identity-arcs.json'],
+    [artifacts.identity_arc_path, 'identity-arcs.json'],
+    [artifacts.graph_path, 'persona-web-graph.json'],
+    [artifacts.training_seed_v3_path, 'training-seed-v3.json'],
+    [artifacts.provenance_report_path, 'persona-web-provenance-report.json'],
+  ];
+  for (const [sourcePath, filename] of copies) {
+    if (!sourcePath || !existsSync(sourcePath)) continue;
+    writeFileSync(join(personaDir, filename), readFileSync(sourcePath));
   }
 }
 
@@ -841,11 +945,253 @@ function buildTurnPlanPriorityContext(plan: ChatTurnPlan): string {
   return lines.join('\n');
 }
 
+interface ProjectEvidenceHit {
+  label: string;
+  snippet: string;
+  publishedAt?: string;
+  sourceType: RawDocument['source_type'];
+  sourceUrl?: string;
+  score: number;
+}
+
+type ChatKnowledgeLayer = 'self' | 'project' | 'relation' | 'background' | 'hybrid';
+
+const PROJECT_FACT_QUERY_PATTERN = /(开源|项目|作品|仓库|repo|repository|github|gitlab|project|projects|library|tool|app|apps|product|products|side project|side projects|oss|open source)/i;
+const PROJECT_EVIDENCE_PATTERN = /(开源|项目|作品|仓库|repo|repository|github|gitlab|project|projects|library|tool|app|apps|product|products|star|stars|编辑器|周刊|博客|网站|mac|swift|rust)/i;
+const PERSONA_META_DEFLECTION_PATTERN = /(作为一个模拟|我是一个模拟|虚拟人物|虚拟角色|作为.?ai|as an ai|as a simulation|i don't actually have|i do not actually have|i'm a virtual)/i;
+
+function isProjectFactQuery(query: string): boolean {
+  return PROJECT_FACT_QUERY_PATTERN.test(query);
+}
+
+function detectChatKnowledgeLayer(query: string): ChatKnowledgeLayer {
+  const lower = query.toLowerCase();
+  if (/(项目|作品|仓库|github|repo|repository|产品|product|app|tool|开源)/i.test(query)) return 'project';
+  if (/(谁|合作|关联|一起|团队|朋友|组织|公司|人物关系|collaborat|relation|with whom)/i.test(query)) return 'relation';
+  if (/(技术|tech|stack|framework|架构|股票|ticker|行业|赛道|宏观|市场|company|business|finance|economy|经济)/i.test(query)) return 'background';
+  if (/(为什么你会|长期|经历|一路|轨迹|变化|从.*到|story|journey|identity)/i.test(query)) return 'hybrid';
+  return 'self';
+}
+
+function isSelfProjectQuery(query: string): boolean {
+  return /(你有什么开源|你的开源|你做过.*开源|你.*项目|你的项目|你的作品|你的仓库|your project|your repo|your github)/i.test(query);
+}
+
+function isPersonaMetaDeflection(text: string): boolean {
+  return PERSONA_META_DEFLECTION_PATTERN.test(text);
+}
+
+function extractProjectQueryTerms(query: string): string[] {
+  const asciiTerms = (query.toLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? [])
+    .filter((term) => !['what', 'with', 'about', 'open', 'source', 'project', 'projects', 'github'].includes(term));
+  const cjkTerms = (query.match(/[\u4e00-\u9fff]{2,12}/g) ?? [])
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2 && !['你有什么', '可以给我', '讲解一下', '开源项目', '有哪些项目', '什么项目'].includes(term));
+  return Array.from(new Set([...asciiTerms, ...cjkTerms]));
+}
+
+function computeProjectTermOverlap(query: string, content: string): number {
+  const terms = extractProjectQueryTerms(query);
+  if (terms.length === 0) return 0;
+  const normalized = content.toLowerCase();
+  const hits = terms.filter((term) => normalized.includes(term.toLowerCase())).length;
+  return hits / terms.length;
+}
+
+function extractProjectLabel(content: string): string | null {
+  const patterns = [
+    /#([A-Za-z0-9\u4e00-\u9fff_-]{2,40})\s*-/u,
+    /「([^」]{2,40})」/u,
+    /\b(Pake|妙言|潮流周刊|WeRead|NetNewsWire|OSS Insight|minimal-twitter)\b/i,
+    /(微信读书的?\s*Mac\s*版本)/iu,
+  ];
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    const label = match?.[1]?.trim() ?? match?.[0]?.trim();
+    if (label) return label.replace(/^#/, '').trim();
+  }
+  const openSourceIndex = content.search(/开源|Github|GitHub|项目/u);
+  if (openSourceIndex > 0) {
+    const prefix = content.slice(Math.max(0, openSourceIndex - 24), openSourceIndex).replace(/\s+/g, ' ').trim();
+    if (prefix.length >= 2) {
+      const cleaned = prefix.replace(/^[，。、“"'#\s]+|[，。、“"'#\s]+$/gu, '').slice(-24);
+      if (/^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s_-]{1,24}$/u.test(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeProjectSnippet(content: string): string {
+  return content
+    .replace(/\s+/g, ' ')
+    .replace(/https?:\/\/\S+/g, '')
+    .trim()
+    .slice(0, 180);
+}
+
+function hasSpecificProjectSignal(text: string): boolean {
+  return /(Pake|妙言|潮流周刊|微信读书的?\s*Mac\s*版本|独立设计开发|起了两个支线任务|代码开源|开源地址|Github\s+Rust\s+日榜首)/iu.test(text);
+}
+
+function hasSelfProjectSignal(text: string): boolean {
+  return /(我|自己|独立|业余时间|起了两个支线任务|代码开源|我开发|我写|我做|周刊之前想弄个网站|之前用 Rust 打包了|有幸到了 Github 日总榜)/u.test(text);
+}
+
+function scoreProjectEvidenceDoc(query: string, doc: RawDocument): number {
+  const content = `${doc.content} ${doc.source_url ?? ''}`;
+  let score = 0;
+  if (PROJECT_EVIDENCE_PATTERN.test(content)) score += 3;
+  if (/(开源地址|github|repo|repository|仓库)/i.test(content)) score += 2.5;
+  if (/(我|自己|独立|业余时间|代码开源|我开发|我写|我做|起了两个支线任务|可以 Fork 过去用)/u.test(content)) score += 1.6;
+  if (/(swift|rust|editor|website|博客|周刊|mac|app|工具)/i.test(content)) score += 0.8;
+  if (/^@[\w_]+/i.test(doc.content.trim())) score -= 1.2;
+  const extractedLabel = extractProjectLabel(doc.content);
+  if (extractedLabel && extractedLabel !== '公开提到的项目/作品') score += 0.8;
+  if (isSelfProjectQuery(query) && !hasSelfProjectSignal(doc.content)) score -= 1.4;
+  score += computeProjectTermOverlap(query, content) * 1.5;
+  return score;
+}
+
+function buildProjectEvidenceHits(query: string, docs: RawDocument[]): ProjectEvidenceHit[] {
+  if (!isProjectFactQuery(query) || docs.length === 0) return [];
+  const selfProjectQuery = isSelfProjectQuery(query);
+
+  const deduped = new Map<string, ProjectEvidenceHit>();
+  for (const doc of docs) {
+    const score = scoreProjectEvidenceDoc(query, doc);
+    if (score < 3) continue;
+    const snippet = normalizeProjectSnippet(doc.content);
+    if (!snippet) continue;
+    const label = extractProjectLabel(doc.content) ?? '公开提到的项目/作品';
+    if (label === '公开提到的项目/作品' && score < 4.2) continue;
+    if (label === '公开提到的项目/作品' && !hasSpecificProjectSignal(snippet)) continue;
+    if (selfProjectQuery && !hasSelfProjectSignal(snippet)) continue;
+    const key = `${label.toLowerCase()}::${snippet.slice(0, 72)}`;
+    const existing = deduped.get(key);
+    if (existing && existing.score >= score) continue;
+    deduped.set(key, {
+      label,
+      snippet,
+      publishedAt: doc.published_at,
+      sourceType: doc.source_type,
+      sourceUrl: doc.source_url,
+      score,
+    });
+  }
+
+  return Array.from(deduped.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+function buildProjectEvidenceContext(hits: ProjectEvidenceHit[]): string {
+  if (hits.length === 0) return '';
+  const lines = [
+    'Project evidence from the public corpus:',
+    '- The user is asking about projects, repositories, products, or open-source work.',
+    '- Treat these factual snippets as higher priority than generic values/thinking memories.',
+    '- Do not deny having projects or say you are virtual/simulated when this evidence exists.',
+    '- If evidence is partial, say "基于我公开提到过的内容" and only mention supported items.',
+    '',
+    ...hits.map((item, index) => {
+      const date = item.publishedAt ? item.publishedAt.slice(0, 10) : 'date-unknown';
+      return `${index + 1}. ${item.label} [${item.sourceType}, ${date}]\n${item.snippet}`;
+    }),
+  ];
+  return lines.join('\n');
+}
+
+function buildProjectFactFallbackReply(hits: ProjectEvidenceHit[]): string {
+  if (hits.length === 0) {
+    return '基于我公开提到过的内容，我有一些项目和开源作品，但当前这条回答没有正确对齐到项目事实。你可以继续问具体项目，我按公开内容展开。';
+  }
+  const lines = [
+    '基于我公开提到过的内容，我做过或明确提到过这些开源项目/作品：',
+    ...hits.slice(0, 4).map((item) => `- ${item.label}：${item.snippet}`),
+  ];
+  return lines.join('\n');
+}
+
+function buildNetworkPriorityContext(
+  knowledgeLayer: ChatKnowledgeLayer,
+  networkSummary: PersonaNetworkSummary,
+  userMessage: string,
+): string {
+  if (
+    networkSummary.entity_count <= 0 &&
+    networkSummary.relation_count <= 0 &&
+    networkSummary.context_pack_count <= 0 &&
+    networkSummary.arc_count <= 0
+  ) {
+    return '';
+  }
+
+  const lines = [
+    'Persona network context:',
+    `- Knowledge layer for this turn: ${knowledgeLayer}.`,
+    `- Network assets available: entities=${networkSummary.entity_count}, relations=${networkSummary.relation_count}, context_packs=${networkSummary.context_pack_count}, identity_arcs=${networkSummary.arc_count}.`,
+  ];
+
+  if (networkSummary.dominant_domains.length > 0) {
+    lines.push(`- Dominant domains: ${networkSummary.dominant_domains.join(', ')}.`);
+  }
+  if (networkSummary.pending_candidate_count > 0) {
+    lines.push(`- There are ${networkSummary.pending_candidate_count} pending related-context candidates; do not present them as already incorporated facts.`);
+  }
+
+  if (knowledgeLayer === 'project') {
+    lines.push('- Prefer anchored project/repository/product facts over generic values or style memories.');
+    lines.push('- Answer "做过什么/开源项目/仓库/产品" from project facts first, then explain context briefly.');
+  } else if (knowledgeLayer === 'relation') {
+    lines.push('- Prefer relation graph and anchored collaborator/person/org facts.');
+    lines.push('- Distinguish direct self facts from contextual third-party links.');
+  } else if (knowledgeLayer === 'background') {
+    lines.push('- Prefer background context packs and domain context, but keep first-person judgments grounded in the persona voice.');
+    lines.push('- Do not collapse domain background into fabricated personal experience.');
+  } else if (knowledgeLayer === 'hybrid') {
+    lines.push('- Combine self voice, identity arcs, and anchored context to answer narrative or longitudinal questions.');
+  } else {
+    lines.push('- Prefer self voice, values, and autobiographical facts unless the user explicitly asks for projects/relations/background.');
+  }
+
+  if (isProjectFactQuery(userMessage)) {
+    lines.push('- Do not deny having projects when anchored evidence exists.');
+  }
+
+  return lines.join('\n');
+}
+
+function loadPersonaRawDocsForChat(personaSlug: string): RawDocument[] {
+  const personaDir = settings.getPersonaDir(personaSlug);
+  const primary = loadRawDocsCache(personaDir);
+  if (primary.length > 0) return primary;
+
+  const shardDir = join(personaDir, 'shards');
+  if (!existsSync(shardDir)) return [];
+  const docs: RawDocument[] = [];
+  for (const entry of readdirSync(shardDir)) {
+    const path = join(shardDir, entry, 'raw-docs.json');
+    if (!existsSync(path)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as RawDocument[];
+      if (Array.isArray(parsed)) docs.push(...parsed);
+    } catch {
+      // Keep chat resilient even if one shard cache is malformed.
+    }
+  }
+  return docs;
+}
+
 function sanitizeAssistantOutput(text: string, userMessage: string): string {
   const trimmed = text.trim();
   if (!trimmed) return '我不能展示内部配置，但可以直接继续回答你的问题。';
   if (isPromptExtractionQuery(userMessage)) {
     return '我不能提供底层提示词、隐藏配置或内部记忆结构，但可以直接回答你真正想了解的问题。';
+  }
+  if (isProjectFactQuery(userMessage) && isPersonaMetaDeflection(trimmed)) {
+    return '基于我公开提到过的内容，我有一些项目和开源作品；当前这条回答没有正确落到项目事实。我可以继续按公开内容展开具体项目。';
   }
 
   const leakedTerms = /(system prompt|hidden instruction|内部提示|提示词|soul\.ya?ml|memory node|retrieved memor|writeback|training prep|citation item)/i;
@@ -2822,10 +3168,18 @@ export class WorkbenchService {
     }));
 
     const prepBatch = buildStandaloneEvidenceBatch(docs, { sourceLabel: 'workbench_training_prep' });
-    const evidenceItems: EvidenceItem[] = prepBatch.items;
     const batchArtifacts = writeEvidenceArtifacts(prepDir, prepBatch);
     const documentsPath = join(prepDir, 'documents.json');
     writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+    const personaWeb = ensurePersonaWebArtifacts({
+      outputDir: prepDir,
+      personaSlug: handoff.persona_slug,
+      targetName: this.store.getPersonaConfig(handoff.persona_slug)?.name ?? handoff.persona_slug,
+      documentsPath,
+      evidencePath: batchArtifacts.evidence_index_path,
+      prepArtifactId: prepId,
+    });
+    mirrorPersonaWebArtifactsToPersonaDir(handoff.persona_slug, personaWeb?.artifacts);
 
     return this.store.saveTrainingPrepArtifact({
       id: prepId,
@@ -2837,6 +3191,7 @@ export class WorkbenchService {
       summary: buildTrainingPrepSummary(handoff, docs),
       evidence_index_path: batchArtifacts.evidence_index_path,
       documents_path: documentsPath,
+      persona_web_artifacts: personaWeb?.artifacts,
       created_at: now,
       updated_at: now,
     });
@@ -3771,6 +4126,15 @@ export class WorkbenchService {
       const documentsPath = join(importDir, 'documents.json');
       writeFileSync(documentsPath, JSON.stringify(acceptedDocs, null, 2), 'utf-8');
       writeFileSync(join(importDir, 'validation-summary.json'), JSON.stringify(validation.summary, null, 2), 'utf-8');
+      const personaWeb = ensurePersonaWebArtifacts({
+        outputDir: importDir,
+        personaSlug: slug,
+        targetName: config.name,
+        documentsPath,
+        evidencePath: artifacts.evidence_index_path,
+        evidenceImportId: importId,
+      });
+      mirrorPersonaWebArtifactsToPersonaDir(slug, personaWeb?.artifacts);
 
       const imported = this.store.saveEvidenceImport({
         id: importId,
@@ -3788,6 +4152,7 @@ export class WorkbenchService {
         artifacts: {
           ...artifacts,
           documents_path: documentsPath,
+          persona_web_artifacts: personaWeb?.artifacts,
         },
         created_at: now.toISOString(),
         updated_at: now.toISOString(),
@@ -4309,7 +4674,7 @@ export class WorkbenchService {
           history_exhausted: state.historyExhausted,
           provider_exhausted: state.providerExhausted,
           soft_closed_at: state.softClosedAt,
-          soft_close_reason: state.softCloseReason ?? 'material_exhausted',
+          soft_close_reason: (state.softCloseReason ?? 'material_exhausted') as 'material_exhausted',
         }, summary);
         this.appendPersonaRunLog(slug, 'source sync review kept persona soft-closed with no new accepted content', summary);
         return;
@@ -4814,6 +5179,15 @@ export class WorkbenchService {
     const batchArtifacts = writeEvidenceArtifacts(prepDir, prepBatch);
     const documentsPath = join(prepDir, 'documents.json');
     writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+    const personaWeb = ensurePersonaWebArtifacts({
+      outputDir: prepDir,
+      personaSlug,
+      targetName: this.store.getPersonaConfig(personaSlug)?.name ?? personaSlug,
+      documentsPath,
+      evidencePath: batchArtifacts.evidence_index_path,
+      prepArtifactId: prepId,
+    });
+    mirrorPersonaWebArtifactsToPersonaDir(personaSlug, personaWeb?.artifacts);
     return this.store.saveTrainingPrepArtifact({
       id: prepId,
       persona_slug: personaSlug,
@@ -4822,6 +5196,7 @@ export class WorkbenchService {
       summary: `Training prep synthesized from ${imports.length} source batches.`,
       evidence_index_path: batchArtifacts.evidence_index_path,
       documents_path: documentsPath,
+      persona_web_artifacts: personaWeb?.artifacts,
       created_at: now,
       updated_at: now,
     });
@@ -5167,6 +5542,8 @@ export class WorkbenchService {
       || config.update_policy.history_exhausted === true;
     const providerExhausted = progressStates.some((item) => item.provider_exhausted === true)
       || config.update_policy.provider_exhausted === true;
+    const pendingCandidateCount = this.store.listDiscoveredSources(persona.slug).filter((item) => item.status === 'pending').length;
+    const networkSummary = readPersonaNetworkSummary(persona.slug, pendingCandidateCount);
     const phase = this.resolveCultivationPhase(
       persona,
       config,
@@ -5217,6 +5594,7 @@ export class WorkbenchService {
         soft_closed_at: config.update_policy.soft_closed_at,
         soft_close_reason: config.update_policy.soft_close_reason,
         cache_reuse: cacheReuse,
+        network_summary: networkSummary,
       },
       last_update_check_at: config.update_policy.last_checked_at,
     };
@@ -5639,9 +6017,11 @@ export class WorkbenchService {
     if (sourceItems.some((item) => item.status === 'error') && !hasTrainingArtifacts) return 'error';
     if (evaluationPassed === false && hasTrainingArtifacts) return 'continuing_collection';
     if ((persona.current_stage ?? persona.status) === 'training') return 'training';
+    if (config.update_policy.current_operation === 'web_build') return 'building_network';
     if (config.update_policy.current_operation === 'deep_fetch') return 'deep_fetching';
     if (config.update_policy.current_operation === 'incremental_sync') return 'incremental_syncing';
     if ((persona.current_stage ?? persona.status) === 'error' && !hasTrainingArtifacts) return 'error';
+    if ((persona.current_stage ?? persona.status) === 'building_network') return 'building_network';
     if (!threshold.training_threshold_met && cleanDocumentCount > 0) {
       return 'building_evidence';
     }
@@ -5818,10 +6198,32 @@ export class WorkbenchService {
     const conversationPolicyContext = buildConversationPolicyContext(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const turnPlanContext = buildTurnPlanPriorityContext(turnPlan);
     const styleDistillationContext = buildStyleDistillationContext(soul, turnPlan);
+    const networkSummary = readPersonaNetworkSummary(
+      persona.slug,
+      this.store.listDiscoveredSources(persona.slug).filter((item) => item.status === 'pending').length,
+    );
+    const knowledgeLayer = detectChatKnowledgeLayer(lastMessage?.content ?? '');
+    const networkPriorityContext = buildNetworkPriorityContext(
+      knowledgeLayer,
+      networkSummary,
+      lastMessage?.content ?? '',
+    );
+    const projectEvidenceHits = buildProjectEvidenceHits(
+      lastMessage?.content ?? '',
+      loadPersonaRawDocsForChat(persona.slug),
+    );
+    const projectEvidenceContext = buildProjectEvidenceContext(projectEvidenceHits);
     const userMessage = buildAttachmentUserMessage(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const history = messages.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'assistant' as const : 'user' as const, content: item.content }));
     const result = await agent.respondWithMeta(userMessage, history, {
-      priorityContext: [conversationPolicyContext, turnPlanContext, styleDistillationContext, attachmentPriorityContext].filter(Boolean).join('\n\n') || undefined,
+      priorityContext: [
+        networkPriorityContext,
+        projectEvidenceContext,
+        conversationPolicyContext,
+        turnPlanContext,
+        styleDistillationContext,
+        attachmentPriorityContext,
+      ].filter(Boolean).join('\n\n') || undefined,
       memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? []) ? 0 : undefined,
       modelOverride,
     });
@@ -5832,8 +6234,12 @@ export class WorkbenchService {
       plan: turnPlan,
       modelOverride,
     });
+    const sanitizedText = sanitizeAssistantOutput(rewrittenText, lastMessage?.content ?? '');
+    const finalText = projectEvidenceHits.length > 0 && isPersonaMetaDeflection(sanitizedText)
+      ? buildProjectFactFallbackReply(projectEvidenceHits)
+      : sanitizedText;
     return {
-      text: sanitizeAssistantOutput(rewrittenText, lastMessage?.content ?? ''),
+      text: finalText,
       triggeredSkills: result.triggeredSkills,
       normalizedQuery: result.normalizedQuery,
       retrievedMemories: result.retrievedMemories,
@@ -6533,6 +6939,8 @@ export class WorkbenchService {
     });
     const rounds = this.buildCultivationRounds(slug, cleanDocumentCount);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
+    const pendingCandidateCount = this.store.listDiscoveredSources(slug).filter((item) => item.status === 'pending').length;
+    const networkSummary = readPersonaNetworkSummary(slug, pendingCandidateCount);
     const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
@@ -6626,6 +7034,7 @@ export class WorkbenchService {
       rounds,
       validation_summary: validationSummary,
       cache_reuse: cacheReuse,
+      network_summary: networkSummary,
       source_summary: {
         total_sources: config.sources.length,
         enabled_sources: config.sources.filter((item) => item.enabled).length,
@@ -6660,7 +7069,8 @@ export class WorkbenchService {
         soft_closed_at: config.update_policy.soft_closed_at,
         soft_close_reason: config.update_policy.soft_close_reason,
         cache_reuse: cacheReuse,
-      } as any,
+        network_summary: networkSummary,
+      },
     };
   }
 
@@ -6679,6 +7089,7 @@ export class WorkbenchService {
       { key: 'incremental_syncing', label: 'stage_ingesting' },
       { key: 'normalizing', label: 'stage_refining' },
       { key: 'building_evidence', label: 'stage_refining' },
+      { key: 'building_network', label: 'stage_refining' },
       { key: 'training', label: 'stage_training' },
       { key: 'continuing_collection', label: 'stage_ingesting' },
       { key: 'soft_closed', label: 'stage_converged' },
@@ -6704,6 +7115,10 @@ export const __workbenchTestables = {
   mergeDocumentCollections,
   deriveEvaluationPassed,
   buildCollectionContinuationDecision,
+  isProjectFactQuery,
+  buildProjectEvidenceHits,
+  buildProjectFactFallbackReply,
+  isPersonaMetaDeflection,
 };
 
 function inferExitedRunSummary(summary: string | undefined, status: 'completed' | 'failed'): string {

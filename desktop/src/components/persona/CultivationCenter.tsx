@@ -20,6 +20,7 @@ function formatPhaseLabel(phase?: string) {
   if (phase === 'incremental_syncing') return '增量拉取中';
   if (phase === 'normalizing') return '整理素材中';
   if (phase === 'building_evidence') return '构建训练上下文中';
+  if (phase === 'building_network') return '构建人物关系与背景中';
   if (phase === 'training') return '人格收敛中';
   if (phase === 'continuing_collection') return '继续培养中';
   if (phase === 'soft_closed') return '已按当前素材收口';
@@ -310,6 +311,61 @@ function SourceBreakdown({ detail }: { detail: CultivationDetail }) {
   );
 }
 
+function NetworkSummaryBlock({ detail }: { detail: CultivationDetail }) {
+  const network = detail.network_summary ?? detail.source_summary?.network_summary;
+  if (!network) return null;
+  const hasSignals =
+    network.entity_count > 0
+    || network.relation_count > 0
+    || network.context_pack_count > 0
+    || network.arc_count > 0
+    || network.pending_candidate_count > 0
+    || network.dominant_domains.length > 0;
+  if (!hasSignals) return null;
+
+  return (
+    <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>人物关系与背景</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', marginTop: 4 }}>
+            当前人格的关系网、背景上下文和身份轨迹构建摘要。
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+          实体 {network.entity_count} · 关系 {network.relation_count}
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>实体数: <b>{network.entity_count}</b></div>
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>关系数: <b>{network.relation_count}</b></div>
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>背景包: <b>{network.context_pack_count}</b></div>
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>身份轨迹: <b>{network.arc_count}</b></div>
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>待审核候选: <b>{network.pending_candidate_count}</b></div>
+      </div>
+      {network.dominant_domains.length > 0 ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {network.dominant_domains.map((domain) => (
+            <span
+              key={domain}
+              style={{
+                fontSize: 11,
+                padding: '3px 8px',
+                borderRadius: 999,
+                background: 'rgb(var(--bg-hover))',
+                border: '1px solid rgb(var(--border))',
+                color: 'rgb(var(--text-secondary))',
+              }}
+            >
+              {domain}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SourceItems({ detail }: { detail: CultivationDetail }) {
   const [expandedSourceId, setExpandedSourceId] = useState<string | null>(null);
 
@@ -427,6 +483,7 @@ function TrainingCard({
   const retrainReady = detail?.retrain_ready ?? detail?.source_summary?.retrain_ready;
   const rawDocumentCount = detail?.raw_document_count ?? detail?.source_summary?.document_count ?? 0;
   const cleanDocumentCount = detail?.clean_document_count ?? detail?.source_summary?.clean_document_count ?? detail?.source_summary?.document_count ?? 0;
+  const networkSummary = detail?.network_summary ?? detail?.source_summary?.network_summary;
   const displayPhaseLabel = softClosed
     ? '已按当前素材收口'
     : evaluationPassed === false && thresholdMet
@@ -443,8 +500,10 @@ function TrainingCard({
           ? '增量拉取中'
           : detail?.source_summary?.current_operation === 'discovery'
             ? '发现来源中'
+            : detail?.source_summary?.current_operation === 'web_build'
+              ? '构建人物关系与背景中'
             : null;
-  const tickerText = `[${String(progress).padStart(3, '0')}%] ${operationLabel ?? displayPhaseLabel} :: win ${String((detail?.source_summary as any)?.completed_windows ?? 0).padStart(2, '0')} / ${String((detail?.source_summary as any)?.estimated_total_windows ?? 0).padStart(2, '0')} :: raw ${String(rawDocumentCount).padStart(4, '0')} :: clean ${String(cleanDocumentCount).padStart(4, '0')} :: round ${String(persona.current_round ?? detail?.progress.current_round ?? 0).padStart(2, '0')} / ${String(persona.total_rounds ?? detail?.progress.total_rounds ?? 0).padStart(2, '0')} :: ${String(detail?.phase ?? stageStatus).toUpperCase()} ::`;
+  const tickerText = `[${String(progress).padStart(3, '0')}%] ${operationLabel ?? displayPhaseLabel} :: win ${String(detail?.source_summary?.completed_windows ?? 0).padStart(2, '0')} / ${String(detail?.source_summary?.estimated_total_windows ?? 0).padStart(2, '0')} :: raw ${String(rawDocumentCount).padStart(4, '0')} :: clean ${String(cleanDocumentCount).padStart(4, '0')} :: entity ${String(networkSummary?.entity_count ?? 0).padStart(3, '0')} :: rel ${String(networkSummary?.relation_count ?? 0).padStart(3, '0')} :: round ${String(persona.current_round ?? detail?.progress.current_round ?? 0).padStart(2, '0')} / ${String(persona.total_rounds ?? detail?.progress.total_rounds ?? 0).padStart(2, '0')} :: ${String(detail?.phase ?? stageStatus).toUpperCase()} ::`;
   const latestActivity = detail?.latest_activity || (operationLabel ? `当前任务：${operationLabel}` : '正在等待培养推进');
   const currentWindowText = formatWindowSentence(detail);
   const latestSourceWindow = getLatestSourceWindow(detail);
@@ -521,9 +580,11 @@ function TrainingCard({
           ) : null}
           <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
             <span>最近活动 {formatRelativeTime(detail?.last_heartbeat_at ?? detail?.last_success_at)}</span>
-            {(detail?.source_summary as any)?.completed_windows !== undefined ? <span>窗口 {(detail?.source_summary as any)?.completed_windows ?? 0} / {(detail?.source_summary as any)?.estimated_total_windows ?? 0}</span> : null}
+            {detail?.source_summary?.completed_windows !== undefined ? <span>窗口 {detail.source_summary.completed_windows ?? 0} / {detail.source_summary.estimated_total_windows ?? 0}</span> : null}
             <span>原始 {rawDocumentCount}</span>
             <span>纳入 {cleanDocumentCount}</span>
+            {networkSummary ? <span>实体 {networkSummary.entity_count}</span> : null}
+            {networkSummary ? <span>关系 {networkSummary.relation_count}</span> : null}
             {thresholdLabel ? <span>门槛 {thresholdLabel}</span> : null}
             {retrainProgressLabel ? <span>重训进度 {retrainProgressLabel}</span> : null}
             {typeof collectionCycle === 'number' && collectionCycle > 0 ? <span>循环 {collectionCycle}</span> : null}
@@ -593,6 +654,10 @@ function TrainingCard({
               <InfoStat label="最近活动心跳" value={formatRelativeTime(detail.last_heartbeat_at)} />
               <InfoStat label="最近检查更新" value={formatDate(detail.source_summary?.last_update_check_at)} />
               <InfoStat label="最近窗口新增" value={latestWindowNewCount} />
+              <InfoStat label="人物实体" value={networkSummary?.entity_count ?? 0} />
+              <InfoStat label="人物关系" value={networkSummary?.relation_count ?? 0} />
+              <InfoStat label="背景包" value={networkSummary?.context_pack_count ?? 0} />
+              <InfoStat label="身份轨迹" value={networkSummary?.arc_count ?? 0} />
               <InfoStat label="历史缓存复用" value={detail.cache_reuse?.active ? `${detail.cache_reuse.reused_document_count} 条` : '无'} />
               <InfoStat label="历史窗口状态" value={historyExhausted ? '已耗尽' : '未耗尽'} />
               <InfoStat label="Provider 状态" value={providerExhausted ? '待恢复' : '正常'} />
@@ -643,6 +708,13 @@ function TrainingCard({
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>来源分布</div>
             <SourceBreakdown detail={detail} />
           </div>
+
+          {(detail.network_summary ?? detail.source_summary?.network_summary) ? (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>关系网摘要</div>
+              <NetworkSummaryBlock detail={detail} />
+            </div>
+          ) : null}
 
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>来源明细</div>
@@ -775,6 +847,11 @@ export function CultivationCenter({
       if (cultivating.length === 0) return;
       cultivating.forEach((persona) => {
         const detail = details[persona.slug];
+        const softClosed = detail?.soft_closed ?? detail?.source_summary?.soft_closed ?? false;
+        if (softClosed) {
+          void api.checkPersonaUpdates(persona.slug).catch(() => undefined);
+          return;
+        }
         const shouldDeepFetch =
           detail?.evaluation_passed === false
           || detail?.source_summary?.evaluation_passed === false

@@ -92,6 +92,25 @@ export const MemoryNodeSchema = z.object({
 });
 export type MemoryNode = z.infer<typeof MemoryNodeSchema>;
 
+export const MemoryProvenanceStatusSchema = z.enum(['verified', 'supported', 'weak', 'blocked']);
+export type MemoryProvenanceStatus = z.infer<typeof MemoryProvenanceStatusSchema>;
+
+export const MemoryProvenanceCueSchema = z.object({
+  kind: z.enum(['entity', 'relation', 'context', 'identity_arc', 'signal', 'source']),
+  value: z.string(),
+  confidence: z.number().min(0).max(1).default(0.5),
+});
+export type MemoryProvenanceCue = z.infer<typeof MemoryProvenanceCueSchema>;
+
+export const MemoryProvenanceAssessmentSchema = z.object({
+  status: MemoryProvenanceStatusSchema,
+  score: z.number().min(0).max(1),
+  matched_cues: z.array(MemoryProvenanceCueSchema).default([]),
+  missing_signals: z.array(z.string()).default([]),
+  reasons: z.array(z.string()).default([]),
+});
+export type MemoryProvenanceAssessment = z.infer<typeof MemoryProvenanceAssessmentSchema>;
+
 export function createMemoryNode(
   partial: Omit<MemoryNode, 'id' | 'created_at' | 'updated_at' | 'reinforcement_count' | 'status' | 'relations'>
 ): MemoryNode {

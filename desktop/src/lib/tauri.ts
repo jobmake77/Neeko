@@ -6,12 +6,22 @@ export interface BootstrapResult {
 }
 
 export async function bootstrapWorkbench(port = 4310, repoRoot?: string): Promise<BootstrapResult> {
-  try {
-    const status = await invoke<string>('bootstrap_workbench_service', { port, repoRoot });
-    return { status, port };
-  } catch (e) {
-    return { status: 'error' };
+  const candidatePorts = Array.from(new Set([port, 4310, 4311, 4312, 4313]));
+  for (const candidatePort of candidatePorts) {
+    try {
+      const payload = await invoke<{ status: string; port?: number }>('bootstrap_workbench_service', {
+        port: candidatePort,
+        repoRoot,
+      });
+      return {
+        status: payload.status,
+        port: payload.port ?? candidatePort,
+      };
+    } catch {
+      // Try the next local fallback port.
+    }
   }
+  return { status: 'error' };
 }
 
 export async function getWorkbenchStatus(): Promise<{ node_available: boolean; dist_ready: boolean }> {

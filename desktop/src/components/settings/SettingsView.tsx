@@ -448,6 +448,7 @@ export function SettingsView() {
   async function checkStatus() {
     setStatus('checking');
     const result = await checkHealth();
+    setApiUrlState(getBaseUrl());
     setHealthInfo(result);
     if (!result.ok) {
       setStatus('disconnected');

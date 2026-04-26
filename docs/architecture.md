@@ -318,7 +318,7 @@ Skill 质量门控（入库需同时满足）：
 
 ---
 
-## Web UI — `web/`
+## Historical Browser Prototype — `web/`
 
 基于 Next.js 15 App Router + shadcn/ui + Tailwind CSS。
 

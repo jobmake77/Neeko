@@ -186,7 +186,7 @@ Reasoning:
 
 - No edits to `src/core/pipeline/ingestion/article.ts`.
 - No broad refactor across `src/core/pipeline/**`.
-- No reopening Web as the primary product surface.
+- No reopening a browser-based surface as the primary product surface.
 - No return of old workbench-first vocabulary in desktop primary navigation.
 - No direct chat-to-formal-asset writeback path.
 - No scope creep into benchmark governance, experiment dashboarding, or review console features.

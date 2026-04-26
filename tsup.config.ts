@@ -27,6 +27,7 @@ export default defineConfig({
     'src/testing/chat-orchestrator-test-entry.ts',
     'src/testing/api-contract-test-entry.ts',
     'src/testing/twitter-adapter-test-entry.ts',
+    'src/testing/article-adapter-test-entry.ts',
     'src/testing/train-test-entry.ts',
     'src/testing/persona-web-test-entry.ts',
   ],

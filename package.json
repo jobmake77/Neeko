@@ -16,9 +16,16 @@
     "desktop:dev": "npm --prefix desktop run dev",
     "desktop:build": "npm --prefix desktop run build",
     "lint": "tsc --noEmit",
+    "test": "npm run -s lint && npm run -s test:core && npm run -s test:desktop",
+    "verify": "npm test",
+    "test:core": "npm run -s build && npm run -s test:node:only && npm run -s test:api-contract:only",
+    "test:desktop": "npm run -s desktop:build",
+    "test:node": "npm run -s build && npm run -s test:node:only",
+    "test:node:only": "node --test test/*.mjs",
     "test:skills": "npm run -s build && node --test test/skills-library.test.mjs",
     "test:ab": "npm run -s build && node --test test/ab-report.test.mjs",
-    "test:api-contract": "npm run -s build && node dist/testing/api-contract-test-entry.js",
+    "test:api-contract": "npm run -s build && npm run -s test:api-contract:only",
+    "test:api-contract:only": "node dist/testing/api-contract-test-entry.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

@@ -1,8 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { __trainTestables } from '../dist/testing/train-test-entry.js';
+import { WorkbenchService } from '../dist/testing/train-test-entry.js';
 
 const { validateRemoteSourceDocumentsForPersona } = __trainTestables;
+
+function makeRemoteArticleSource() {
+  return {
+    id: 'source-preview-1',
+    type: 'article',
+    mode: 'remote_url',
+    platform: 'web',
+    handle_or_url: 'https://example.com/profile',
+    links: ['https://example.com/profile'],
+    target_aliases: [],
+    enabled: true,
+    status: 'idle',
+  };
+}
 
 test('article attribution rejects pages that clearly belong to a different person', () => {
   const outcome = validateRemoteSourceDocumentsForPersona('garrytan-test', {
@@ -65,4 +80,40 @@ test('article attribution accepts pages with explicit first-party identity signa
 
   assert.equal(outcome.results[0].status, 'accepted');
   assert.equal(outcome.accepted.length, 1);
+});
+
+test('source preview returns localized error state when preview target times out', async () => {
+  const service = new WorkbenchService();
+  service.withPreviewTimeout = async () => {
+    throw new Error('source preview https://example.com/profile timeout after 20ms');
+  };
+
+  const preview = await service.previewPersonaSource({
+    persona_name: 'garrytan-test',
+    source: makeRemoteArticleSource(),
+  });
+
+  assert.equal(preview.status, 'error');
+  assert.equal(preview.summary, '当前来源暂时无法给出有效预览，请稍后重试。');
+  assert.equal(preview.target_results.length, 1);
+  assert.equal(preview.target_results[0].status, 'error');
+  assert.match(preview.target_results[0].error ?? '', /timeout/i);
+});
+
+test('source preview returns localized error state when remote provider fetch fails', async () => {
+  const service = new WorkbenchService();
+  service.fetchPreviewDocumentsForTarget = async () => {
+    throw new Error('provider unavailable');
+  };
+
+  const preview = await service.previewPersonaSource({
+    persona_name: 'garrytan-test',
+    source: makeRemoteArticleSource(),
+  });
+
+  assert.equal(preview.status, 'error');
+  assert.equal(preview.summary, '当前来源暂时无法给出有效预览，请稍后重试。');
+  assert.equal(preview.target_results.length, 1);
+  assert.equal(preview.target_results[0].status, 'error');
+  assert.match(preview.target_results[0].error ?? '', /provider unavailable/i);
 });

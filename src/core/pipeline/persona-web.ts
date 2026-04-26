@@ -402,6 +402,11 @@ export function buildProvenanceReport(graph: PersonaWebGraph): PersonaWebProvena
     (safeRatio(verifiedRelations.length, Math.max(1, graph.relations.length)) * 0.45) +
     (Math.min(1, graph.identity_arcs.length / 5) * 0.2)
   );
+  const guardrailContext = {
+    coverage_score: coverageScore,
+    low_confidence_entity_count: lowConfidenceEntities.length,
+    low_confidence_relation_count: lowConfidenceRelations.length,
+  } satisfies Pick<PersonaWebProvenanceReport, 'coverage_score' | 'low_confidence_entity_count' | 'low_confidence_relation_count'>;
   return PersonaWebProvenanceReportSchema.parse({
     schema_version: 1,
     generated_at: graph.generated_at,
@@ -412,18 +417,7 @@ export function buildProvenanceReport(graph: PersonaWebGraph): PersonaWebProvena
     verified_relation_count: verifiedRelations.length,
     low_confidence_entity_count: lowConfidenceEntities.length,
     low_confidence_relation_count: lowConfidenceRelations.length,
-    guardrail_notes: buildGuardrailNotes(graph, {
-      schema_version: 1,
-      generated_at: graph.generated_at,
-      persona_slug: graph.persona_slug,
-      target_name: graph.target_name,
-      coverage_score: coverageScore,
-      verified_entity_count: verifiedEntities.length,
-      verified_relation_count: verifiedRelations.length,
-      low_confidence_entity_count: lowConfidenceEntities.length,
-      low_confidence_relation_count: lowConfidenceRelations.length,
-      guardrail_notes: [],
-    }),
+    guardrail_notes: buildGuardrailNotes(graph, guardrailContext),
   });
 }
 
@@ -1219,13 +1213,21 @@ function clamp01(value: number): number {
 }
 
 function mergeRange(
-  target: { firstSeenAt?: string; lastSeenAt?: string },
+  target: { firstSeenAt?: string; lastSeenAt?: string } | { startedAt?: string; endedAt?: string },
   nextStart?: string,
   nextEnd?: string,
 ): void {
-  if (nextStart && (!target.firstSeenAt || nextStart < target.firstSeenAt)) target.firstSeenAt = nextStart;
+  if ('firstSeenAt' in target) {
+    const rangeTarget = target as { firstSeenAt?: string; lastSeenAt?: string };
+    if (nextStart && (!rangeTarget.firstSeenAt || nextStart < rangeTarget.firstSeenAt)) rangeTarget.firstSeenAt = nextStart;
+    const candidateEnd = nextEnd ?? nextStart;
+    if (candidateEnd && (!rangeTarget.lastSeenAt || candidateEnd > rangeTarget.lastSeenAt)) rangeTarget.lastSeenAt = candidateEnd;
+    return;
+  }
+  const contextTarget = target as { startedAt?: string; endedAt?: string };
+  if (nextStart && (!contextTarget.startedAt || nextStart < contextTarget.startedAt)) contextTarget.startedAt = nextStart;
   const candidateEnd = nextEnd ?? nextStart;
-  if (candidateEnd && (!target.lastSeenAt || candidateEnd > target.lastSeenAt)) target.lastSeenAt = candidateEnd;
+  if (candidateEnd && (!contextTarget.endedAt || candidateEnd > contextTarget.endedAt)) contextTarget.endedAt = candidateEnd;
 }
 
 function diffDays(start?: string, end?: string): number {

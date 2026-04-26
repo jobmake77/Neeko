@@ -172,20 +172,28 @@ function loadStoredTrainingSeed(personaDir: string): NormalizedTrainingSeedInput
 
   const legacyPath = join(personaDir, 'training-seed.json');
   if (!existsSync(legacyPath)) return null;
-  return JSON.parse(readFileSync(legacyPath, 'utf-8')) as StoredTrainingSeed;
+  const parsed = JSON.parse(readFileSync(legacyPath, 'utf-8')) as StoredTrainingSeed;
+  return {
+    stable_keywords: dedupeHints(parsed.stable_keywords ?? []),
+    stable_topics: dedupeHints(parsed.stable_topics ?? []),
+    stable_topic_roots: dedupeHints(parsed.stable_topic_roots ?? []),
+    stable_topic_families: dedupeHints(parsed.stable_topic_families ?? []),
+    stable_signal_count: parsed.stable_signal_count,
+    topic_cluster_count: parsed.topic_cluster_count,
+  };
 }
 
 function evaluateSignalReadiness(
-  parsed: StoredTrainingSeed,
+  parsed: NormalizedTrainingSeedInput,
   topicHints: string[],
   signalHints: string[]
 ): TrainingSeedGateStatus {
-  const rawTopicCount = dedupeHints(parsed.stable_topics ?? []).length;
-  const rawSignalCount = dedupeHints(parsed.stable_keywords ?? []).length;
+  const rawTopicCount = parsed.stable_topics.length;
+  const rawSignalCount = parsed.stable_keywords.length;
   const usableTopicCount = topicHints.length;
   const usableSignalCount = signalHints.length;
   const multiwordSignalCount = signalHints.filter((hint) => /\s/.test(hint)).length;
-  const familyCount = dedupeHints(parsed.stable_topic_families ?? [])
+  const familyCount = dedupeHints(parsed.stable_topic_families)
     .map((value) => humanizeTopicFamily(value))
     .filter(Boolean)
     .length;

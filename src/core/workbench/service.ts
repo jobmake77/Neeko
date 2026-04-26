@@ -3608,18 +3608,10 @@ export class WorkbenchService {
     documentsPath: string | undefined,
     evidencePath: string | undefined,
     outputDir: string,
-    existing?: {
-      entity_index_path?: string;
-      relation_index_path?: string;
-      context_index_path?: string;
-      identity_arc_path?: string;
-      graph_path?: string;
-      training_seed_v3_path?: string;
-      provenance_report_path?: string;
-    },
+    existing?: Partial<TrainingPrepArtifact['persona_web_artifacts']>,
     prepArtifactId?: string,
     evidenceImportId?: string,
-  ) {
+  ): TrainingPrepArtifact['persona_web_artifacts'] | undefined {
     const existingPaths = [
       existing?.entity_index_path,
       existing?.relation_index_path,
@@ -3633,7 +3625,7 @@ export class WorkbenchService {
       && existingPaths.every((filePath) => existsSync(filePath))
       && hasTrainingSeedDominantDomainsField(existing?.training_seed_v3_path)
     ) {
-      return existing;
+      return existing as TrainingPrepArtifact['persona_web_artifacts'];
     }
     if ((!documentsPath || !existsSync(documentsPath)) && (!evidencePath || !existsSync(evidencePath))) {
       return undefined;

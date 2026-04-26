@@ -144,6 +144,33 @@ npm install
 npm run build
 ```
 
+### 验证命令
+
+推荐把验证分成两层：
+
+- 一键完整验证
+
+```bash
+npm test
+```
+
+这个入口会顺序执行：
+
+- root TypeScript lint
+- core build
+- `test/*.mjs` 全量 Node 回归测试
+- API contract 测试
+- desktop production build
+
+如果只想单跑某一层：
+
+```bash
+npm run test:core
+npm run test:node
+npm run test:api-contract
+npm run test:desktop
+```
+
 ### 3. 启动本地服务
 
 ```bash

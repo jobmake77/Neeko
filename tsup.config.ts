@@ -30,6 +30,7 @@ export default defineConfig({
     'src/testing/article-adapter-test-entry.ts',
     'src/testing/train-test-entry.ts',
     'src/testing/persona-web-test-entry.ts',
+    'src/testing/desktop-api-test-entry.ts',
   ],
   format: ['esm'],
   target: 'node18',

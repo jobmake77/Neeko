@@ -28,6 +28,7 @@ export default defineConfig({
     'src/testing/api-contract-test-entry.ts',
     'src/testing/twitter-adapter-test-entry.ts',
     'src/testing/train-test-entry.ts',
+    'src/testing/persona-web-test-entry.ts',
   ],
   format: ['esm'],
   target: 'node18',

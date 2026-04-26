@@ -3,6 +3,7 @@ import { join } from 'path';
 import { RawDocument, RawDocumentSchema } from '../models/memory.js';
 import {
   EvidenceItem,
+  EvidenceItemSchema,
   EvidenceReference,
   EvidenceReferenceSchema,
   PersonaIdentityArc,
@@ -213,7 +214,11 @@ export function buildPersonaWebArtifacts(input: PersonaWebBuildInput): PersonaWe
     .map((doc) => RawDocumentSchema.safeParse(doc))
     .filter((item): item is { success: true; data: RawDocument } => item.success)
     .map((item) => item.data);
-  const evidenceItems = Array.isArray(input.evidenceItems) ? input.evidenceItems : [];
+  const evidenceItems = Array.isArray(input.evidenceItems)
+    ? input.evidenceItems
+      .map((item) => normalizeEvidenceItemForPersonaWeb(item))
+      .filter((item): item is EvidenceItem => Boolean(item))
+    : [];
   const entityMap = new Map<string, EntityAccumulator>();
   const contextMap = new Map<string, ContextAccumulator>();
   const relationMap = new Map<string, RelationAccumulator>();
@@ -360,6 +365,7 @@ export function compileTrainingSeedV3(
       .map((item) => item.canonical_name),
   ]).slice(0, 12);
   const guardrails = buildGuardrailNotes(graph, provenanceReport);
+  const dominantDomains = inferDominantDomains(graph, topicEntities, contextHints, relationshipHints, identityHints);
 
   return TrainingSeedV3Schema.parse({
     schema_version: 3,
@@ -376,6 +382,7 @@ export function compileTrainingSeedV3(
       verified_relation_count: provenanceReport.verified_relation_count,
       guarded_claim_count: guardrails.length,
     },
+    dominant_domains: dominantDomains,
     topics: topicEntities,
     signals,
     relationship_hints: relationshipHints,
@@ -917,6 +924,83 @@ function buildEvidenceReference(item: EvidenceItem, confidence: number): Evidenc
     timestamp_end: item.timestamp_end ?? item.timestamp_start,
     confidence,
   });
+}
+
+function normalizeEvidenceItemForPersonaWeb(item: EvidenceItem): EvidenceItem | null {
+  const parsed = EvidenceItemSchema.safeParse({
+    ...item,
+    timestamp_start: normalizeDatetimeLike(item.timestamp_start),
+    timestamp_end: normalizeDatetimeLike(item.timestamp_end) ?? normalizeDatetimeLike(item.timestamp_start),
+    context_before: (item.context_before ?? []).map((entry) => ({
+      ...entry,
+      timestamp: normalizeDatetimeLike(entry.timestamp),
+    })),
+    context_after: (item.context_after ?? []).map((entry) => ({
+      ...entry,
+      timestamp: normalizeDatetimeLike(entry.timestamp),
+    })),
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+function normalizeDatetimeLike(value: unknown): string | undefined {
+  const raw = String(value ?? '').trim();
+  if (!raw) return undefined;
+  if (/^\d{10,13}$/.test(raw)) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) return undefined;
+    const date = new Date(raw.length === 10 ? numeric * 1000 : numeric);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function inferDominantDomains(
+  graph: PersonaWebGraph,
+  topics: string[],
+  contextHints: string[],
+  relationshipHints: string[],
+  identityHints: string[],
+): string[] {
+  const keywordMap: Array<{ label: string; patterns: RegExp[] }> = [
+    { label: 'developer tools', patterns: [/\b(raycast|alfred|github|tool|tools|workflow|plugin|plugins|terminal|editor|markdown)\b/i, /(工具|插件|工作流|终端|编辑器|效率)/u] },
+    { label: 'apple ecosystem', patterns: [/\b(apple|mac|macos|ios|swift|xcode|app store|apple music|airpods|vision pro)\b/i, /(苹果|mac|iOS|Swift|Xcode)/u] },
+    { label: 'web development', patterns: [/\b(web|frontend|browser|html|css|javascript|typescript|node|react|astro)\b/i, /(前端|网页|浏览器|JavaScript|TypeScript|Node)/u] },
+    { label: 'open source', patterns: [/\b(open source|oss|star|fork|repo|repository)\b/i, /(开源|仓库|Star|Fork)/u] },
+    { label: 'ai', patterns: [/\b(ai|llm|gpt|claude|openai|gemini|chatgpt|model)\b/i, /(模型|大模型|AI|智能体)/u] },
+    { label: 'systems programming', patterns: [/\b(rust|cargo|linux|shell|homebrew|docker|wasm|kubernetes)\b/i, /(Rust|系统|容器|Linux)/u] },
+    { label: 'design', patterns: [/\b(figma|sketch|design|ui|ux|theme|mockup)\b/i, /(设计|界面|主题|配色)/u] },
+    { label: 'startups', patterns: [/\b(startup|founder|fundraising|yc|investor)\b/i, /(创业|创始人|融资|投资)/u] },
+    { label: 'markets', patterns: [/\b(stock|ticker|market|tesla|economy|trading)\b/i, /(股票|市场|交易|经济)/u] },
+    { label: 'content publishing', patterns: [/\b(blog|newsletter|weekly|podcast|youtube|twitter)\b/i, /(博客|周刊|播客|公众号|推文|视频)/u] },
+  ];
+
+  const corpus = [
+    ...topics,
+    ...contextHints,
+    ...relationshipHints,
+    ...identityHints,
+    ...graph.entities.slice(0, 64).map((item) => item.canonical_name),
+    ...graph.relations.slice(0, 64).map((item) => item.summary),
+  ].join('\n');
+
+  const matched = keywordMap
+    .map((entry) => ({
+      label: entry.label,
+      score: entry.patterns.reduce((count, pattern) => count + (pattern.test(corpus) ? 1 : 0), 0),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))
+    .map((entry) => entry.label);
+
+  if (matched.length > 0) return matched.slice(0, 6);
+
+  return dedupeStrings(
+    topics
+      .map((item) => item.trim().toLowerCase())
+      .filter((item) => item.length >= 3 && item.length <= 32)
+  ).slice(0, 6);
 }
 
 function summarizeRelation(relationType: PersonaWebRelationType, phrase: string): string {

@@ -12,6 +12,11 @@ import type { BenchmarkRunCaseTrace } from './benchmark-judge.js';
 import { settings } from '../../config/settings.js';
 import { computeCoverageByOrigin, loadSkillLibrary } from '../skills/library.js';
 import { PersonaSkillLibrary } from '../skills/types.js';
+import { existsSync, readFileSync } from 'fs';
+import {
+  PersonaWebProvenanceReportSchema,
+  TrainingSeedV3Schema,
+} from '../models/evidence.js';
 import {
   mergeTrainingRuntimeConfig,
   TrainingRuntimeConfig,
@@ -84,7 +89,9 @@ export class TrainingLoop {
     this.evaluatorAgent = new EvaluatorAgent();
     this.directorAgent = new DirectorAgent();
     this.trainingPolicy = new TrainingPolicy();
-    this.governance = new MemoryGovernance(this.retriever);
+    this.governance = new MemoryGovernance(this.retriever, {
+      provenanceContext: this.loadProvenanceContext(),
+    });
   }
 
   async run(options: TrainingOptions = {}): Promise<{ soul: Soul; totalRounds: number; history: TrainingProgress[] }> {
@@ -492,6 +499,32 @@ export class TrainingLoop {
       return loadSkillLibrary(dir, this.persona.slug);
     } catch {
       return null;
+    }
+  }
+
+  private loadProvenanceContext() {
+    try {
+      const dir = settings.getPersonaDir(this.persona.slug);
+      const seedPath = `${dir}/training-seed-v3.json`;
+      const reportPath = `${dir}/persona-web-provenance-report.json`;
+      const seed = existsSync(seedPath)
+        ? TrainingSeedV3Schema.parse(JSON.parse(readFileSync(seedPath, 'utf-8')))
+        : null;
+      const report = existsSync(reportPath)
+        ? PersonaWebProvenanceReportSchema.parse(JSON.parse(readFileSync(reportPath, 'utf-8')))
+        : null;
+      if (!seed && !report) return undefined;
+      return {
+        coverage_score: report?.coverage_score,
+        topics: seed?.topics ?? [],
+        signals: seed?.signals ?? [],
+        relationship_hints: seed?.relationship_hints ?? [],
+        context_hints: seed?.context_hints ?? [],
+        identity_hints: seed?.identity_hints ?? [],
+        guardrail_notes: seed?.provenance_guardrails ?? report?.guardrail_notes ?? [],
+      };
+    } catch {
+      return undefined;
     }
   }
 

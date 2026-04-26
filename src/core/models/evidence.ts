@@ -276,6 +276,7 @@ export const TrainingSeedV3Schema = z.object({
   target_name: z.string().optional(),
   summary: z.string(),
   stats: TrainingSeedV3StatsSchema,
+  dominant_domains: z.array(z.string()).default([]),
   topics: z.array(z.string()).default([]),
   signals: z.array(z.string()).default([]),
   relationship_hints: z.array(z.string()).default([]),

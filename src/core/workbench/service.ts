@@ -64,7 +64,10 @@ import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
 import { getDefaultModelForProvider, resolveModelForOverride, type ProviderName } from '../../config/model.js';
 import { loadRawDocsCache, writeRawDocsCache } from '../pipeline/evidence-routing.js';
-import { ensurePersonaWebArtifacts } from '../pipeline/persona-web.js';
+import {
+  ensurePersonaWebArtifacts,
+  loadPersonaWebArtifactsFromDir,
+} from '../pipeline/persona-web.js';
 
 export interface WorkbenchCreateInput {
   target?: string;
@@ -341,6 +344,15 @@ interface PersonaNetworkSummary {
   arc_count: number;
 }
 
+interface PersonaNetworkPromptContext {
+  topics: string[];
+  signals: string[];
+  relationship_hints: string[];
+  context_hints: string[];
+  identity_hints: string[];
+  provenance_guardrails: string[];
+}
+
 function asArray(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : [];
 }
@@ -400,6 +412,22 @@ function readPersonaNetworkSummary(slug: string, pendingCandidates = 0): Persona
   };
 }
 
+function readPersonaNetworkPromptContext(slug: string): PersonaNetworkPromptContext {
+  const personaDir = settings.getPersonaDir(slug);
+  const trainingSeedV3 = readJsonFile<Record<string, unknown>>(join(personaDir, 'training-seed-v3.json'), {});
+  const list = (value: unknown): string[] => Array.isArray(value)
+    ? value.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 8)
+    : [];
+  return {
+    topics: list(trainingSeedV3.topics),
+    signals: list(trainingSeedV3.signals),
+    relationship_hints: list(trainingSeedV3.relationship_hints),
+    context_hints: list(trainingSeedV3.context_hints),
+    identity_hints: list(trainingSeedV3.identity_hints),
+    provenance_guardrails: list(trainingSeedV3.provenance_guardrails),
+  };
+}
+
 function mirrorPersonaWebArtifactsToPersonaDir(
   slug: string,
   artifacts?: {
@@ -432,6 +460,34 @@ function mirrorPersonaWebArtifactsToPersonaDir(
     if (!sourcePath || !existsSync(sourcePath)) continue;
     writeFileSync(join(personaDir, filename), readFileSync(sourcePath));
   }
+}
+
+function hasMirroredPersonaWebArtifacts(personaDir: string): boolean {
+  const rawTrainingSeed = readJsonFile<Record<string, unknown>>(join(personaDir, 'training-seed-v3.json'), {});
+  const hasRawDominantDomains = Object.prototype.hasOwnProperty.call(rawTrainingSeed, 'dominant_domains')
+    && Array.isArray(rawTrainingSeed.dominant_domains);
+  const loaded = loadPersonaWebArtifactsFromDir(personaDir);
+  if (loaded) {
+    return hasRawDominantDomains;
+  }
+  const mirrorCandidates = [
+    'training-seed-v3.json',
+    'entity-index.json',
+    'relation-graph.json',
+    'context-packs.json',
+    'identity-arcs.json',
+  ];
+  if (!mirrorCandidates.every((filename) => existsSync(join(personaDir, filename)))) {
+    return false;
+  }
+  return hasRawDominantDomains;
+}
+
+function hasTrainingSeedDominantDomainsField(trainingSeedPath: string | undefined): boolean {
+  if (!trainingSeedPath || !existsSync(trainingSeedPath)) return false;
+  const rawTrainingSeed = readJsonFile<Record<string, unknown>>(trainingSeedPath, {});
+  return Object.prototype.hasOwnProperty.call(rawTrainingSeed, 'dominant_domains')
+    && Array.isArray(rawTrainingSeed.dominant_domains);
 }
 
 function slugifyPersonaName(value: string): string {
@@ -1122,16 +1178,34 @@ function buildProjectFactFallbackReply(hits: ProjectEvidenceHit[]): string {
   return lines.join('\n');
 }
 
+function responseContainsProjectLabel(text: string, hits: ProjectEvidenceHit[]): boolean {
+  const normalized = text.toLowerCase();
+  return hits.some((item) => item.label && normalized.includes(item.label.toLowerCase()));
+}
+
+function shouldUseProjectFactFallback(userMessage: string, answer: string, hits: ProjectEvidenceHit[]): boolean {
+  if (!isProjectFactQuery(userMessage) || hits.length === 0) return false;
+  if (isPersonaMetaDeflection(answer)) return true;
+  if (!isSelfProjectQuery(userMessage)) return false;
+  if (hasNonOwnerProjectSignal(answer)) return true;
+  return !responseContainsProjectLabel(answer, hits);
+}
+
 function buildNetworkPriorityContext(
   knowledgeLayer: ChatKnowledgeLayer,
   networkSummary: PersonaNetworkSummary,
+  networkPromptContext: PersonaNetworkPromptContext,
   userMessage: string,
 ): string {
   if (
     networkSummary.entity_count <= 0 &&
     networkSummary.relation_count <= 0 &&
     networkSummary.context_pack_count <= 0 &&
-    networkSummary.arc_count <= 0
+    networkSummary.arc_count <= 0 &&
+    networkPromptContext.topics.length <= 0 &&
+    networkPromptContext.relationship_hints.length <= 0 &&
+    networkPromptContext.context_hints.length <= 0 &&
+    networkPromptContext.identity_hints.length <= 0
   ) {
     return '';
   }
@@ -1147,6 +1221,21 @@ function buildNetworkPriorityContext(
   }
   if (networkSummary.pending_candidate_count > 0) {
     lines.push(`- There are ${networkSummary.pending_candidate_count} pending related-context candidates; do not present them as already incorporated facts.`);
+  }
+  if (networkPromptContext.topics.length > 0) {
+    lines.push(`- Top anchored topics: ${networkPromptContext.topics.slice(0, 5).join(' | ')}.`);
+  }
+  if (networkPromptContext.relationship_hints.length > 0) {
+    lines.push(`- Anchored relation hints: ${networkPromptContext.relationship_hints.slice(0, 4).join(' | ')}.`);
+  }
+  if (networkPromptContext.identity_hints.length > 0) {
+    lines.push(`- Identity arc hints: ${networkPromptContext.identity_hints.slice(0, 3).join(' | ')}.`);
+  }
+  if (networkPromptContext.context_hints.length > 0 && (knowledgeLayer === 'background' || knowledgeLayer === 'hybrid')) {
+    lines.push(`- Background/context hints: ${networkPromptContext.context_hints.slice(0, 3).join(' | ')}.`);
+  }
+  if (networkPromptContext.provenance_guardrails.length > 0) {
+    lines.push(`- Provenance guardrails: ${networkPromptContext.provenance_guardrails.slice(0, 3).join(' | ')}.`);
   }
 
   if (knowledgeLayer === 'project') {
@@ -3039,6 +3128,150 @@ export class WorkbenchService {
       self_aliases: [],
       known_other_aliases: [],
     });
+    this.ensurePersonaWebArtifactsAvailable(config.persona_slug, config);
+  }
+
+  private ensurePersonaWebArtifactsAvailable(
+    slug: string,
+    config = this.store.getPersonaConfig(slug),
+  ): void {
+    const personaDir = settings.getPersonaDir(slug);
+    if (hasMirroredPersonaWebArtifacts(personaDir)) return;
+
+    const targetName = config?.name
+      ?? this.readPersonaSummary(slug)?.name
+      ?? this.readPersonaConfigSummary(slug)?.name
+      ?? slug;
+
+    const preferredPrepId = config?.update_policy.last_training_prep_id;
+    const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
+    const orderedPreps = [
+      ...(preferredPrepId
+        ? trainingPreps.filter((item) => item.id === preferredPrepId)
+        : []),
+      ...trainingPreps.filter((item) => item.id !== preferredPrepId),
+    ];
+
+    for (const prep of orderedPreps) {
+      const artifacts = this.ensurePersonaWebArtifactsFromTrainingPrep(prep, targetName);
+      if (!artifacts) continue;
+      mirrorPersonaWebArtifactsToPersonaDir(slug, artifacts);
+      return;
+    }
+
+    for (const evidenceImport of this.store.listEvidenceImports(slug)) {
+      const artifacts = this.ensurePersonaWebArtifactsFromEvidenceImport(evidenceImport, targetName);
+      if (!artifacts) continue;
+      mirrorPersonaWebArtifactsToPersonaDir(slug, artifacts);
+      return;
+    }
+
+    const personaArtifacts = this.ensurePersonaWebArtifactsFromPaths(
+      slug,
+      targetName,
+      join(personaDir, 'raw-docs.json'),
+      join(personaDir, 'evidence-index.jsonl'),
+      personaDir,
+    );
+    mirrorPersonaWebArtifactsToPersonaDir(slug, personaArtifacts);
+  }
+
+  private ensurePersonaWebArtifactsFromTrainingPrep(
+    prep: TrainingPrepArtifact,
+    targetName: string,
+  ): TrainingPrepArtifact['persona_web_artifacts'] | undefined {
+    const artifacts = this.ensurePersonaWebArtifactsFromPaths(
+      prep.persona_slug,
+      targetName,
+      prep.documents_path,
+      prep.evidence_index_path,
+      dirname(prep.documents_path),
+      prep.persona_web_artifacts,
+      prep.id,
+    );
+    if (!artifacts) return undefined;
+    if (!prep.persona_web_artifacts || prep.persona_web_artifacts.training_seed_v3_path !== artifacts.training_seed_v3_path) {
+      this.store.saveTrainingPrepArtifact({
+        ...prep,
+        persona_web_artifacts: artifacts,
+      });
+    }
+    return artifacts;
+  }
+
+  private ensurePersonaWebArtifactsFromEvidenceImport(
+    entry: WorkbenchEvidenceImport,
+    targetName: string,
+  ): WorkbenchEvidenceImport['artifacts']['persona_web_artifacts'] | undefined {
+    const artifacts = this.ensurePersonaWebArtifactsFromPaths(
+      entry.persona_slug,
+      targetName,
+      entry.artifacts.documents_path,
+      entry.artifacts.evidence_index_path,
+      dirname(entry.artifacts.documents_path),
+      entry.artifacts.persona_web_artifacts,
+      undefined,
+      entry.id,
+    );
+    if (!artifacts) return undefined;
+    if (!entry.artifacts.persona_web_artifacts || entry.artifacts.persona_web_artifacts.training_seed_v3_path !== artifacts.training_seed_v3_path) {
+      this.store.saveEvidenceImport({
+        ...entry,
+        artifacts: {
+          ...entry.artifacts,
+          persona_web_artifacts: artifacts,
+        },
+      });
+    }
+    return artifacts;
+  }
+
+  private ensurePersonaWebArtifactsFromPaths(
+    slug: string,
+    targetName: string,
+    documentsPath: string | undefined,
+    evidencePath: string | undefined,
+    outputDir: string,
+    existing?: {
+      entity_index_path?: string;
+      relation_index_path?: string;
+      context_index_path?: string;
+      identity_arc_path?: string;
+      graph_path?: string;
+      training_seed_v3_path?: string;
+      provenance_report_path?: string;
+    },
+    prepArtifactId?: string,
+    evidenceImportId?: string,
+  ) {
+    const existingPaths = [
+      existing?.entity_index_path,
+      existing?.relation_index_path,
+      existing?.context_index_path,
+      existing?.identity_arc_path,
+      existing?.training_seed_v3_path,
+      existing?.provenance_report_path,
+    ].filter((value): value is string => Boolean(value));
+    if (
+      existingPaths.length > 0
+      && existingPaths.every((filePath) => existsSync(filePath))
+      && hasTrainingSeedDominantDomainsField(existing?.training_seed_v3_path)
+    ) {
+      return existing;
+    }
+    if ((!documentsPath || !existsSync(documentsPath)) && (!evidencePath || !existsSync(evidencePath))) {
+      return undefined;
+    }
+    const personaWeb = ensurePersonaWebArtifacts({
+      outputDir,
+      personaSlug: slug,
+      targetName,
+      documentsPath,
+      evidencePath,
+      prepArtifactId,
+      evidenceImportId,
+    });
+    return personaWeb?.artifacts;
   }
 
   private async waitForRunCompletion(runId: string, timeoutMs = 30 * 60 * 1000): Promise<WorkbenchRun | null> {
@@ -4890,6 +5123,9 @@ export class WorkbenchService {
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
     this.reconcilePersonaDocumentCount(slug, cleanDocumentCount);
+    if (cleanDocumentCount > 0) {
+      this.ensurePersonaWebArtifactsAvailable(slug, config);
+    }
 
     if (imports.length === 0) {
       const summary = cleanDocumentCount > 0 && !threshold.training_threshold_met
@@ -5527,6 +5763,7 @@ export class WorkbenchService {
 
   private buildCultivationSummary(slug: string, persona: PersonaSummary): CultivationSummary {
     const config = this.getPersonaConfig(slug);
+    this.ensurePersonaWebArtifactsAvailable(slug, config);
     const skills = this.readSkillSummary(slug);
     const evidenceImports = this.store.listEvidenceImports(slug);
     const uniqueDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
@@ -6206,14 +6443,17 @@ export class WorkbenchService {
     const conversationPolicyContext = buildConversationPolicyContext(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const turnPlanContext = buildTurnPlanPriorityContext(turnPlan);
     const styleDistillationContext = buildStyleDistillationContext(soul, turnPlan);
+    this.ensurePersonaWebArtifactsAvailable(persona.slug);
     const networkSummary = readPersonaNetworkSummary(
       persona.slug,
       this.store.listDiscoveredSources(persona.slug).filter((item) => item.status === 'pending').length,
     );
+    const networkPromptContext = readPersonaNetworkPromptContext(persona.slug);
     const knowledgeLayer = detectChatKnowledgeLayer(lastMessage?.content ?? '');
     const networkPriorityContext = buildNetworkPriorityContext(
       knowledgeLayer,
       networkSummary,
+      networkPromptContext,
       lastMessage?.content ?? '',
     );
     const projectEvidenceHits = buildProjectEvidenceHits(
@@ -6588,6 +6828,9 @@ export class WorkbenchService {
       : runStatus === 'recovering'
         ? 'running'
         : 'interrupted';
+    if (runStatus === 'completed') {
+      this.ensurePersonaWebArtifactsAvailable(slug);
+    }
     writeFileSync(contextPath, JSON.stringify({
       ...raw,
       state: nextState,
@@ -6928,6 +7171,7 @@ export class WorkbenchService {
     }
     const skills = this.readSkillSummary(slug);
     const config = this.getPersonaConfig(slug);
+    this.ensurePersonaWebArtifactsAvailable(slug, config);
     const evidenceImports = this.store.listEvidenceImports(slug);
     const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
     const persistedCleanDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
@@ -7128,9 +7372,11 @@ export const __workbenchTestables = {
   deriveEvaluationPassed,
   buildCollectionContinuationDecision,
   isProjectFactQuery,
+  detectChatKnowledgeLayer,
   buildProjectEvidenceHits,
   buildProjectFactFallbackReply,
   shouldUseProjectFactFallback,
+  buildNetworkPriorityContext,
   isPersonaMetaDeflection,
 };
 

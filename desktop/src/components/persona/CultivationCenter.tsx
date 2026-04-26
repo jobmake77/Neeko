@@ -626,11 +626,22 @@ function TrainingCard({
       </div>
 
       <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 4 }}>
-        <button className="btn btn-icon" onClick={onEdit} title="编辑来源">
+        <button className="btn btn-icon" onClick={onEdit} title="编辑来源" aria-label="编辑来源">
           <Edit2 size={13} />
         </button>
-        <button className="btn btn-icon" onClick={onExpand}>{expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</button>
-        <button className="btn btn-icon" onClick={onDelete} style={{ color: '#ef4444' }}><Trash2 size={13} /></button>
+        <button
+          className="btn btn-secondary"
+          onClick={onExpand}
+          title={expanded ? '收起详情' : '查看详情'}
+          aria-label={expanded ? '收起详情' : '查看详情'}
+          style={{ height: 28, padding: '0 10px', gap: 6, fontSize: 12 }}
+        >
+          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          <span>{expanded ? '收起详情' : '查看详情'}</span>
+        </button>
+        <button className="btn btn-icon" onClick={onDelete} title="删除人格" aria-label="删除人格" style={{ color: '#ef4444' }}>
+          <Trash2 size={13} />
+        </button>
       </div>
 
       {expanded && detail ? (

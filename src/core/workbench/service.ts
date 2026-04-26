@@ -1039,6 +1039,10 @@ function hasSelfProjectSignal(text: string): boolean {
   return /(我|自己|独立|业余时间|起了两个支线任务|代码开源|我开发|我写|我做|周刊之前想弄个网站|之前用 Rust 打包了|有幸到了 Github 日总榜)/u.test(text);
 }
 
+function hasNonOwnerProjectSignal(text: string): boolean {
+  return /(看到一个|发现一个|推荐过|推荐一个|这个工具|这个开源工具|有兴趣可以玩玩|可以简单自己部署|之前我们在内部也有一些类似的实践|不是我做的|别人的项目)/u.test(text);
+}
+
 function scoreProjectEvidenceDoc(query: string, doc: RawDocument): number {
   const content = `${doc.content} ${doc.source_url ?? ''}`;
   let score = 0;
@@ -1065,9 +1069,13 @@ function buildProjectEvidenceHits(query: string, docs: RawDocument[]): ProjectEv
     const snippet = normalizeProjectSnippet(doc.content);
     if (!snippet) continue;
     const label = extractProjectLabel(doc.content) ?? '公开提到的项目/作品';
+    const anchoredSelfProjectFact = hasSelfProjectSignal(snippet)
+      || hasSpecificProjectSignal(snippet)
+      || (label !== '公开提到的项目/作品' && /(开源|editor|编辑器|app|tool|项目|作品|website|博客|周刊|mac|swift|rust)/i.test(snippet));
     if (label === '公开提到的项目/作品' && score < 4.2) continue;
     if (label === '公开提到的项目/作品' && !hasSpecificProjectSignal(snippet)) continue;
-    if (selfProjectQuery && !hasSelfProjectSignal(snippet)) continue;
+    if (selfProjectQuery && hasNonOwnerProjectSignal(snippet) && !hasSelfProjectSignal(snippet) && !hasSpecificProjectSignal(snippet)) continue;
+    if (selfProjectQuery && !anchoredSelfProjectFact) continue;
     const key = `${label.toLowerCase()}::${snippet.slice(0, 72)}`;
     const existing = deduped.get(key);
     if (existing && existing.score >= score) continue;
@@ -6235,7 +6243,11 @@ export class WorkbenchService {
       modelOverride,
     });
     const sanitizedText = sanitizeAssistantOutput(rewrittenText, lastMessage?.content ?? '');
-    const finalText = projectEvidenceHits.length > 0 && isPersonaMetaDeflection(sanitizedText)
+    const finalText = shouldUseProjectFactFallback(
+      lastMessage?.content ?? '',
+      sanitizedText,
+      projectEvidenceHits,
+    )
       ? buildProjectFactFallbackReply(projectEvidenceHits)
       : sanitizedText;
     return {
@@ -7118,6 +7130,7 @@ export const __workbenchTestables = {
   isProjectFactQuery,
   buildProjectEvidenceHits,
   buildProjectFactFallbackReply,
+  shouldUseProjectFactFallback,
   isPersonaMetaDeflection,
 };
 

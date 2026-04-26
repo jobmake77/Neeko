@@ -68,6 +68,39 @@ export const SourceValidationResultSchema = z.object({
 });
 export type SourceValidationResult = z.infer<typeof SourceValidationResultSchema>;
 
+export const SourcePreviewTargetSchema = z.object({
+  target: z.string(),
+  status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
+  summary: z.string(),
+  fetched_via: z.string().optional(),
+  source_url: z.string().optional(),
+  source_platform: z.string().optional(),
+  title: z.string().optional(),
+  author: z.string().optional(),
+  content_preview: z.string().optional(),
+  identity_match: z.number().min(0).max(1).optional(),
+  source_integrity: z.number().min(0).max(1).optional(),
+  reason_code: z.string().optional(),
+  evidence: z.array(z.string()).default([]),
+  error: z.string().optional(),
+});
+export type SourcePreviewTarget = z.infer<typeof SourcePreviewTargetSchema>;
+
+export const PersonaSourcePreviewSchema = z.object({
+  source: z.object({
+    id: z.string(),
+    type: z.enum(['social', 'chat_file', 'video_file', 'audio_file', 'article']),
+    mode: z.enum(['handle', 'remote_url', 'channel_url', 'single_url', 'local_file']).default('handle'),
+    platform: z.string().optional(),
+    handle_or_url: z.string().optional(),
+    links: z.array(z.string()).default([]),
+  }),
+  status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
+  summary: z.string(),
+  target_results: z.array(SourcePreviewTargetSchema).default([]),
+});
+export type PersonaSourcePreview = z.infer<typeof PersonaSourcePreviewSchema>;
+
 export const ConversationOrchestrationSchema = z.object({
   mode: z.enum(['answer', 'clarify', 'refuse_internal']).default('answer'),
   intent: z.enum(['greeting', 'factual', 'opinion', 'creative', 'relationship', 'meta', 'unknown']).default('unknown'),

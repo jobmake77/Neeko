@@ -307,6 +307,37 @@ export interface SourceValidationResult {
   evidence: string[];
 }
 
+export interface SourcePreviewTarget {
+  target: string;
+  status: 'accepted' | 'rejected' | 'quarantined' | 'error';
+  summary: string;
+  fetched_via?: string;
+  source_url?: string;
+  source_platform?: string;
+  title?: string;
+  author?: string;
+  content_preview?: string;
+  identity_match?: number;
+  source_integrity?: number;
+  reason_code?: string;
+  evidence: string[];
+  error?: string;
+}
+
+export interface PersonaSourcePreview {
+  source: {
+    id: string;
+    type: PersonaSource['type'];
+    mode: PersonaSource['mode'];
+    platform?: string;
+    handle_or_url?: string;
+    links?: string[];
+  };
+  status: 'accepted' | 'rejected' | 'quarantined' | 'error';
+  summary: string;
+  target_results: SourcePreviewTarget[];
+}
+
 export interface ConversationOrchestration {
   mode: 'answer' | 'clarify' | 'refuse_internal';
   intent: 'greeting' | 'factual' | 'opinion' | 'creative' | 'relationship' | 'meta' | 'unknown';

@@ -46,10 +46,12 @@ import {
   PersonaDetail,
   PersonaMutationResult,
   PersonaSource,
+  PersonaSourcePreview,
   PersonaSkillSummary,
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  SourcePreviewTarget,
   SourceValidationResult,
   TrainingPrepArtifact,
   SessionSummary,
@@ -810,12 +812,80 @@ function buildIdentityTokens(personaName: string, query: string, href: string): 
 
 function includesIdentityToken(text: string, tokens: string[]): boolean {
   const lower = text.toLowerCase();
-  return tokens.some((token) => lower.includes(token));
+  const compact = lower.replace(/[^a-z0-9]+/g, '');
+  return tokens.some((token) => {
+    const normalized = token.toLowerCase();
+    const compactToken = normalized.replace(/[^a-z0-9]+/g, '');
+    return lower.includes(normalized) || (compactToken.length >= 3 && compact.includes(compactToken));
+  });
 }
 
 function countIdentityMatches(text: string, tokens: string[]): number {
   const lower = text.toLowerCase();
-  return tokens.filter((token) => lower.includes(token)).length;
+  const compact = lower.replace(/[^a-z0-9]+/g, '');
+  return tokens.filter((token) => {
+    const normalized = token.toLowerCase();
+    const compactToken = normalized.replace(/[^a-z0-9]+/g, '');
+    return lower.includes(normalized) || (compactToken.length >= 3 && compact.includes(compactToken));
+  }).length;
+}
+
+function buildSourceIdentityTokens(personaName: string, source: PersonaSource): string[] {
+  const tokens = new Set<string>();
+  const collect = (value: string | undefined) => {
+    String(value ?? '')
+      .toLowerCase()
+      .split(/[^a-z0-9@._-]+/)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 3 || item.startsWith('@'))
+      .forEach((item) => tokens.add(item));
+  };
+
+  collect(personaName);
+  collect(source.target_label);
+  for (const alias of source.target_aliases ?? []) collect(alias);
+  const remoteRefs = [
+    source.handle_or_url,
+    ...(source.links ?? []),
+  ].filter((item): item is string => Boolean(item));
+  for (const ref of remoteRefs) {
+    normalizeHostTokens(ref).forEach((item) => tokens.add(item));
+  }
+  if (source.type === 'social') {
+    collect(source.handle_or_url);
+    collect(normalizeHandle(source.handle_or_url ?? ''));
+  }
+  return [...tokens].filter((item) => item !== 'http' && item !== 'https' && item !== 'www');
+}
+
+function readMetadataString(doc: RawDocument, key: string): string {
+  const metadata = doc.metadata as Record<string, unknown> | undefined;
+  return typeof metadata?.[key] === 'string' ? String(metadata[key]) : '';
+}
+
+function buildArticleIdentityEvidence(doc: RawDocument): string[] {
+  return [
+    readMetadataString(doc, 'title'),
+    doc.author ?? '',
+    String(doc.content ?? '').slice(0, 420),
+  ].map((item) => item.trim()).filter(Boolean);
+}
+
+function extractArticleOwnerHints(doc: RawDocument): string[] {
+  const hints = new Set<string>();
+  const title = readMetadataString(doc, 'title').replace(/^#+\s*/, '').trim();
+  const contentPreview = String(doc.content ?? '').slice(0, 420);
+  const englishTitleMatch = title.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})$/);
+  if (englishTitleMatch) hints.add(englishTitleMatch[1]);
+  const englishIntroMatch = contentPreview.match(/\b(?:i am|i'm|my name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/i);
+  if (englishIntroMatch) hints.add(englishIntroMatch[1]);
+  const chineseIntroMatch = contentPreview.match(/我是([\u4e00-\u9fa5A-Za-z·•\s]{2,16})/u);
+  if (chineseIntroMatch) hints.add(chineseIntroMatch[1].trim());
+  return [...hints];
+}
+
+function hintMatchesIdentity(hint: string, identityTokens: string[]): boolean {
+  return includesIdentityToken(hint, identityTokens.map((token) => token.replace(/^@/, '')));
 }
 
 function createValidationResult(input: {
@@ -835,6 +905,181 @@ function createValidationResult(input: {
     identity_match: Math.max(0, Math.min(1, input.identity_match)),
     source_integrity: Math.max(0, Math.min(1, input.source_integrity)),
     evidence: input.evidence ?? [],
+  };
+}
+
+export function validateRemoteSourceDocumentsForPersona(
+  personaName: string,
+  source: PersonaSource,
+  docs: RawDocument[],
+): DocumentValidationOutcome {
+  const identityTokens = buildSourceIdentityTokens(personaName, source);
+  const targetHandle = normalizeHandle(source.handle_or_url ?? '').toLowerCase();
+  const results = docs.map((doc) => {
+    const genericEvidence = [
+      doc.author ?? '',
+      doc.author_handle ?? '',
+      doc.source_url ?? '',
+      readMetadataString(doc, 'uploader'),
+      readMetadataString(doc, 'channel'),
+    ].filter(Boolean);
+    const genericHaystack = genericEvidence.join(' ').toLowerCase();
+    const genericIdentityScore = identityTokens.length > 0
+      ? Math.min(1, countIdentityMatches(genericHaystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3)))
+      : 0;
+
+    if (source.type === 'social') {
+      const author = String(doc.author ?? '').replace(/^@/, '').toLowerCase();
+      const authorHandle = String(doc.author_handle ?? '').replace(/^@/, '').toLowerCase();
+      const rawUrlHandle = /x\.com\/([^/?#]+)/i.exec(String(doc.source_url ?? ''))?.[1]?.replace(/^@/, '').toLowerCase();
+      const urlHandle = rawUrlHandle === 'i' ? '' : rawUrlHandle;
+      const signals = [author, authorHandle, urlHandle].filter(Boolean);
+      const matches = signals.filter((value) => value === targetHandle).length;
+      if (matches >= Math.min(2, Math.max(1, signals.length))) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: 'social_author_match',
+          summary: '作者已通过账号一致性校验。',
+          confidence: 0.96,
+          identity_match: 0.98,
+          source_integrity: 0.95,
+          evidence: genericEvidence,
+        });
+      }
+      return createValidationResult({
+        status: 'rejected',
+        reason_code: 'social_author_mismatch',
+        summary: '抓取结果作者与目标账号不一致，已拦截。',
+        confidence: 0.08,
+        identity_match: 0.05,
+        source_integrity: 0.25,
+        evidence: genericEvidence,
+      });
+    }
+
+    if (source.type === 'article') {
+      const title = readMetadataString(doc, 'title');
+      const articleEvidence = buildArticleIdentityEvidence(doc);
+      const articleHaystack = articleEvidence.join(' ').toLowerCase();
+      const articleIdentityScore = identityTokens.length > 0
+        ? Math.min(1, countIdentityMatches(articleHaystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3)))
+        : 0;
+      const likelyAggregator = /(category|search|tag|archive|rss|feed)/i.test(String(doc.source_url ?? ''))
+        || /\b(all posts|archives|categories|tags)\b/i.test(title);
+      if (likelyAggregator) {
+        return createValidationResult({
+          status: 'rejected',
+          reason_code: 'article_aggregator_page',
+          summary: '聚合页或列表页不会直接进入正式培养。',
+          confidence: 0.2,
+          identity_match: articleIdentityScore,
+          source_integrity: 0.25,
+          evidence: articleEvidence,
+        });
+      }
+
+      const conflictingOwnerHint = extractArticleOwnerHints(doc).find((hint) => !hintMatchesIdentity(hint, identityTokens));
+      if (conflictingOwnerHint) {
+        return createValidationResult({
+          status: 'rejected',
+          reason_code: 'article_conflicting_owner',
+          summary: `页面主体更像是 ${conflictingOwnerHint}，与当前目标不一致，已拦截。`,
+          confidence: 0.1,
+          identity_match: articleIdentityScore,
+          source_integrity: 0.18,
+          evidence: [conflictingOwnerHint, ...articleEvidence].filter(Boolean),
+        });
+      }
+
+      if (articleIdentityScore >= 0.45) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: 'article_identity_match',
+          summary: '网页内容已通过来源归属校验。',
+          confidence: 0.78,
+          identity_match: articleIdentityScore,
+          source_integrity: 0.76,
+          evidence: articleEvidence,
+        });
+      }
+
+      return createValidationResult({
+        status: 'quarantined',
+        reason_code: 'article_identity_weak',
+        summary: '网页内容没有给出足够的目标归属信号，已隔离等待人工确认。',
+        confidence: 0.34,
+        identity_match: articleIdentityScore,
+        source_integrity: 0.46,
+        evidence: articleEvidence,
+      });
+    }
+
+    if (source.type === 'video_file') {
+      const uploader = String(readMetadataString(doc, 'uploader') || readMetadataString(doc, 'channel')).toLowerCase();
+      const firstParty = targetHandle && (uploader.includes(targetHandle) || genericHaystack.includes(targetHandle));
+      if (firstParty || genericIdentityScore >= 0.5) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: firstParty ? 'video_first_party_match' : 'video_interview_match',
+          summary: firstParty ? '视频来源与目标频道匹配。' : '视频内容与目标身份存在稳定匹配。',
+          confidence: firstParty ? 0.9 : 0.74,
+          identity_match: firstParty ? 0.95 : genericIdentityScore,
+          source_integrity: firstParty ? 0.92 : 0.72,
+          evidence: genericEvidence,
+        });
+      }
+      return createValidationResult({
+        status: 'quarantined',
+        reason_code: 'video_identity_weak',
+        summary: '视频来源归属不足，已隔离，不进入正式训练。',
+        confidence: 0.34,
+        identity_match: genericIdentityScore,
+        source_integrity: 0.48,
+        evidence: genericEvidence,
+      });
+    }
+
+    if (source.type === 'audio_file') {
+      const firstParty = targetHandle && genericHaystack.includes(targetHandle);
+      if (firstParty || genericIdentityScore >= 0.45) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: firstParty ? 'audio_first_party_match' : 'audio_identity_match',
+          summary: firstParty ? '音频来源与目标身份存在直接匹配。' : '音频内容与目标身份存在稳定匹配。',
+          confidence: firstParty ? 0.88 : 0.72,
+          identity_match: firstParty ? 0.92 : genericIdentityScore,
+          source_integrity: firstParty ? 0.88 : 0.7,
+          evidence: genericEvidence,
+        });
+      }
+      return createValidationResult({
+        status: 'quarantined',
+        reason_code: 'audio_identity_weak',
+        summary: '音频来源归属不足，已隔离，不进入正式训练。',
+        confidence: 0.32,
+        identity_match: genericIdentityScore,
+        source_integrity: 0.46,
+        evidence: genericEvidence,
+      });
+    }
+
+    return createValidationResult({
+      status: 'accepted',
+      reason_code: 'default_remote_accept',
+      summary: '远程来源已通过基础校验。',
+      confidence: 0.7,
+      identity_match: genericIdentityScore,
+      source_integrity: 0.7,
+      evidence: genericEvidence,
+    });
+  });
+
+  return {
+    accepted: docs.filter((_, index) => results[index]?.status === 'accepted'),
+    rejected: docs.filter((_, index) => results[index]?.status === 'rejected'),
+    quarantined: docs.filter((_, index) => results[index]?.status === 'quarantined'),
+    results,
+    summary: summarizeValidationResults(results),
   };
 }
 
@@ -2229,6 +2474,119 @@ export class WorkbenchService {
 
   getPersonaSources(slug: string): PersonaSource[] {
     return this.getPersonaConfig(slug).sources;
+  }
+
+  async previewPersonaSource(input: {
+    persona_name: string;
+    source: PersonaSourceInput;
+  }): Promise<PersonaSourcePreview> {
+    const personaName = String(input.persona_name ?? '').trim();
+    if (!personaName) throw new Error('persona_name is required');
+    const source = normalizePersonaSource({
+      ...input.source,
+      id: input.source?.id ?? createSourceId(),
+    });
+    const targets = this.resolveSourceTargets(source).slice(0, 3);
+    if (!this.isRemoteSource(source)) {
+      return {
+        source: {
+          id: source.id,
+          type: source.type,
+          mode: source.mode,
+          platform: source.platform,
+          handle_or_url: source.handle_or_url,
+          links: source.links ?? [],
+        },
+        status: 'error',
+        summary: '当前来源是本地上传素材，暂不支持在线抓取预览。',
+        target_results: [],
+      };
+    }
+    if (targets.length === 0) {
+      throw new Error('remote source requires handle_or_url or links');
+    }
+
+    const targetResults: SourcePreviewTarget[] = [];
+    for (const target of targets) {
+      try {
+        const docs = await this.fetchPreviewDocumentsForTarget(source, target);
+        if (docs.length === 0) {
+          targetResults.push({
+            target,
+            status: 'error',
+            summary: '抓取已完成，但当前没有可预览的内容。',
+            evidence: [],
+          });
+          continue;
+        }
+        const previewSource = source.type === 'social'
+          ? { ...source, handle_or_url: target }
+          : source;
+        const validation = validateRemoteSourceDocumentsForPersona(personaName, previewSource, docs);
+        const selectedIndex = validation.results.findIndex((item) => item.status === 'accepted');
+        const fallbackIndex = selectedIndex >= 0
+          ? selectedIndex
+          : validation.results.findIndex((item) => item.status === 'quarantined');
+        const resultIndex = fallbackIndex >= 0
+          ? fallbackIndex
+          : 0;
+        const selectedDoc = docs[resultIndex];
+        const selectedValidation = validation.results[resultIndex];
+        targetResults.push({
+          target,
+          status: selectedValidation?.status ?? 'error',
+          summary: selectedValidation?.summary ?? '当前抓取内容无法完成归属判断。',
+          fetched_via: readMetadataString(selectedDoc, 'fetched_via'),
+          source_url: selectedDoc.source_url,
+          source_platform: selectedDoc.source_platform,
+          title: readMetadataString(selectedDoc, 'title') || undefined,
+          author: selectedDoc.author || undefined,
+          content_preview: String(selectedDoc.content ?? '').slice(0, 320),
+          identity_match: selectedValidation?.identity_match,
+          source_integrity: selectedValidation?.source_integrity,
+          reason_code: selectedValidation?.reason_code,
+          evidence: selectedValidation?.evidence ?? [],
+        });
+      } catch (error) {
+        targetResults.push({
+          target,
+          status: 'error',
+          summary: '当前来源暂时无法完成抓取预览。',
+          error: String(error instanceof Error ? error.message : error).slice(0, 180),
+          evidence: [],
+        });
+      }
+    }
+
+    const overallStatus: PersonaSourcePreview['status'] = targetResults.some((item) => item.status === 'accepted')
+      ? 'accepted'
+      : targetResults.some((item) => item.status === 'quarantined')
+        ? 'quarantined'
+        : targetResults.some((item) => item.status === 'rejected')
+          ? 'rejected'
+          : 'error';
+
+    const summary = overallStatus === 'accepted'
+      ? '当前来源预览已通过归属检查，可继续作为培养来源。'
+      : overallStatus === 'quarantined'
+        ? '当前来源抓到了内容，但归属信号不足，建议先人工确认。'
+        : overallStatus === 'rejected'
+          ? '当前来源内容与目标明显不一致，建议不要纳入培养。'
+          : '当前来源暂时无法给出有效预览，请稍后重试。';
+
+    return {
+      source: {
+        id: source.id,
+        type: source.type,
+        mode: source.mode,
+        platform: source.platform,
+        handle_or_url: source.handle_or_url,
+        links: source.links ?? [],
+      },
+      status: overallStatus,
+      summary,
+      target_results: targetResults,
+    };
   }
 
   getDiscoveredSources(slug: string): DiscoveredSourceCandidate[] {
@@ -3682,157 +4040,7 @@ export class WorkbenchService {
     source: PersonaSource,
     docs: RawDocument[],
   ): DocumentValidationOutcome {
-    const identityTokens = Array.from(new Set([
-      personaName,
-      source.target_label ?? '',
-      ...(source.target_aliases ?? []),
-      source.handle_or_url ?? '',
-      source.platform ?? '',
-    ].flatMap((value) => String(value).split(/[^a-zA-Z0-9@._-]+/)).map((item) => item.trim().toLowerCase()).filter((item) => item.length >= 3 || item.startsWith('@'))));
-
-    const targetHandle = normalizeHandle(source.handle_or_url ?? '').toLowerCase();
-    const results = docs.map((doc) => {
-      const evidence = [
-        doc.author ?? '',
-        doc.author_handle ?? '',
-        doc.source_url ?? '',
-        String((doc.metadata as Record<string, unknown> | undefined)?.uploader ?? ''),
-        String((doc.metadata as Record<string, unknown> | undefined)?.channel ?? ''),
-      ].filter(Boolean);
-      const haystack = evidence.join(' ').toLowerCase();
-      const identityMatchScore = identityTokens.length > 0 ? Math.min(1, countIdentityMatches(haystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3))) : 0;
-
-      if (source.type === 'social') {
-        const author = String(doc.author ?? '').replace(/^@/, '').toLowerCase();
-        const authorHandle = String(doc.author_handle ?? '').replace(/^@/, '').toLowerCase();
-        const rawUrlHandle = /x\.com\/([^/?#]+)/i.exec(String(doc.source_url ?? ''))?.[1]?.replace(/^@/, '').toLowerCase();
-        const urlHandle = rawUrlHandle === 'i' ? '' : rawUrlHandle;
-        const signals = [author, authorHandle, urlHandle].filter(Boolean);
-        const matches = signals.filter((value) => value === targetHandle).length;
-        if (matches >= Math.min(2, Math.max(1, signals.length))) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: 'social_author_match',
-            summary: '作者已通过账号一致性校验。',
-            confidence: 0.96,
-            identity_match: 0.98,
-            source_integrity: 0.95,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'rejected',
-          reason_code: 'social_author_mismatch',
-          summary: '抓取结果作者与目标账号不一致，已拦截。',
-          confidence: 0.08,
-          identity_match: 0.05,
-          source_integrity: 0.25,
-          evidence,
-        });
-      }
-
-      if (source.type === 'article') {
-        const likelyAggregator = /(category|search|tag|archive|rss|feed)/i.test(String(doc.source_url ?? ''));
-        if (likelyAggregator) {
-          return createValidationResult({
-            status: 'rejected',
-            reason_code: 'article_aggregator_page',
-            summary: '聚合页或列表页不会直接进入正式培养。',
-            confidence: 0.2,
-            identity_match: identityMatchScore,
-            source_integrity: 0.25,
-            evidence,
-          });
-        }
-        if (identityMatchScore >= 0.5) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: 'article_identity_match',
-            summary: '网页内容已通过来源归属校验。',
-            confidence: 0.78,
-            identity_match: identityMatchScore,
-            source_integrity: 0.76,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'quarantined',
-          reason_code: 'article_identity_weak',
-          summary: '网页归属不足，已隔离等待人工确认。',
-          confidence: 0.38,
-          identity_match: identityMatchScore,
-          source_integrity: 0.5,
-          evidence,
-        });
-      }
-
-      if (source.type === 'video_file') {
-        const uploader = String((doc.metadata as Record<string, unknown> | undefined)?.uploader ?? (doc.metadata as Record<string, unknown> | undefined)?.channel ?? '').toLowerCase();
-        const firstParty = targetHandle && (uploader.includes(targetHandle) || haystack.includes(targetHandle));
-        if (firstParty || identityMatchScore >= 0.5) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: firstParty ? 'video_first_party_match' : 'video_interview_match',
-            summary: firstParty ? '视频来源与目标频道匹配。' : '视频内容与目标身份存在稳定匹配。',
-            confidence: firstParty ? 0.9 : 0.74,
-            identity_match: firstParty ? 0.95 : identityMatchScore,
-            source_integrity: firstParty ? 0.92 : 0.72,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'quarantined',
-          reason_code: 'video_identity_weak',
-          summary: '视频来源归属不足，已隔离，不进入正式训练。',
-          confidence: 0.34,
-          identity_match: identityMatchScore,
-          source_integrity: 0.48,
-          evidence,
-        });
-      }
-
-      if (source.type === 'audio_file') {
-        const firstParty = targetHandle && haystack.includes(targetHandle);
-        if (firstParty || identityMatchScore >= 0.45) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: firstParty ? 'audio_first_party_match' : 'audio_identity_match',
-            summary: firstParty ? '音频来源与目标身份存在直接匹配。' : '音频内容与目标身份存在稳定匹配。',
-            confidence: firstParty ? 0.88 : 0.72,
-            identity_match: firstParty ? 0.92 : identityMatchScore,
-            source_integrity: firstParty ? 0.88 : 0.7,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'quarantined',
-          reason_code: 'audio_identity_weak',
-          summary: '音频来源归属不足，已隔离，不进入正式训练。',
-          confidence: 0.32,
-          identity_match: identityMatchScore,
-          source_integrity: 0.46,
-          evidence,
-        });
-      }
-
-      return createValidationResult({
-        status: 'accepted',
-        reason_code: 'default_remote_accept',
-        summary: '远程来源已通过基础校验。',
-        confidence: 0.7,
-        identity_match: identityMatchScore,
-        source_integrity: 0.7,
-        evidence,
-      });
-    });
-
-    return {
-      accepted: docs.filter((_, index) => results[index]?.status === 'accepted'),
-      rejected: docs.filter((_, index) => results[index]?.status === 'rejected'),
-      quarantined: docs.filter((_, index) => results[index]?.status === 'quarantined'),
-      results,
-      summary: summarizeValidationResults(results),
-    };
+    return validateRemoteSourceDocumentsForPersona(personaName, source, docs);
   }
 
   private getValidationSummaryPath(entry: WorkbenchEvidenceImport): string {
@@ -4028,6 +4236,46 @@ export class WorkbenchService {
     const links = normalizeStringArray(source.links);
     if (links.length > 0) return links;
     if (source.handle_or_url?.trim()) return [source.handle_or_url.trim()];
+    return [];
+  }
+
+  private isRemoteSource(source: PersonaSource): boolean {
+    return source.mode !== 'local_file';
+  }
+
+  private async fetchPreviewDocumentsForTarget(source: PersonaSource, target: string): Promise<RawDocument[]> {
+    if (source.type === 'social') {
+      const adapter = new TwitterAdapter();
+      return adapter.fetch(target, { limit: 3 });
+    }
+    if (source.type === 'video_file') {
+      const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+      const limit = source.mode === 'channel_url' ? 2 : 1;
+      return adapter.fetch(target, { limit });
+    }
+    if (source.type === 'audio_file') {
+      const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+      try {
+        const remoteDocs = await adapter.fetch(target, { limit: 1 });
+        if (remoteDocs.length > 0) {
+          return remoteDocs.map((doc) => ({
+            ...doc,
+            source_platform: source.platform ?? 'podcast',
+            metadata: {
+              ...(doc.metadata ?? {}),
+              media_kind: 'audio',
+              source_target_url: target,
+            },
+          }));
+        }
+      } catch {}
+      const articleAdapter = new ArticleAdapter();
+      return articleAdapter.fetch(target);
+    }
+    if (source.type === 'article' || source.mode === 'remote_url') {
+      const adapter = new ArticleAdapter();
+      return adapter.fetch(target);
+    }
     return [];
   }
 
@@ -7371,6 +7619,7 @@ export const __workbenchTestables = {
   mergeDocumentCollections,
   deriveEvaluationPassed,
   buildCollectionContinuationDecision,
+  validateRemoteSourceDocumentsForPersona,
   isProjectFactQuery,
   detectChatKnowledgeLayer,
   buildProjectEvidenceHits,

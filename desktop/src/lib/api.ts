@@ -189,6 +189,15 @@ export async function updatePersonaSources(
   });
 }
 
+export async function previewPersonaSource(
+  payload: { persona_name: string; source: PersonaSource }
+): Promise<import('./types').PersonaSourcePreview> {
+  return request(`/api/sources/preview`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function checkPersonaUpdates(slug: string): Promise<{ imports: unknown[]; run: WorkbenchRun | null; summary: string }> {
   return request(`/api/personas/${slug}/check-updates`, {
     method: 'POST',

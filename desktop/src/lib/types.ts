@@ -42,9 +42,18 @@ export interface PersonaSkillSummary {
   distilled_skills: Array<{ id: string; name: string; quality_score: number }>;
 }
 
+export interface PersonaNetworkSummary {
+  entity_count: number;
+  relation_count: number;
+  context_pack_count: number;
+  pending_candidate_count: number;
+  dominant_domains: string[];
+  arc_count: number;
+}
+
 export interface CultivationDetail {
   persona: PersonaSummary;
-  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'building_network' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;
@@ -185,6 +194,7 @@ export interface CultivationDetail {
     reused_document_count: number;
     summary: string;
   };
+  network_summary?: PersonaNetworkSummary;
 }
 
 export interface PersonaSource {
@@ -198,6 +208,8 @@ export interface PersonaSource {
   manifest_path?: string;
   target_label?: string;
   target_aliases?: string[];
+  source_role?: 'self' | 'related_context' | 'background_context';
+  anchor_entity_id?: string;
   sync_strategy?: 'deep_window' | 'incremental';
   horizon_mode?: 'recent_3y' | 'deep_archive';
   horizon_years?: number;
@@ -215,6 +227,10 @@ export interface DiscoveredSourceCandidate {
   persona_slug: string;
   type: 'official_site' | 'blog/article' | 'youtube_channel' | 'youtube_video' | 'podcast_episode_page' | 'interview/article_page';
   platform?: string;
+  candidate_role?: 'related_context' | 'background_context';
+  anchor_entity_id?: string;
+  anchor_label?: string;
+  provenance_class?: 'related_first_party' | 'related_context' | 'background_domain';
   url_or_handle: string;
   title: string;
   summary: string;
@@ -291,6 +307,37 @@ export interface SourceValidationResult {
   evidence: string[];
 }
 
+export interface SourcePreviewTarget {
+  target: string;
+  status: 'accepted' | 'rejected' | 'quarantined' | 'error';
+  summary: string;
+  fetched_via?: string;
+  source_url?: string;
+  source_platform?: string;
+  title?: string;
+  author?: string;
+  content_preview?: string;
+  identity_match?: number;
+  source_integrity?: number;
+  reason_code?: string;
+  evidence: string[];
+  error?: string;
+}
+
+export interface PersonaSourcePreview {
+  source: {
+    id: string;
+    type: PersonaSource['type'];
+    mode: PersonaSource['mode'];
+    platform?: string;
+    handle_or_url?: string;
+    links?: string[];
+  };
+  status: 'accepted' | 'rejected' | 'quarantined' | 'error';
+  summary: string;
+  target_results: SourcePreviewTarget[];
+}
+
 export interface ConversationOrchestration {
   mode: 'answer' | 'clarify' | 'refuse_internal';
   intent: 'greeting' | 'factual' | 'opinion' | 'creative' | 'relationship' | 'meta' | 'unknown';
@@ -353,11 +400,11 @@ export interface CultivationSummary {
     source_breakdown?: Record<string, number>;
     document_count?: number;
     recent_delta_count?: number;
-    current_operation?: 'idle' | 'deep_fetch' | 'incremental_sync' | 'discovery';
+    current_operation?: 'idle' | 'deep_fetch' | 'incremental_sync' | 'discovery' | 'web_build';
     current_source_label?: string;
     last_update_check_at?: string;
     latest_update_result?: string;
-    phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
+    phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'building_network' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
     last_heartbeat_at?: string;
     completed_windows?: number;
     estimated_total_windows?: number;
@@ -425,6 +472,7 @@ export interface CultivationSummary {
       reused_document_count: number;
       summary: string;
     };
+    network_summary?: PersonaNetworkSummary;
   };
   last_update_check_at?: string;
 }

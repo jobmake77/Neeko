@@ -10,7 +10,7 @@ import yaml from 'js-yaml';
 import { loadSkillLibrary } from '../../core/skills/library.js';
 
 /**
- * Single-shot chat for Web UI — reads --message and --history, prints reply to stdout, exits.
+ * Single-shot chat for the desktop client bridge — reads --message and --history, prints reply to stdout, exits.
  */
 export async function cmdChatOnce(
   slug: string,

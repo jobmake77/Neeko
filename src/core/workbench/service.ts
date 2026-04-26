@@ -46,10 +46,12 @@ import {
   PersonaDetail,
   PersonaMutationResult,
   PersonaSource,
+  PersonaSourcePreview,
   PersonaSkillSummary,
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  SourcePreviewTarget,
   SourceValidationResult,
   TrainingPrepArtifact,
   SessionSummary,
@@ -64,6 +66,10 @@ import { CheckpointStore } from '../training/checkpoint.js';
 import { WorkbenchStore } from './store.js';
 import { getDefaultModelForProvider, resolveModelForOverride, type ProviderName } from '../../config/model.js';
 import { loadRawDocsCache, writeRawDocsCache } from '../pipeline/evidence-routing.js';
+import {
+  ensurePersonaWebArtifacts,
+  loadPersonaWebArtifactsFromDir,
+} from '../pipeline/persona-web.js';
 
 export interface WorkbenchCreateInput {
   target?: string;
@@ -213,6 +219,7 @@ type CultivationPhase =
   | 'incremental_syncing'
   | 'normalizing'
   | 'building_evidence'
+  | 'building_network'
   | 'training'
   | 'continuing_collection'
   | 'soft_closed'
@@ -328,6 +335,161 @@ function readJsonFile<T>(path: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+interface PersonaNetworkSummary {
+  entity_count: number;
+  relation_count: number;
+  context_pack_count: number;
+  pending_candidate_count: number;
+  dominant_domains: string[];
+  arc_count: number;
+}
+
+interface PersonaNetworkPromptContext {
+  topics: string[];
+  signals: string[];
+  relationship_hints: string[];
+  context_hints: string[];
+  identity_hints: string[];
+  provenance_guardrails: string[];
+}
+
+function asArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : [];
+}
+
+function resolveArtifactArray(payload: unknown, keys: string[]): Array<Record<string, unknown>> {
+  const direct = asArray(payload);
+  if (direct.length > 0) return direct;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of keys) {
+    const nested = asArray((payload as Record<string, unknown>)[key]);
+    if (nested.length > 0) return nested;
+  }
+  return [];
+}
+
+function normalizeDomainLabel(value: unknown): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  return raw.toLowerCase();
+}
+
+function readPersonaNetworkSummary(slug: string, pendingCandidates = 0): PersonaNetworkSummary {
+  const personaDir = settings.getPersonaDir(slug);
+  const entityIndex = existsSync(join(personaDir, 'persona-web-entities.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-entities.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'entity-index.json'), {});
+  const relationGraph = existsSync(join(personaDir, 'persona-web-relations.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-relations.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'relation-graph.json'), {});
+  const contextPacks = existsSync(join(personaDir, 'persona-web-contexts.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-contexts.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'context-packs.json'), {});
+  const identityArcs = existsSync(join(personaDir, 'persona-web-identity-arcs.json'))
+    ? readJsonFile<unknown>(join(personaDir, 'persona-web-identity-arcs.json'), [])
+    : readJsonFile<unknown>(join(personaDir, 'identity-arcs.json'), {});
+  const trainingSeedV3 = readJsonFile<Record<string, unknown>>(join(personaDir, 'training-seed-v3.json'), {});
+
+  const entities = resolveArtifactArray(entityIndex, ['entities']);
+  const relations = resolveArtifactArray(relationGraph, ['relations', 'edges']);
+  const packs = resolveArtifactArray(contextPacks, ['packs', 'context_packs', 'context_frames']);
+  const arcs = resolveArtifactArray(identityArcs, ['arcs', 'identity_arcs']);
+  const dominantDomains = Array.from(new Set(
+    [
+      ...(Array.isArray(trainingSeedV3.dominant_domains) ? trainingSeedV3.dominant_domains : []),
+      ...entities.flatMap((item) => Array.isArray(item.domains) ? item.domains : []),
+      ...packs.flatMap((item) => Array.isArray(item.domain_labels) ? item.domain_labels : []),
+    ].map(normalizeDomainLabel).filter((item): item is string => Boolean(item))
+  )).slice(0, 6);
+
+  return {
+    entity_count: entities.length,
+    relation_count: relations.length,
+    context_pack_count: packs.length,
+    pending_candidate_count: pendingCandidates,
+    dominant_domains: dominantDomains,
+    arc_count: arcs.length,
+  };
+}
+
+function readPersonaNetworkPromptContext(slug: string): PersonaNetworkPromptContext {
+  const personaDir = settings.getPersonaDir(slug);
+  const trainingSeedV3 = readJsonFile<Record<string, unknown>>(join(personaDir, 'training-seed-v3.json'), {});
+  const list = (value: unknown): string[] => Array.isArray(value)
+    ? value.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 8)
+    : [];
+  return {
+    topics: list(trainingSeedV3.topics),
+    signals: list(trainingSeedV3.signals),
+    relationship_hints: list(trainingSeedV3.relationship_hints),
+    context_hints: list(trainingSeedV3.context_hints),
+    identity_hints: list(trainingSeedV3.identity_hints),
+    provenance_guardrails: list(trainingSeedV3.provenance_guardrails),
+  };
+}
+
+function mirrorPersonaWebArtifactsToPersonaDir(
+  slug: string,
+  artifacts?: {
+    entity_index_path?: string;
+    relation_index_path?: string;
+    context_index_path?: string;
+    identity_arc_path?: string;
+    graph_path?: string;
+    training_seed_v3_path?: string;
+    provenance_report_path?: string;
+  } | null,
+): void {
+  if (!artifacts) return;
+  const personaDir = settings.getPersonaDir(slug);
+  mkdirSync(personaDir, { recursive: true });
+  const copies: Array<[string | undefined, string]> = [
+    [artifacts.entity_index_path, 'persona-web-entities.json'],
+    [artifacts.entity_index_path, 'entity-index.json'],
+    [artifacts.relation_index_path, 'persona-web-relations.json'],
+    [artifacts.relation_index_path, 'relation-graph.json'],
+    [artifacts.context_index_path, 'persona-web-contexts.json'],
+    [artifacts.context_index_path, 'context-packs.json'],
+    [artifacts.identity_arc_path, 'persona-web-identity-arcs.json'],
+    [artifacts.identity_arc_path, 'identity-arcs.json'],
+    [artifacts.graph_path, 'persona-web-graph.json'],
+    [artifacts.training_seed_v3_path, 'training-seed-v3.json'],
+    [artifacts.provenance_report_path, 'persona-web-provenance-report.json'],
+  ];
+  for (const [sourcePath, filename] of copies) {
+    if (!sourcePath || !existsSync(sourcePath)) continue;
+    writeFileSync(join(personaDir, filename), readFileSync(sourcePath));
+  }
+}
+
+function hasMirroredPersonaWebArtifacts(personaDir: string): boolean {
+  const rawTrainingSeed = readJsonFile<Record<string, unknown>>(join(personaDir, 'training-seed-v3.json'), {});
+  const hasRawDominantDomains = Object.prototype.hasOwnProperty.call(rawTrainingSeed, 'dominant_domains')
+    && Array.isArray(rawTrainingSeed.dominant_domains);
+  const loaded = loadPersonaWebArtifactsFromDir(personaDir);
+  if (loaded) {
+    return hasRawDominantDomains;
+  }
+  const mirrorCandidates = [
+    'training-seed-v3.json',
+    'entity-index.json',
+    'relation-graph.json',
+    'context-packs.json',
+    'identity-arcs.json',
+  ];
+  if (!mirrorCandidates.every((filename) => existsSync(join(personaDir, filename)))) {
+    return false;
+  }
+  return hasRawDominantDomains;
+}
+
+function hasTrainingSeedDominantDomainsField(trainingSeedPath: string | undefined): boolean {
+  if (!trainingSeedPath || !existsSync(trainingSeedPath)) return false;
+  const rawTrainingSeed = readJsonFile<Record<string, unknown>>(trainingSeedPath, {});
+  return Object.prototype.hasOwnProperty.call(rawTrainingSeed, 'dominant_domains')
+    && Array.isArray(rawTrainingSeed.dominant_domains);
 }
 
 function slugifyPersonaName(value: string): string {
@@ -650,12 +812,80 @@ function buildIdentityTokens(personaName: string, query: string, href: string): 
 
 function includesIdentityToken(text: string, tokens: string[]): boolean {
   const lower = text.toLowerCase();
-  return tokens.some((token) => lower.includes(token));
+  const compact = lower.replace(/[^a-z0-9]+/g, '');
+  return tokens.some((token) => {
+    const normalized = token.toLowerCase();
+    const compactToken = normalized.replace(/[^a-z0-9]+/g, '');
+    return lower.includes(normalized) || (compactToken.length >= 3 && compact.includes(compactToken));
+  });
 }
 
 function countIdentityMatches(text: string, tokens: string[]): number {
   const lower = text.toLowerCase();
-  return tokens.filter((token) => lower.includes(token)).length;
+  const compact = lower.replace(/[^a-z0-9]+/g, '');
+  return tokens.filter((token) => {
+    const normalized = token.toLowerCase();
+    const compactToken = normalized.replace(/[^a-z0-9]+/g, '');
+    return lower.includes(normalized) || (compactToken.length >= 3 && compact.includes(compactToken));
+  }).length;
+}
+
+function buildSourceIdentityTokens(personaName: string, source: PersonaSource): string[] {
+  const tokens = new Set<string>();
+  const collect = (value: string | undefined) => {
+    String(value ?? '')
+      .toLowerCase()
+      .split(/[^a-z0-9@._-]+/)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 3 || item.startsWith('@'))
+      .forEach((item) => tokens.add(item));
+  };
+
+  collect(personaName);
+  collect(source.target_label);
+  for (const alias of source.target_aliases ?? []) collect(alias);
+  const remoteRefs = [
+    source.handle_or_url,
+    ...(source.links ?? []),
+  ].filter((item): item is string => Boolean(item));
+  for (const ref of remoteRefs) {
+    normalizeHostTokens(ref).forEach((item) => tokens.add(item));
+  }
+  if (source.type === 'social') {
+    collect(source.handle_or_url);
+    collect(normalizeHandle(source.handle_or_url ?? ''));
+  }
+  return [...tokens].filter((item) => item !== 'http' && item !== 'https' && item !== 'www');
+}
+
+function readMetadataString(doc: RawDocument, key: string): string {
+  const metadata = doc.metadata as Record<string, unknown> | undefined;
+  return typeof metadata?.[key] === 'string' ? String(metadata[key]) : '';
+}
+
+function buildArticleIdentityEvidence(doc: RawDocument): string[] {
+  return [
+    readMetadataString(doc, 'title'),
+    doc.author ?? '',
+    String(doc.content ?? '').slice(0, 420),
+  ].map((item) => item.trim()).filter(Boolean);
+}
+
+function extractArticleOwnerHints(doc: RawDocument): string[] {
+  const hints = new Set<string>();
+  const title = readMetadataString(doc, 'title').replace(/^#+\s*/, '').trim();
+  const contentPreview = String(doc.content ?? '').slice(0, 420);
+  const englishTitleMatch = title.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})$/);
+  if (englishTitleMatch) hints.add(englishTitleMatch[1]);
+  const englishIntroMatch = contentPreview.match(/\b(?:i am|i'm|my name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/i);
+  if (englishIntroMatch) hints.add(englishIntroMatch[1]);
+  const chineseIntroMatch = contentPreview.match(/我是([\u4e00-\u9fa5A-Za-z·•\s]{2,16})/u);
+  if (chineseIntroMatch) hints.add(chineseIntroMatch[1].trim());
+  return [...hints];
+}
+
+function hintMatchesIdentity(hint: string, identityTokens: string[]): boolean {
+  return includesIdentityToken(hint, identityTokens.map((token) => token.replace(/^@/, '')));
 }
 
 function createValidationResult(input: {
@@ -675,6 +905,181 @@ function createValidationResult(input: {
     identity_match: Math.max(0, Math.min(1, input.identity_match)),
     source_integrity: Math.max(0, Math.min(1, input.source_integrity)),
     evidence: input.evidence ?? [],
+  };
+}
+
+export function validateRemoteSourceDocumentsForPersona(
+  personaName: string,
+  source: PersonaSource,
+  docs: RawDocument[],
+): DocumentValidationOutcome {
+  const identityTokens = buildSourceIdentityTokens(personaName, source);
+  const targetHandle = normalizeHandle(source.handle_or_url ?? '').toLowerCase();
+  const results = docs.map((doc) => {
+    const genericEvidence = [
+      doc.author ?? '',
+      doc.author_handle ?? '',
+      doc.source_url ?? '',
+      readMetadataString(doc, 'uploader'),
+      readMetadataString(doc, 'channel'),
+    ].filter(Boolean);
+    const genericHaystack = genericEvidence.join(' ').toLowerCase();
+    const genericIdentityScore = identityTokens.length > 0
+      ? Math.min(1, countIdentityMatches(genericHaystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3)))
+      : 0;
+
+    if (source.type === 'social') {
+      const author = String(doc.author ?? '').replace(/^@/, '').toLowerCase();
+      const authorHandle = String(doc.author_handle ?? '').replace(/^@/, '').toLowerCase();
+      const rawUrlHandle = /x\.com\/([^/?#]+)/i.exec(String(doc.source_url ?? ''))?.[1]?.replace(/^@/, '').toLowerCase();
+      const urlHandle = rawUrlHandle === 'i' ? '' : rawUrlHandle;
+      const signals = [author, authorHandle, urlHandle].filter(Boolean);
+      const matches = signals.filter((value) => value === targetHandle).length;
+      if (matches >= Math.min(2, Math.max(1, signals.length))) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: 'social_author_match',
+          summary: '作者已通过账号一致性校验。',
+          confidence: 0.96,
+          identity_match: 0.98,
+          source_integrity: 0.95,
+          evidence: genericEvidence,
+        });
+      }
+      return createValidationResult({
+        status: 'rejected',
+        reason_code: 'social_author_mismatch',
+        summary: '抓取结果作者与目标账号不一致，已拦截。',
+        confidence: 0.08,
+        identity_match: 0.05,
+        source_integrity: 0.25,
+        evidence: genericEvidence,
+      });
+    }
+
+    if (source.type === 'article') {
+      const title = readMetadataString(doc, 'title');
+      const articleEvidence = buildArticleIdentityEvidence(doc);
+      const articleHaystack = articleEvidence.join(' ').toLowerCase();
+      const articleIdentityScore = identityTokens.length > 0
+        ? Math.min(1, countIdentityMatches(articleHaystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3)))
+        : 0;
+      const likelyAggregator = /(category|search|tag|archive|rss|feed)/i.test(String(doc.source_url ?? ''))
+        || /\b(all posts|archives|categories|tags)\b/i.test(title);
+      if (likelyAggregator) {
+        return createValidationResult({
+          status: 'rejected',
+          reason_code: 'article_aggregator_page',
+          summary: '聚合页或列表页不会直接进入正式培养。',
+          confidence: 0.2,
+          identity_match: articleIdentityScore,
+          source_integrity: 0.25,
+          evidence: articleEvidence,
+        });
+      }
+
+      const conflictingOwnerHint = extractArticleOwnerHints(doc).find((hint) => !hintMatchesIdentity(hint, identityTokens));
+      if (conflictingOwnerHint) {
+        return createValidationResult({
+          status: 'rejected',
+          reason_code: 'article_conflicting_owner',
+          summary: `页面主体更像是 ${conflictingOwnerHint}，与当前目标不一致，已拦截。`,
+          confidence: 0.1,
+          identity_match: articleIdentityScore,
+          source_integrity: 0.18,
+          evidence: [conflictingOwnerHint, ...articleEvidence].filter(Boolean),
+        });
+      }
+
+      if (articleIdentityScore >= 0.45) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: 'article_identity_match',
+          summary: '网页内容已通过来源归属校验。',
+          confidence: 0.78,
+          identity_match: articleIdentityScore,
+          source_integrity: 0.76,
+          evidence: articleEvidence,
+        });
+      }
+
+      return createValidationResult({
+        status: 'quarantined',
+        reason_code: 'article_identity_weak',
+        summary: '网页内容没有给出足够的目标归属信号，已隔离等待人工确认。',
+        confidence: 0.34,
+        identity_match: articleIdentityScore,
+        source_integrity: 0.46,
+        evidence: articleEvidence,
+      });
+    }
+
+    if (source.type === 'video_file') {
+      const uploader = String(readMetadataString(doc, 'uploader') || readMetadataString(doc, 'channel')).toLowerCase();
+      const firstParty = targetHandle && (uploader.includes(targetHandle) || genericHaystack.includes(targetHandle));
+      if (firstParty || genericIdentityScore >= 0.5) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: firstParty ? 'video_first_party_match' : 'video_interview_match',
+          summary: firstParty ? '视频来源与目标频道匹配。' : '视频内容与目标身份存在稳定匹配。',
+          confidence: firstParty ? 0.9 : 0.74,
+          identity_match: firstParty ? 0.95 : genericIdentityScore,
+          source_integrity: firstParty ? 0.92 : 0.72,
+          evidence: genericEvidence,
+        });
+      }
+      return createValidationResult({
+        status: 'quarantined',
+        reason_code: 'video_identity_weak',
+        summary: '视频来源归属不足，已隔离，不进入正式训练。',
+        confidence: 0.34,
+        identity_match: genericIdentityScore,
+        source_integrity: 0.48,
+        evidence: genericEvidence,
+      });
+    }
+
+    if (source.type === 'audio_file') {
+      const firstParty = targetHandle && genericHaystack.includes(targetHandle);
+      if (firstParty || genericIdentityScore >= 0.45) {
+        return createValidationResult({
+          status: 'accepted',
+          reason_code: firstParty ? 'audio_first_party_match' : 'audio_identity_match',
+          summary: firstParty ? '音频来源与目标身份存在直接匹配。' : '音频内容与目标身份存在稳定匹配。',
+          confidence: firstParty ? 0.88 : 0.72,
+          identity_match: firstParty ? 0.92 : genericIdentityScore,
+          source_integrity: firstParty ? 0.88 : 0.7,
+          evidence: genericEvidence,
+        });
+      }
+      return createValidationResult({
+        status: 'quarantined',
+        reason_code: 'audio_identity_weak',
+        summary: '音频来源归属不足，已隔离，不进入正式训练。',
+        confidence: 0.32,
+        identity_match: genericIdentityScore,
+        source_integrity: 0.46,
+        evidence: genericEvidence,
+      });
+    }
+
+    return createValidationResult({
+      status: 'accepted',
+      reason_code: 'default_remote_accept',
+      summary: '远程来源已通过基础校验。',
+      confidence: 0.7,
+      identity_match: genericIdentityScore,
+      source_integrity: 0.7,
+      evidence: genericEvidence,
+    });
+  });
+
+  return {
+    accepted: docs.filter((_, index) => results[index]?.status === 'accepted'),
+    rejected: docs.filter((_, index) => results[index]?.status === 'rejected'),
+    quarantined: docs.filter((_, index) => results[index]?.status === 'quarantined'),
+    results,
+    summary: summarizeValidationResults(results),
   };
 }
 
@@ -841,11 +1246,294 @@ function buildTurnPlanPriorityContext(plan: ChatTurnPlan): string {
   return lines.join('\n');
 }
 
+interface ProjectEvidenceHit {
+  label: string;
+  snippet: string;
+  publishedAt?: string;
+  sourceType: RawDocument['source_type'];
+  sourceUrl?: string;
+  score: number;
+}
+
+type ChatKnowledgeLayer = 'self' | 'project' | 'relation' | 'background' | 'hybrid';
+
+const PROJECT_FACT_QUERY_PATTERN = /(开源|项目|作品|仓库|repo|repository|github|gitlab|project|projects|library|tool|app|apps|product|products|side project|side projects|oss|open source)/i;
+const PROJECT_EVIDENCE_PATTERN = /(开源|项目|作品|仓库|repo|repository|github|gitlab|project|projects|library|tool|app|apps|product|products|star|stars|编辑器|周刊|博客|网站|mac|swift|rust)/i;
+const PERSONA_META_DEFLECTION_PATTERN = /(作为一个模拟|我是一个模拟|虚拟人物|虚拟角色|作为.?ai|as an ai|as a simulation|i don't actually have|i do not actually have|i'm a virtual)/i;
+
+function isProjectFactQuery(query: string): boolean {
+  return PROJECT_FACT_QUERY_PATTERN.test(query);
+}
+
+function detectChatKnowledgeLayer(query: string): ChatKnowledgeLayer {
+  const lower = query.toLowerCase();
+  if (/(项目|作品|仓库|github|repo|repository|产品|product|app|tool|开源)/i.test(query)) return 'project';
+  if (/(谁|合作|关联|一起|团队|朋友|组织|公司|人物关系|collaborat|relation|with whom)/i.test(query)) return 'relation';
+  if (/(技术|tech|stack|framework|架构|股票|ticker|行业|赛道|宏观|市场|company|business|finance|economy|经济)/i.test(query)) return 'background';
+  if (/(为什么你会|长期|经历|一路|轨迹|变化|从.*到|story|journey|identity)/i.test(query)) return 'hybrid';
+  return 'self';
+}
+
+function isSelfProjectQuery(query: string): boolean {
+  return /(你有什么开源|你的开源|你做过.*开源|你.*项目|你的项目|你的作品|你的仓库|your project|your repo|your github)/i.test(query);
+}
+
+function isPersonaMetaDeflection(text: string): boolean {
+  return PERSONA_META_DEFLECTION_PATTERN.test(text);
+}
+
+function extractProjectQueryTerms(query: string): string[] {
+  const asciiTerms = (query.toLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? [])
+    .filter((term) => !['what', 'with', 'about', 'open', 'source', 'project', 'projects', 'github'].includes(term));
+  const cjkTerms = (query.match(/[\u4e00-\u9fff]{2,12}/g) ?? [])
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2 && !['你有什么', '可以给我', '讲解一下', '开源项目', '有哪些项目', '什么项目'].includes(term));
+  return Array.from(new Set([...asciiTerms, ...cjkTerms]));
+}
+
+function computeProjectTermOverlap(query: string, content: string): number {
+  const terms = extractProjectQueryTerms(query);
+  if (terms.length === 0) return 0;
+  const normalized = content.toLowerCase();
+  const hits = terms.filter((term) => normalized.includes(term.toLowerCase())).length;
+  return hits / terms.length;
+}
+
+function extractProjectLabel(content: string): string | null {
+  const patterns = [
+    /#([A-Za-z0-9\u4e00-\u9fff_-]{2,40})\s*-/u,
+    /「([^」]{2,40})」/u,
+    /\b(Pake|妙言|潮流周刊|WeRead|NetNewsWire|OSS Insight|minimal-twitter)\b/i,
+    /(微信读书的?\s*Mac\s*版本)/iu,
+  ];
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    const label = match?.[1]?.trim() ?? match?.[0]?.trim();
+    if (label) return label.replace(/^#/, '').trim();
+  }
+  const openSourceIndex = content.search(/开源|Github|GitHub|项目/u);
+  if (openSourceIndex > 0) {
+    const prefix = content.slice(Math.max(0, openSourceIndex - 24), openSourceIndex).replace(/\s+/g, ' ').trim();
+    if (prefix.length >= 2) {
+      const cleaned = prefix.replace(/^[，。、“"'#\s]+|[，。、“"'#\s]+$/gu, '').slice(-24);
+      if (/^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff\s_-]{1,24}$/u.test(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeProjectSnippet(content: string): string {
+  return content
+    .replace(/\s+/g, ' ')
+    .replace(/https?:\/\/\S+/g, '')
+    .trim()
+    .slice(0, 180);
+}
+
+function hasSpecificProjectSignal(text: string): boolean {
+  return /(Pake|妙言|潮流周刊|微信读书的?\s*Mac\s*版本|独立设计开发|起了两个支线任务|代码开源|开源地址|Github\s+Rust\s+日榜首)/iu.test(text);
+}
+
+function hasSelfProjectSignal(text: string): boolean {
+  return /(我|自己|独立|业余时间|起了两个支线任务|代码开源|我开发|我写|我做|周刊之前想弄个网站|之前用 Rust 打包了|有幸到了 Github 日总榜)/u.test(text);
+}
+
+function hasNonOwnerProjectSignal(text: string): boolean {
+  return /(看到一个|发现一个|推荐过|推荐一个|这个工具|这个开源工具|有兴趣可以玩玩|可以简单自己部署|之前我们在内部也有一些类似的实践|不是我做的|别人的项目)/u.test(text);
+}
+
+function scoreProjectEvidenceDoc(query: string, doc: RawDocument): number {
+  const content = `${doc.content} ${doc.source_url ?? ''}`;
+  let score = 0;
+  if (PROJECT_EVIDENCE_PATTERN.test(content)) score += 3;
+  if (/(开源地址|github|repo|repository|仓库)/i.test(content)) score += 2.5;
+  if (/(我|自己|独立|业余时间|代码开源|我开发|我写|我做|起了两个支线任务|可以 Fork 过去用)/u.test(content)) score += 1.6;
+  if (/(swift|rust|editor|website|博客|周刊|mac|app|工具)/i.test(content)) score += 0.8;
+  if (/^@[\w_]+/i.test(doc.content.trim())) score -= 1.2;
+  const extractedLabel = extractProjectLabel(doc.content);
+  if (extractedLabel && extractedLabel !== '公开提到的项目/作品') score += 0.8;
+  if (isSelfProjectQuery(query) && !hasSelfProjectSignal(doc.content)) score -= 1.4;
+  score += computeProjectTermOverlap(query, content) * 1.5;
+  return score;
+}
+
+function buildProjectEvidenceHits(query: string, docs: RawDocument[]): ProjectEvidenceHit[] {
+  if (!isProjectFactQuery(query) || docs.length === 0) return [];
+  const selfProjectQuery = isSelfProjectQuery(query);
+
+  const deduped = new Map<string, ProjectEvidenceHit>();
+  for (const doc of docs) {
+    const score = scoreProjectEvidenceDoc(query, doc);
+    if (score < 3) continue;
+    const snippet = normalizeProjectSnippet(doc.content);
+    if (!snippet) continue;
+    const label = extractProjectLabel(doc.content) ?? '公开提到的项目/作品';
+    const anchoredSelfProjectFact = hasSelfProjectSignal(snippet)
+      || hasSpecificProjectSignal(snippet)
+      || (label !== '公开提到的项目/作品' && /(开源|editor|编辑器|app|tool|项目|作品|website|博客|周刊|mac|swift|rust)/i.test(snippet));
+    if (label === '公开提到的项目/作品' && score < 4.2) continue;
+    if (label === '公开提到的项目/作品' && !hasSpecificProjectSignal(snippet)) continue;
+    if (selfProjectQuery && hasNonOwnerProjectSignal(snippet) && !hasSelfProjectSignal(snippet) && !hasSpecificProjectSignal(snippet)) continue;
+    if (selfProjectQuery && !anchoredSelfProjectFact) continue;
+    const key = `${label.toLowerCase()}::${snippet.slice(0, 72)}`;
+    const existing = deduped.get(key);
+    if (existing && existing.score >= score) continue;
+    deduped.set(key, {
+      label,
+      snippet,
+      publishedAt: doc.published_at,
+      sourceType: doc.source_type,
+      sourceUrl: doc.source_url,
+      score,
+    });
+  }
+
+  return Array.from(deduped.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+function buildProjectEvidenceContext(hits: ProjectEvidenceHit[]): string {
+  if (hits.length === 0) return '';
+  const lines = [
+    'Project evidence from the public corpus:',
+    '- The user is asking about projects, repositories, products, or open-source work.',
+    '- Treat these factual snippets as higher priority than generic values/thinking memories.',
+    '- Do not deny having projects or say you are virtual/simulated when this evidence exists.',
+    '- If evidence is partial, say "基于我公开提到过的内容" and only mention supported items.',
+    '',
+    ...hits.map((item, index) => {
+      const date = item.publishedAt ? item.publishedAt.slice(0, 10) : 'date-unknown';
+      return `${index + 1}. ${item.label} [${item.sourceType}, ${date}]\n${item.snippet}`;
+    }),
+  ];
+  return lines.join('\n');
+}
+
+function buildProjectFactFallbackReply(hits: ProjectEvidenceHit[]): string {
+  if (hits.length === 0) {
+    return '基于我公开提到过的内容，我有一些项目和开源作品，但当前这条回答没有正确对齐到项目事实。你可以继续问具体项目，我按公开内容展开。';
+  }
+  const lines = [
+    '基于我公开提到过的内容，我做过或明确提到过这些开源项目/作品：',
+    ...hits.slice(0, 4).map((item) => `- ${item.label}：${item.snippet}`),
+  ];
+  return lines.join('\n');
+}
+
+function responseContainsProjectLabel(text: string, hits: ProjectEvidenceHit[]): boolean {
+  const normalized = text.toLowerCase();
+  return hits.some((item) => item.label && normalized.includes(item.label.toLowerCase()));
+}
+
+function shouldUseProjectFactFallback(userMessage: string, answer: string, hits: ProjectEvidenceHit[]): boolean {
+  if (!isProjectFactQuery(userMessage) || hits.length === 0) return false;
+  if (isPersonaMetaDeflection(answer)) return true;
+  if (!isSelfProjectQuery(userMessage)) return false;
+  if (hasNonOwnerProjectSignal(answer)) return true;
+  return !responseContainsProjectLabel(answer, hits);
+}
+
+function buildNetworkPriorityContext(
+  knowledgeLayer: ChatKnowledgeLayer,
+  networkSummary: PersonaNetworkSummary,
+  networkPromptContext: PersonaNetworkPromptContext,
+  userMessage: string,
+): string {
+  if (
+    networkSummary.entity_count <= 0 &&
+    networkSummary.relation_count <= 0 &&
+    networkSummary.context_pack_count <= 0 &&
+    networkSummary.arc_count <= 0 &&
+    networkPromptContext.topics.length <= 0 &&
+    networkPromptContext.relationship_hints.length <= 0 &&
+    networkPromptContext.context_hints.length <= 0 &&
+    networkPromptContext.identity_hints.length <= 0
+  ) {
+    return '';
+  }
+
+  const lines = [
+    'Persona network context:',
+    `- Knowledge layer for this turn: ${knowledgeLayer}.`,
+    `- Network assets available: entities=${networkSummary.entity_count}, relations=${networkSummary.relation_count}, context_packs=${networkSummary.context_pack_count}, identity_arcs=${networkSummary.arc_count}.`,
+  ];
+
+  if (networkSummary.dominant_domains.length > 0) {
+    lines.push(`- Dominant domains: ${networkSummary.dominant_domains.join(', ')}.`);
+  }
+  if (networkSummary.pending_candidate_count > 0) {
+    lines.push(`- There are ${networkSummary.pending_candidate_count} pending related-context candidates; do not present them as already incorporated facts.`);
+  }
+  if (networkPromptContext.topics.length > 0) {
+    lines.push(`- Top anchored topics: ${networkPromptContext.topics.slice(0, 5).join(' | ')}.`);
+  }
+  if (networkPromptContext.relationship_hints.length > 0) {
+    lines.push(`- Anchored relation hints: ${networkPromptContext.relationship_hints.slice(0, 4).join(' | ')}.`);
+  }
+  if (networkPromptContext.identity_hints.length > 0) {
+    lines.push(`- Identity arc hints: ${networkPromptContext.identity_hints.slice(0, 3).join(' | ')}.`);
+  }
+  if (networkPromptContext.context_hints.length > 0 && (knowledgeLayer === 'background' || knowledgeLayer === 'hybrid')) {
+    lines.push(`- Background/context hints: ${networkPromptContext.context_hints.slice(0, 3).join(' | ')}.`);
+  }
+  if (networkPromptContext.provenance_guardrails.length > 0) {
+    lines.push(`- Provenance guardrails: ${networkPromptContext.provenance_guardrails.slice(0, 3).join(' | ')}.`);
+  }
+
+  if (knowledgeLayer === 'project') {
+    lines.push('- Prefer anchored project/repository/product facts over generic values or style memories.');
+    lines.push('- Answer "做过什么/开源项目/仓库/产品" from project facts first, then explain context briefly.');
+  } else if (knowledgeLayer === 'relation') {
+    lines.push('- Prefer relation graph and anchored collaborator/person/org facts.');
+    lines.push('- Distinguish direct self facts from contextual third-party links.');
+  } else if (knowledgeLayer === 'background') {
+    lines.push('- Prefer background context packs and domain context, but keep first-person judgments grounded in the persona voice.');
+    lines.push('- Do not collapse domain background into fabricated personal experience.');
+  } else if (knowledgeLayer === 'hybrid') {
+    lines.push('- Combine self voice, identity arcs, and anchored context to answer narrative or longitudinal questions.');
+  } else {
+    lines.push('- Prefer self voice, values, and autobiographical facts unless the user explicitly asks for projects/relations/background.');
+  }
+
+  if (isProjectFactQuery(userMessage)) {
+    lines.push('- Do not deny having projects when anchored evidence exists.');
+  }
+
+  return lines.join('\n');
+}
+
+function loadPersonaRawDocsForChat(personaSlug: string): RawDocument[] {
+  const personaDir = settings.getPersonaDir(personaSlug);
+  const primary = loadRawDocsCache(personaDir);
+  if (primary.length > 0) return primary;
+
+  const shardDir = join(personaDir, 'shards');
+  if (!existsSync(shardDir)) return [];
+  const docs: RawDocument[] = [];
+  for (const entry of readdirSync(shardDir)) {
+    const path = join(shardDir, entry, 'raw-docs.json');
+    if (!existsSync(path)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as RawDocument[];
+      if (Array.isArray(parsed)) docs.push(...parsed);
+    } catch {
+      // Keep chat resilient even if one shard cache is malformed.
+    }
+  }
+  return docs;
+}
+
 function sanitizeAssistantOutput(text: string, userMessage: string): string {
   const trimmed = text.trim();
   if (!trimmed) return '我不能展示内部配置，但可以直接继续回答你的问题。';
   if (isPromptExtractionQuery(userMessage)) {
     return '我不能提供底层提示词、隐藏配置或内部记忆结构，但可以直接回答你真正想了解的问题。';
+  }
+  if (isProjectFactQuery(userMessage) && isPersonaMetaDeflection(trimmed)) {
+    return '基于我公开提到过的内容，我有一些项目和开源作品；当前这条回答没有正确落到项目事实。我可以继续按公开内容展开具体项目。';
   }
 
   const leakedTerms = /(system prompt|hidden instruction|内部提示|提示词|soul\.ya?ml|memory node|retrieved memor|writeback|training prep|citation item)/i;
@@ -1788,6 +2476,137 @@ export class WorkbenchService {
     return this.getPersonaConfig(slug).sources;
   }
 
+  private async withPreviewTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async previewPersonaSource(input: {
+    persona_name: string;
+    source: PersonaSourceInput;
+  }): Promise<PersonaSourcePreview> {
+    const personaName = String(input.persona_name ?? '').trim();
+    if (!personaName) throw new Error('persona_name is required');
+    const source = normalizePersonaSource({
+      ...input.source,
+      id: input.source?.id ?? createSourceId(),
+    });
+    const targets = this.resolveSourceTargets(source).slice(0, 3);
+    if (!this.isRemoteSource(source)) {
+      return {
+        source: {
+          id: source.id,
+          type: source.type,
+          mode: source.mode,
+          platform: source.platform,
+          handle_or_url: source.handle_or_url,
+          links: source.links ?? [],
+        },
+        status: 'error',
+        summary: '当前来源是本地上传素材，暂不支持在线抓取预览。',
+        target_results: [],
+      };
+    }
+    if (targets.length === 0) {
+      throw new Error('remote source requires handle_or_url or links');
+    }
+
+    const targetResults: SourcePreviewTarget[] = [];
+    for (const target of targets) {
+      try {
+        const docs = await this.withPreviewTimeout(
+          this.fetchPreviewDocumentsForTarget(source, target),
+          20_000,
+          `source preview ${target}`,
+        );
+        if (docs.length === 0) {
+          targetResults.push({
+            target,
+            status: 'error',
+            summary: '抓取已完成，但当前没有可预览的内容。',
+            evidence: [],
+          });
+          continue;
+        }
+        const previewSource = source.type === 'social'
+          ? { ...source, handle_or_url: target }
+          : source;
+        const validation = validateRemoteSourceDocumentsForPersona(personaName, previewSource, docs);
+        const selectedIndex = validation.results.findIndex((item) => item.status === 'accepted');
+        const fallbackIndex = selectedIndex >= 0
+          ? selectedIndex
+          : validation.results.findIndex((item) => item.status === 'quarantined');
+        const resultIndex = fallbackIndex >= 0
+          ? fallbackIndex
+          : 0;
+        const selectedDoc = docs[resultIndex];
+        const selectedValidation = validation.results[resultIndex];
+        targetResults.push({
+          target,
+          status: selectedValidation?.status ?? 'error',
+          summary: selectedValidation?.summary ?? '当前抓取内容无法完成归属判断。',
+          fetched_via: readMetadataString(selectedDoc, 'fetched_via'),
+          source_url: selectedDoc.source_url,
+          source_platform: selectedDoc.source_platform,
+          title: readMetadataString(selectedDoc, 'title') || undefined,
+          author: selectedDoc.author || undefined,
+          content_preview: String(selectedDoc.content ?? '').slice(0, 320),
+          identity_match: selectedValidation?.identity_match,
+          source_integrity: selectedValidation?.source_integrity,
+          reason_code: selectedValidation?.reason_code,
+          evidence: selectedValidation?.evidence ?? [],
+        });
+      } catch (error) {
+        targetResults.push({
+          target,
+          status: 'error',
+          summary: '当前来源暂时无法完成抓取预览。',
+          error: String(error instanceof Error ? error.message : error).slice(0, 180),
+          evidence: [],
+        });
+      }
+    }
+
+    const overallStatus: PersonaSourcePreview['status'] = targetResults.some((item) => item.status === 'accepted')
+      ? 'accepted'
+      : targetResults.some((item) => item.status === 'quarantined')
+        ? 'quarantined'
+        : targetResults.some((item) => item.status === 'rejected')
+          ? 'rejected'
+          : 'error';
+
+    const summary = overallStatus === 'accepted'
+      ? '当前来源预览已通过归属检查，可继续作为培养来源。'
+      : overallStatus === 'quarantined'
+        ? '当前来源抓到了内容，但归属信号不足，建议先人工确认。'
+        : overallStatus === 'rejected'
+          ? '当前来源内容与目标明显不一致，建议不要纳入培养。'
+          : '当前来源暂时无法给出有效预览，请稍后重试。';
+
+    return {
+      source: {
+        id: source.id,
+        type: source.type,
+        mode: source.mode,
+        platform: source.platform,
+        handle_or_url: source.handle_or_url,
+        links: source.links ?? [],
+      },
+      status: overallStatus,
+      summary,
+      target_results: targetResults,
+    };
+  }
+
   getDiscoveredSources(slug: string): DiscoveredSourceCandidate[] {
     this.getPersonaConfig(slug);
     return this.store.listDiscoveredSources(slug);
@@ -2685,6 +3504,150 @@ export class WorkbenchService {
       self_aliases: [],
       known_other_aliases: [],
     });
+    this.ensurePersonaWebArtifactsAvailable(config.persona_slug, config);
+  }
+
+  private ensurePersonaWebArtifactsAvailable(
+    slug: string,
+    config = this.store.getPersonaConfig(slug),
+  ): void {
+    const personaDir = settings.getPersonaDir(slug);
+    if (hasMirroredPersonaWebArtifacts(personaDir)) return;
+
+    const targetName = config?.name
+      ?? this.readPersonaSummary(slug)?.name
+      ?? this.readPersonaConfigSummary(slug)?.name
+      ?? slug;
+
+    const preferredPrepId = config?.update_policy.last_training_prep_id;
+    const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
+    const orderedPreps = [
+      ...(preferredPrepId
+        ? trainingPreps.filter((item) => item.id === preferredPrepId)
+        : []),
+      ...trainingPreps.filter((item) => item.id !== preferredPrepId),
+    ];
+
+    for (const prep of orderedPreps) {
+      const artifacts = this.ensurePersonaWebArtifactsFromTrainingPrep(prep, targetName);
+      if (!artifacts) continue;
+      mirrorPersonaWebArtifactsToPersonaDir(slug, artifacts);
+      return;
+    }
+
+    for (const evidenceImport of this.store.listEvidenceImports(slug)) {
+      const artifacts = this.ensurePersonaWebArtifactsFromEvidenceImport(evidenceImport, targetName);
+      if (!artifacts) continue;
+      mirrorPersonaWebArtifactsToPersonaDir(slug, artifacts);
+      return;
+    }
+
+    const personaArtifacts = this.ensurePersonaWebArtifactsFromPaths(
+      slug,
+      targetName,
+      join(personaDir, 'raw-docs.json'),
+      join(personaDir, 'evidence-index.jsonl'),
+      personaDir,
+    );
+    mirrorPersonaWebArtifactsToPersonaDir(slug, personaArtifacts);
+  }
+
+  private ensurePersonaWebArtifactsFromTrainingPrep(
+    prep: TrainingPrepArtifact,
+    targetName: string,
+  ): TrainingPrepArtifact['persona_web_artifacts'] | undefined {
+    const artifacts = this.ensurePersonaWebArtifactsFromPaths(
+      prep.persona_slug,
+      targetName,
+      prep.documents_path,
+      prep.evidence_index_path,
+      dirname(prep.documents_path),
+      prep.persona_web_artifacts,
+      prep.id,
+    );
+    if (!artifacts) return undefined;
+    if (!prep.persona_web_artifacts || prep.persona_web_artifacts.training_seed_v3_path !== artifacts.training_seed_v3_path) {
+      this.store.saveTrainingPrepArtifact({
+        ...prep,
+        persona_web_artifacts: artifacts,
+      });
+    }
+    return artifacts;
+  }
+
+  private ensurePersonaWebArtifactsFromEvidenceImport(
+    entry: WorkbenchEvidenceImport,
+    targetName: string,
+  ): WorkbenchEvidenceImport['artifacts']['persona_web_artifacts'] | undefined {
+    const artifacts = this.ensurePersonaWebArtifactsFromPaths(
+      entry.persona_slug,
+      targetName,
+      entry.artifacts.documents_path,
+      entry.artifacts.evidence_index_path,
+      dirname(entry.artifacts.documents_path),
+      entry.artifacts.persona_web_artifacts,
+      undefined,
+      entry.id,
+    );
+    if (!artifacts) return undefined;
+    if (!entry.artifacts.persona_web_artifacts || entry.artifacts.persona_web_artifacts.training_seed_v3_path !== artifacts.training_seed_v3_path) {
+      this.store.saveEvidenceImport({
+        ...entry,
+        artifacts: {
+          ...entry.artifacts,
+          persona_web_artifacts: artifacts,
+        },
+      });
+    }
+    return artifacts;
+  }
+
+  private ensurePersonaWebArtifactsFromPaths(
+    slug: string,
+    targetName: string,
+    documentsPath: string | undefined,
+    evidencePath: string | undefined,
+    outputDir: string,
+    existing?: {
+      entity_index_path?: string;
+      relation_index_path?: string;
+      context_index_path?: string;
+      identity_arc_path?: string;
+      graph_path?: string;
+      training_seed_v3_path?: string;
+      provenance_report_path?: string;
+    },
+    prepArtifactId?: string,
+    evidenceImportId?: string,
+  ) {
+    const existingPaths = [
+      existing?.entity_index_path,
+      existing?.relation_index_path,
+      existing?.context_index_path,
+      existing?.identity_arc_path,
+      existing?.training_seed_v3_path,
+      existing?.provenance_report_path,
+    ].filter((value): value is string => Boolean(value));
+    if (
+      existingPaths.length > 0
+      && existingPaths.every((filePath) => existsSync(filePath))
+      && hasTrainingSeedDominantDomainsField(existing?.training_seed_v3_path)
+    ) {
+      return existing;
+    }
+    if ((!documentsPath || !existsSync(documentsPath)) && (!evidencePath || !existsSync(evidencePath))) {
+      return undefined;
+    }
+    const personaWeb = ensurePersonaWebArtifacts({
+      outputDir,
+      personaSlug: slug,
+      targetName,
+      documentsPath,
+      evidencePath,
+      prepArtifactId,
+      evidenceImportId,
+    });
+    return personaWeb?.artifacts;
   }
 
   private async waitForRunCompletion(runId: string, timeoutMs = 30 * 60 * 1000): Promise<WorkbenchRun | null> {
@@ -2822,10 +3785,18 @@ export class WorkbenchService {
     }));
 
     const prepBatch = buildStandaloneEvidenceBatch(docs, { sourceLabel: 'workbench_training_prep' });
-    const evidenceItems: EvidenceItem[] = prepBatch.items;
     const batchArtifacts = writeEvidenceArtifacts(prepDir, prepBatch);
     const documentsPath = join(prepDir, 'documents.json');
     writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+    const personaWeb = ensurePersonaWebArtifacts({
+      outputDir: prepDir,
+      personaSlug: handoff.persona_slug,
+      targetName: this.store.getPersonaConfig(handoff.persona_slug)?.name ?? handoff.persona_slug,
+      documentsPath,
+      evidencePath: batchArtifacts.evidence_index_path,
+      prepArtifactId: prepId,
+    });
+    mirrorPersonaWebArtifactsToPersonaDir(handoff.persona_slug, personaWeb?.artifacts);
 
     return this.store.saveTrainingPrepArtifact({
       id: prepId,
@@ -2837,6 +3808,7 @@ export class WorkbenchService {
       summary: buildTrainingPrepSummary(handoff, docs),
       evidence_index_path: batchArtifacts.evidence_index_path,
       documents_path: documentsPath,
+      persona_web_artifacts: personaWeb?.artifacts,
       created_at: now,
       updated_at: now,
     });
@@ -3086,157 +4058,7 @@ export class WorkbenchService {
     source: PersonaSource,
     docs: RawDocument[],
   ): DocumentValidationOutcome {
-    const identityTokens = Array.from(new Set([
-      personaName,
-      source.target_label ?? '',
-      ...(source.target_aliases ?? []),
-      source.handle_or_url ?? '',
-      source.platform ?? '',
-    ].flatMap((value) => String(value).split(/[^a-zA-Z0-9@._-]+/)).map((item) => item.trim().toLowerCase()).filter((item) => item.length >= 3 || item.startsWith('@'))));
-
-    const targetHandle = normalizeHandle(source.handle_or_url ?? '').toLowerCase();
-    const results = docs.map((doc) => {
-      const evidence = [
-        doc.author ?? '',
-        doc.author_handle ?? '',
-        doc.source_url ?? '',
-        String((doc.metadata as Record<string, unknown> | undefined)?.uploader ?? ''),
-        String((doc.metadata as Record<string, unknown> | undefined)?.channel ?? ''),
-      ].filter(Boolean);
-      const haystack = evidence.join(' ').toLowerCase();
-      const identityMatchScore = identityTokens.length > 0 ? Math.min(1, countIdentityMatches(haystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3))) : 0;
-
-      if (source.type === 'social') {
-        const author = String(doc.author ?? '').replace(/^@/, '').toLowerCase();
-        const authorHandle = String(doc.author_handle ?? '').replace(/^@/, '').toLowerCase();
-        const rawUrlHandle = /x\.com\/([^/?#]+)/i.exec(String(doc.source_url ?? ''))?.[1]?.replace(/^@/, '').toLowerCase();
-        const urlHandle = rawUrlHandle === 'i' ? '' : rawUrlHandle;
-        const signals = [author, authorHandle, urlHandle].filter(Boolean);
-        const matches = signals.filter((value) => value === targetHandle).length;
-        if (matches >= Math.min(2, Math.max(1, signals.length))) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: 'social_author_match',
-            summary: '作者已通过账号一致性校验。',
-            confidence: 0.96,
-            identity_match: 0.98,
-            source_integrity: 0.95,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'rejected',
-          reason_code: 'social_author_mismatch',
-          summary: '抓取结果作者与目标账号不一致，已拦截。',
-          confidence: 0.08,
-          identity_match: 0.05,
-          source_integrity: 0.25,
-          evidence,
-        });
-      }
-
-      if (source.type === 'article') {
-        const likelyAggregator = /(category|search|tag|archive|rss|feed)/i.test(String(doc.source_url ?? ''));
-        if (likelyAggregator) {
-          return createValidationResult({
-            status: 'rejected',
-            reason_code: 'article_aggregator_page',
-            summary: '聚合页或列表页不会直接进入正式培养。',
-            confidence: 0.2,
-            identity_match: identityMatchScore,
-            source_integrity: 0.25,
-            evidence,
-          });
-        }
-        if (identityMatchScore >= 0.5) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: 'article_identity_match',
-            summary: '网页内容已通过来源归属校验。',
-            confidence: 0.78,
-            identity_match: identityMatchScore,
-            source_integrity: 0.76,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'quarantined',
-          reason_code: 'article_identity_weak',
-          summary: '网页归属不足，已隔离等待人工确认。',
-          confidence: 0.38,
-          identity_match: identityMatchScore,
-          source_integrity: 0.5,
-          evidence,
-        });
-      }
-
-      if (source.type === 'video_file') {
-        const uploader = String((doc.metadata as Record<string, unknown> | undefined)?.uploader ?? (doc.metadata as Record<string, unknown> | undefined)?.channel ?? '').toLowerCase();
-        const firstParty = targetHandle && (uploader.includes(targetHandle) || haystack.includes(targetHandle));
-        if (firstParty || identityMatchScore >= 0.5) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: firstParty ? 'video_first_party_match' : 'video_interview_match',
-            summary: firstParty ? '视频来源与目标频道匹配。' : '视频内容与目标身份存在稳定匹配。',
-            confidence: firstParty ? 0.9 : 0.74,
-            identity_match: firstParty ? 0.95 : identityMatchScore,
-            source_integrity: firstParty ? 0.92 : 0.72,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'quarantined',
-          reason_code: 'video_identity_weak',
-          summary: '视频来源归属不足，已隔离，不进入正式训练。',
-          confidence: 0.34,
-          identity_match: identityMatchScore,
-          source_integrity: 0.48,
-          evidence,
-        });
-      }
-
-      if (source.type === 'audio_file') {
-        const firstParty = targetHandle && haystack.includes(targetHandle);
-        if (firstParty || identityMatchScore >= 0.45) {
-          return createValidationResult({
-            status: 'accepted',
-            reason_code: firstParty ? 'audio_first_party_match' : 'audio_identity_match',
-            summary: firstParty ? '音频来源与目标身份存在直接匹配。' : '音频内容与目标身份存在稳定匹配。',
-            confidence: firstParty ? 0.88 : 0.72,
-            identity_match: firstParty ? 0.92 : identityMatchScore,
-            source_integrity: firstParty ? 0.88 : 0.7,
-            evidence,
-          });
-        }
-        return createValidationResult({
-          status: 'quarantined',
-          reason_code: 'audio_identity_weak',
-          summary: '音频来源归属不足，已隔离，不进入正式训练。',
-          confidence: 0.32,
-          identity_match: identityMatchScore,
-          source_integrity: 0.46,
-          evidence,
-        });
-      }
-
-      return createValidationResult({
-        status: 'accepted',
-        reason_code: 'default_remote_accept',
-        summary: '远程来源已通过基础校验。',
-        confidence: 0.7,
-        identity_match: identityMatchScore,
-        source_integrity: 0.7,
-        evidence,
-      });
-    });
-
-    return {
-      accepted: docs.filter((_, index) => results[index]?.status === 'accepted'),
-      rejected: docs.filter((_, index) => results[index]?.status === 'rejected'),
-      quarantined: docs.filter((_, index) => results[index]?.status === 'quarantined'),
-      results,
-      summary: summarizeValidationResults(results),
-    };
+    return validateRemoteSourceDocumentsForPersona(personaName, source, docs);
   }
 
   private getValidationSummaryPath(entry: WorkbenchEvidenceImport): string {
@@ -3432,6 +4254,46 @@ export class WorkbenchService {
     const links = normalizeStringArray(source.links);
     if (links.length > 0) return links;
     if (source.handle_or_url?.trim()) return [source.handle_or_url.trim()];
+    return [];
+  }
+
+  private isRemoteSource(source: PersonaSource): boolean {
+    return source.mode !== 'local_file';
+  }
+
+  private async fetchPreviewDocumentsForTarget(source: PersonaSource, target: string): Promise<RawDocument[]> {
+    if (source.type === 'social') {
+      const adapter = new TwitterAdapter();
+      return adapter.fetch(target, { limit: 3 });
+    }
+    if (source.type === 'video_file') {
+      const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+      const limit = source.mode === 'channel_url' ? 2 : 1;
+      return adapter.fetch(target, { limit });
+    }
+    if (source.type === 'audio_file') {
+      const adapter = new VideoAdapter(settings.get('openaiApiKey') ?? process.env.OPENAI_API_KEY);
+      try {
+        const remoteDocs = await adapter.fetch(target, { limit: 1 });
+        if (remoteDocs.length > 0) {
+          return remoteDocs.map((doc) => ({
+            ...doc,
+            source_platform: source.platform ?? 'podcast',
+            metadata: {
+              ...(doc.metadata ?? {}),
+              media_kind: 'audio',
+              source_target_url: target,
+            },
+          }));
+        }
+      } catch {}
+      const articleAdapter = new ArticleAdapter();
+      return articleAdapter.fetch(target);
+    }
+    if (source.type === 'article' || source.mode === 'remote_url') {
+      const adapter = new ArticleAdapter();
+      return adapter.fetch(target);
+    }
     return [];
   }
 
@@ -3771,6 +4633,15 @@ export class WorkbenchService {
       const documentsPath = join(importDir, 'documents.json');
       writeFileSync(documentsPath, JSON.stringify(acceptedDocs, null, 2), 'utf-8');
       writeFileSync(join(importDir, 'validation-summary.json'), JSON.stringify(validation.summary, null, 2), 'utf-8');
+      const personaWeb = ensurePersonaWebArtifacts({
+        outputDir: importDir,
+        personaSlug: slug,
+        targetName: config.name,
+        documentsPath,
+        evidencePath: artifacts.evidence_index_path,
+        evidenceImportId: importId,
+      });
+      mirrorPersonaWebArtifactsToPersonaDir(slug, personaWeb?.artifacts);
 
       const imported = this.store.saveEvidenceImport({
         id: importId,
@@ -3788,6 +4659,7 @@ export class WorkbenchService {
         artifacts: {
           ...artifacts,
           documents_path: documentsPath,
+          persona_web_artifacts: personaWeb?.artifacts,
         },
         created_at: now.toISOString(),
         updated_at: now.toISOString(),
@@ -4309,7 +5181,7 @@ export class WorkbenchService {
           history_exhausted: state.historyExhausted,
           provider_exhausted: state.providerExhausted,
           soft_closed_at: state.softClosedAt,
-          soft_close_reason: state.softCloseReason ?? 'material_exhausted',
+          soft_close_reason: (state.softCloseReason ?? 'material_exhausted') as 'material_exhausted',
         }, summary);
         this.appendPersonaRunLog(slug, 'source sync review kept persona soft-closed with no new accepted content', summary);
         return;
@@ -4517,6 +5389,9 @@ export class WorkbenchService {
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
     this.reconcilePersonaDocumentCount(slug, cleanDocumentCount);
+    if (cleanDocumentCount > 0) {
+      this.ensurePersonaWebArtifactsAvailable(slug, config);
+    }
 
     if (imports.length === 0) {
       const summary = cleanDocumentCount > 0 && !threshold.training_threshold_met
@@ -4814,6 +5689,15 @@ export class WorkbenchService {
     const batchArtifacts = writeEvidenceArtifacts(prepDir, prepBatch);
     const documentsPath = join(prepDir, 'documents.json');
     writeFileSync(documentsPath, JSON.stringify(docs, null, 2), 'utf-8');
+    const personaWeb = ensurePersonaWebArtifacts({
+      outputDir: prepDir,
+      personaSlug,
+      targetName: this.store.getPersonaConfig(personaSlug)?.name ?? personaSlug,
+      documentsPath,
+      evidencePath: batchArtifacts.evidence_index_path,
+      prepArtifactId: prepId,
+    });
+    mirrorPersonaWebArtifactsToPersonaDir(personaSlug, personaWeb?.artifacts);
     return this.store.saveTrainingPrepArtifact({
       id: prepId,
       persona_slug: personaSlug,
@@ -4822,6 +5706,7 @@ export class WorkbenchService {
       summary: `Training prep synthesized from ${imports.length} source batches.`,
       evidence_index_path: batchArtifacts.evidence_index_path,
       documents_path: documentsPath,
+      persona_web_artifacts: personaWeb?.artifacts,
       created_at: now,
       updated_at: now,
     });
@@ -5144,6 +6029,7 @@ export class WorkbenchService {
 
   private buildCultivationSummary(slug: string, persona: PersonaSummary): CultivationSummary {
     const config = this.getPersonaConfig(slug);
+    this.ensurePersonaWebArtifactsAvailable(slug, config);
     const skills = this.readSkillSummary(slug);
     const evidenceImports = this.store.listEvidenceImports(slug);
     const uniqueDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
@@ -5167,6 +6053,8 @@ export class WorkbenchService {
       || config.update_policy.history_exhausted === true;
     const providerExhausted = progressStates.some((item) => item.provider_exhausted === true)
       || config.update_policy.provider_exhausted === true;
+    const pendingCandidateCount = this.store.listDiscoveredSources(persona.slug).filter((item) => item.status === 'pending').length;
+    const networkSummary = readPersonaNetworkSummary(persona.slug, pendingCandidateCount);
     const phase = this.resolveCultivationPhase(
       persona,
       config,
@@ -5217,6 +6105,7 @@ export class WorkbenchService {
         soft_closed_at: config.update_policy.soft_closed_at,
         soft_close_reason: config.update_policy.soft_close_reason,
         cache_reuse: cacheReuse,
+        network_summary: networkSummary,
       },
       last_update_check_at: config.update_policy.last_checked_at,
     };
@@ -5639,9 +6528,11 @@ export class WorkbenchService {
     if (sourceItems.some((item) => item.status === 'error') && !hasTrainingArtifacts) return 'error';
     if (evaluationPassed === false && hasTrainingArtifacts) return 'continuing_collection';
     if ((persona.current_stage ?? persona.status) === 'training') return 'training';
+    if (config.update_policy.current_operation === 'web_build') return 'building_network';
     if (config.update_policy.current_operation === 'deep_fetch') return 'deep_fetching';
     if (config.update_policy.current_operation === 'incremental_sync') return 'incremental_syncing';
     if ((persona.current_stage ?? persona.status) === 'error' && !hasTrainingArtifacts) return 'error';
+    if ((persona.current_stage ?? persona.status) === 'building_network') return 'building_network';
     if (!threshold.training_threshold_met && cleanDocumentCount > 0) {
       return 'building_evidence';
     }
@@ -5818,10 +6709,35 @@ export class WorkbenchService {
     const conversationPolicyContext = buildConversationPolicyContext(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const turnPlanContext = buildTurnPlanPriorityContext(turnPlan);
     const styleDistillationContext = buildStyleDistillationContext(soul, turnPlan);
+    this.ensurePersonaWebArtifactsAvailable(persona.slug);
+    const networkSummary = readPersonaNetworkSummary(
+      persona.slug,
+      this.store.listDiscoveredSources(persona.slug).filter((item) => item.status === 'pending').length,
+    );
+    const networkPromptContext = readPersonaNetworkPromptContext(persona.slug);
+    const knowledgeLayer = detectChatKnowledgeLayer(lastMessage?.content ?? '');
+    const networkPriorityContext = buildNetworkPriorityContext(
+      knowledgeLayer,
+      networkSummary,
+      networkPromptContext,
+      lastMessage?.content ?? '',
+    );
+    const projectEvidenceHits = buildProjectEvidenceHits(
+      lastMessage?.content ?? '',
+      loadPersonaRawDocsForChat(persona.slug),
+    );
+    const projectEvidenceContext = buildProjectEvidenceContext(projectEvidenceHits);
     const userMessage = buildAttachmentUserMessage(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const history = messages.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'assistant' as const : 'user' as const, content: item.content }));
     const result = await agent.respondWithMeta(userMessage, history, {
-      priorityContext: [conversationPolicyContext, turnPlanContext, styleDistillationContext, attachmentPriorityContext].filter(Boolean).join('\n\n') || undefined,
+      priorityContext: [
+        networkPriorityContext,
+        projectEvidenceContext,
+        conversationPolicyContext,
+        turnPlanContext,
+        styleDistillationContext,
+        attachmentPriorityContext,
+      ].filter(Boolean).join('\n\n') || undefined,
       memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? []) ? 0 : undefined,
       modelOverride,
     });
@@ -5832,8 +6748,16 @@ export class WorkbenchService {
       plan: turnPlan,
       modelOverride,
     });
+    const sanitizedText = sanitizeAssistantOutput(rewrittenText, lastMessage?.content ?? '');
+    const finalText = shouldUseProjectFactFallback(
+      lastMessage?.content ?? '',
+      sanitizedText,
+      projectEvidenceHits,
+    )
+      ? buildProjectFactFallbackReply(projectEvidenceHits)
+      : sanitizedText;
     return {
-      text: sanitizeAssistantOutput(rewrittenText, lastMessage?.content ?? ''),
+      text: finalText,
       triggeredSkills: result.triggeredSkills,
       normalizedQuery: result.normalizedQuery,
       retrievedMemories: result.retrievedMemories,
@@ -6170,6 +7094,9 @@ export class WorkbenchService {
       : runStatus === 'recovering'
         ? 'running'
         : 'interrupted';
+    if (runStatus === 'completed') {
+      this.ensurePersonaWebArtifactsAvailable(slug);
+    }
     writeFileSync(contextPath, JSON.stringify({
       ...raw,
       state: nextState,
@@ -6510,6 +7437,7 @@ export class WorkbenchService {
     }
     const skills = this.readSkillSummary(slug);
     const config = this.getPersonaConfig(slug);
+    this.ensurePersonaWebArtifactsAvailable(slug, config);
     const evidenceImports = this.store.listEvidenceImports(slug);
     const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
     const persistedCleanDocumentCount = this.getCachedPersonaDocumentCount(slug) ?? Math.max(0, persona.doc_count ?? 0);
@@ -6533,6 +7461,8 @@ export class WorkbenchService {
     });
     const rounds = this.buildCultivationRounds(slug, cleanDocumentCount);
     const cacheReuse = this.getCultivationCacheReuse(sourceItems);
+    const pendingCandidateCount = this.store.listDiscoveredSources(slug).filter((item) => item.status === 'pending').length;
+    const networkSummary = readPersonaNetworkSummary(slug, pendingCandidateCount);
     const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
@@ -6626,6 +7556,7 @@ export class WorkbenchService {
       rounds,
       validation_summary: validationSummary,
       cache_reuse: cacheReuse,
+      network_summary: networkSummary,
       source_summary: {
         total_sources: config.sources.length,
         enabled_sources: config.sources.filter((item) => item.enabled).length,
@@ -6660,7 +7591,8 @@ export class WorkbenchService {
         soft_closed_at: config.update_policy.soft_closed_at,
         soft_close_reason: config.update_policy.soft_close_reason,
         cache_reuse: cacheReuse,
-      } as any,
+        network_summary: networkSummary,
+      },
     };
   }
 
@@ -6679,6 +7611,7 @@ export class WorkbenchService {
       { key: 'incremental_syncing', label: 'stage_ingesting' },
       { key: 'normalizing', label: 'stage_refining' },
       { key: 'building_evidence', label: 'stage_refining' },
+      { key: 'building_network', label: 'stage_refining' },
       { key: 'training', label: 'stage_training' },
       { key: 'continuing_collection', label: 'stage_ingesting' },
       { key: 'soft_closed', label: 'stage_converged' },
@@ -6704,6 +7637,14 @@ export const __workbenchTestables = {
   mergeDocumentCollections,
   deriveEvaluationPassed,
   buildCollectionContinuationDecision,
+  validateRemoteSourceDocumentsForPersona,
+  isProjectFactQuery,
+  detectChatKnowledgeLayer,
+  buildProjectEvidenceHits,
+  buildProjectFactFallbackReply,
+  shouldUseProjectFactFallback,
+  buildNetworkPriorityContext,
+  isPersonaMetaDeflection,
 };
 
 function inferExitedRunSummary(summary: string | undefined, status: 'completed' | 'failed'): string {

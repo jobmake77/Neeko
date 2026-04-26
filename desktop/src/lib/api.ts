@@ -21,14 +21,15 @@ import { bootstrapWorkbench } from './tauri';
 
 let _baseUrl = localStorage.getItem('neeko.apiBaseUrl') || 'http://127.0.0.1:4310';
 let bootstrapInFlight: Promise<boolean> | null = null;
+const LOCAL_PORT_CANDIDATES = [4310, 4311, 4312, 4313];
 
 export function getBaseUrl(): string {
   return _baseUrl;
 }
 
 export function setBaseUrl(url: string) {
-  _baseUrl = url;
-  localStorage.setItem('neeko.apiBaseUrl', url);
+  _baseUrl = normalizeLocalBaseUrl(url);
+  localStorage.setItem('neeko.apiBaseUrl', _baseUrl);
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -36,7 +37,24 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function isLocalWorkbenchBaseUrl(): boolean {
-  return /^https?:\/\/127\.0\.0\.1:4310$/i.test(_baseUrl) || /^https?:\/\/localhost:4310$/i.test(_baseUrl);
+  return /^https?:\/\/(?:127\.0\.0\.1|localhost):\d+$/i.test(_baseUrl);
+}
+
+function buildLocalBaseUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+function normalizeLocalBaseUrl(url: string): string {
+  const match = String(url).trim().match(/^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)$/i);
+  return match ? buildLocalBaseUrl(Number(match[1])) : String(url).trim();
+}
+
+_baseUrl = normalizeLocalBaseUrl(_baseUrl);
+
+function getCurrentLocalPort(): number | undefined {
+  const normalized = normalizeLocalBaseUrl(_baseUrl);
+  const match = normalized.match(/:(\d+)$/);
+  return match ? Number(match[1]) : undefined;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -56,17 +74,40 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-async function waitForWorkbenchHealth(maxAttempts = 8): Promise<boolean> {
+async function fetchJsonFromBase<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`API ${res.status}: ${text}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
+async function probeWorkbenchBaseUrl(baseUrl: string, timeoutMs = 2500): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const health = await fetchJsonFromBase<HealthStatus>(baseUrl, '/health', { signal: controller.signal });
+    if (!health.ok || !health.build_id || !health.server_version) return false;
+    await fetchJsonFromBase<PersonaSummary[]>(baseUrl, '/api/personas', { signal: controller.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function waitForWorkbenchHealth(baseUrl: string, maxAttempts = 8): Promise<boolean> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      const res = await fetch(`${_baseUrl}/health`);
-      if (res.ok) {
-        const payload = await res.json() as HealthStatus;
-        if (payload.ok) return true;
-      }
-    } catch {
-      // Keep polling until the local service is ready.
-    }
+    if (await probeWorkbenchBaseUrl(baseUrl, 2500 + (attempt * 250))) return true;
     await sleep(300 * (attempt + 1));
   }
   return false;
@@ -74,11 +115,38 @@ async function waitForWorkbenchHealth(maxAttempts = 8): Promise<boolean> {
 
 export async function ensureWorkbenchReachable(forceBootstrap = false): Promise<boolean> {
   if (!isLocalWorkbenchBaseUrl()) return false;
-  if (!forceBootstrap && await waitForWorkbenchHealth(1)) return true;
+  const currentBaseUrl = normalizeLocalBaseUrl(_baseUrl);
+  if (!forceBootstrap && await waitForWorkbenchHealth(currentBaseUrl, 1)) return true;
   if (!bootstrapInFlight) {
     bootstrapInFlight = (async () => {
-      await bootstrapWorkbench().catch(() => undefined);
-      return waitForWorkbenchHealth();
+      const visited = new Set<string>();
+      const currentPort = getCurrentLocalPort();
+      const candidatePorts = [
+        ...(currentPort ? [currentPort] : []),
+        ...LOCAL_PORT_CANDIDATES,
+      ].filter((port, index, list) => list.indexOf(port) === index);
+
+      for (const port of candidatePorts) {
+        const baseUrl = buildLocalBaseUrl(port);
+        if (visited.has(baseUrl)) continue;
+        visited.add(baseUrl);
+        if (await waitForWorkbenchHealth(baseUrl, 1)) {
+          setBaseUrl(baseUrl);
+          return true;
+        }
+      }
+
+      for (const port of candidatePorts) {
+        const bootstrap = await bootstrapWorkbench(port).catch(() => ({ status: 'error', port }));
+        const resolvedPort = bootstrap.port ?? port;
+        const baseUrl = buildLocalBaseUrl(resolvedPort);
+        if (await waitForWorkbenchHealth(baseUrl)) {
+          setBaseUrl(baseUrl);
+          return true;
+        }
+      }
+
+      return false;
     })().finally(() => {
       bootstrapInFlight = null;
     });
@@ -100,6 +168,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // ── Health ──────────────────────────────────────────────────
 export async function checkHealth(): Promise<HealthStatus> {
   try {
+    if (isLocalWorkbenchBaseUrl()) {
+      await ensureWorkbenchReachable(false);
+    }
     return await fetchJson<HealthStatus>('/health');
   } catch {
     return { ok: false };
@@ -187,6 +258,22 @@ export async function updatePersonaSources(
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+}
+
+export async function previewPersonaSource(
+  payload: { persona_name: string; source: PersonaSource }
+): Promise<import('./types').PersonaSourcePreview> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 40_000);
+  try {
+    return await request(`/api/sources/preview`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function checkPersonaUpdates(slug: string): Promise<{ imports: unknown[]; run: WorkbenchRun | null; summary: string }> {

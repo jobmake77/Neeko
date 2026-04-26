@@ -38,7 +38,7 @@ program
   .option('--target-manifest <path>', 'Explicit target manifest for local chat/video inputs')
   .option('--chat-platform <platform>', 'Chat platform for local exports: wechat | feishu', 'wechat')
   .option('--slug <slug>', 'Internal fixed slug override (used by desktop rebuild flow)')
-  .option('--yes', 'Skip all confirmation prompts (for non-interactive / Web UI use)')
+  .option('--yes', 'Skip all confirmation prompts (for non-interactive or client bridge use)')
   .option('--rounds <n>', 'Training rounds to run automatically (0 = skip training)', '0')
   .option('--training-profile <profile>', 'Training profile: baseline | a1 | a2 | a3 | a4 | full')
   .option('--input-routing <strategy>', 'Input routing strategy: legacy | v2 (current recommended gray path: v2 + off)')
@@ -67,10 +67,10 @@ program
     await cmdChat(slug);
   });
 
-// ─── nico chat-once (for Web UI) ─────────────────────────────────────────────
+// ─── nico chat-once (for desktop/client bridge) ──────────────────────────────
 program
   .command('chat-once <slug>')
-  .description('Single-shot chat reply (used by Web UI)')
+  .description('Single-shot chat reply (used by the desktop client bridge)')
   .requiredOption('--message <text>', 'User message')
   .option('--history <json>', 'Conversation history as JSON array', '[]')
   .action(async (slug: string, options: { message: string; history: string }) => {

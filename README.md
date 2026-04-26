@@ -18,7 +18,7 @@ Neeko 当前的主产品方向已经切到：
 - `CLI`
 - `本地 workbench-server`
 
-当前不再继续把新的 `Web` 页面作为主产品面推进。仓库里仍保留 `web/` 目录和部分历史原型，但当前真正维护和推进的是桌面端与 CLI。
+当前不再继续把新的浏览器产品界面作为主产品面推进。仓库里仍保留 `web/` 目录和部分历史原型，但当前真正维护和推进的是桌面端与 CLI。
 
 Neeko 解决的问题不是“做一个普通聊天壳”，而是：
 
@@ -36,7 +36,7 @@ Neeko 解决的问题不是“做一个普通聊天壳”，而是：
 截至当前代码，项目里已经跑通的主链路包括：
 
 - `人格库`：创建、编辑、删除 persona
-- `素材池`：支持 `social / chat_file / video_file / article` 等来源
+- `素材来源`：支持 `social / chat_file / video_file / article` 等来源
 - `自动发现候选来源`：发现官网、YouTube、文章、播客页等候选来源，再由用户确认入池
 - `持续培养`：支持 `check-updates` 与 `continue-cultivation`
 - `聊天主链路`：单线程单 persona，对话中隐藏内部术语

@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { EvidenceItemSchema, EvidenceStatsSchema, TargetManifestSchema } from './evidence.js';
+import {
+  EvidenceItemSchema,
+  EvidenceStatsSchema,
+  PersonaWebArtifactsSchema,
+  TargetManifestSchema,
+} from './evidence.js';
 
 export const CitationItemSchema = z.object({
   id: z.string(),
@@ -62,6 +67,39 @@ export const SourceValidationResultSchema = z.object({
   evidence: z.array(z.string()).default([]),
 });
 export type SourceValidationResult = z.infer<typeof SourceValidationResultSchema>;
+
+export const SourcePreviewTargetSchema = z.object({
+  target: z.string(),
+  status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
+  summary: z.string(),
+  fetched_via: z.string().optional(),
+  source_url: z.string().optional(),
+  source_platform: z.string().optional(),
+  title: z.string().optional(),
+  author: z.string().optional(),
+  content_preview: z.string().optional(),
+  identity_match: z.number().min(0).max(1).optional(),
+  source_integrity: z.number().min(0).max(1).optional(),
+  reason_code: z.string().optional(),
+  evidence: z.array(z.string()).default([]),
+  error: z.string().optional(),
+});
+export type SourcePreviewTarget = z.infer<typeof SourcePreviewTargetSchema>;
+
+export const PersonaSourcePreviewSchema = z.object({
+  source: z.object({
+    id: z.string(),
+    type: z.enum(['social', 'chat_file', 'video_file', 'audio_file', 'article']),
+    mode: z.enum(['handle', 'remote_url', 'channel_url', 'single_url', 'local_file']).default('handle'),
+    platform: z.string().optional(),
+    handle_or_url: z.string().optional(),
+    links: z.array(z.string()).default([]),
+  }),
+  status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
+  summary: z.string(),
+  target_results: z.array(SourcePreviewTargetSchema).default([]),
+});
+export type PersonaSourcePreview = z.infer<typeof PersonaSourcePreviewSchema>;
 
 export const ConversationOrchestrationSchema = z.object({
   mode: z.enum(['answer', 'clarify', 'refuse_internal']).default('answer'),
@@ -133,6 +171,7 @@ export const WorkbenchEvidenceImportArtifactsSchema = z.object({
   scene_summary_path: z.string(),
   target_manifest_path: z.string().optional(),
   documents_path: z.string(),
+  persona_web_artifacts: PersonaWebArtifactsSchema.optional(),
 });
 export type WorkbenchEvidenceImportArtifacts = z.infer<typeof WorkbenchEvidenceImportArtifactsSchema>;
 
@@ -171,6 +210,7 @@ export const TrainingPrepArtifactSchema = z.object({
   summary: z.string(),
   evidence_index_path: z.string(),
   documents_path: z.string(),
+  persona_web_artifacts: PersonaWebArtifactsSchema.optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
 });
@@ -222,6 +262,10 @@ export const DiscoveredSourceCandidateSchema = z.object({
     'interview/article_page',
   ]),
   platform: z.string().optional(),
+  candidate_role: z.enum(['related_context', 'background_context']).optional(),
+  anchor_entity_id: z.string().optional(),
+  anchor_label: z.string().optional(),
+  provenance_class: z.enum(['related_first_party', 'related_context', 'background_domain']).optional(),
   url_or_handle: z.string(),
   title: z.string(),
   summary: z.string(),
@@ -243,6 +287,8 @@ export const PersonaSourceSchema = z.object({
   manifest_path: z.string().optional(),
   target_label: z.string().optional(),
   target_aliases: z.array(z.string()).default([]),
+  source_role: z.enum(['self', 'related_context', 'background_context']).optional(),
+  anchor_entity_id: z.string().optional(),
   sync_strategy: z.enum(['deep_window', 'incremental']).default('deep_window'),
   horizon_mode: z.enum(['recent_3y', 'deep_archive']).default('recent_3y'),
   horizon_years: z.number().int().min(1).max(10).optional(),
@@ -271,11 +317,11 @@ export const CultivationSummarySchema = z.object({
     source_breakdown: z.record(z.string(), z.number().int().min(0)).default({}),
     document_count: z.number().int().min(0).default(0),
     recent_delta_count: z.number().int().min(0).default(0),
-    current_operation: z.enum(['idle', 'deep_fetch', 'incremental_sync', 'discovery']).optional(),
+    current_operation: z.enum(['idle', 'deep_fetch', 'incremental_sync', 'discovery', 'web_build']).optional(),
     current_source_label: z.string().optional(),
     last_update_check_at: z.string().datetime().optional(),
     latest_update_result: z.string().optional(),
-    phase: z.enum(['queued', 'deep_fetching', 'incremental_syncing', 'normalizing', 'building_evidence', 'training', 'continuing_collection', 'soft_closed', 'ready', 'error']).optional(),
+    phase: z.enum(['queued', 'deep_fetching', 'incremental_syncing', 'normalizing', 'building_evidence', 'building_network', 'training', 'continuing_collection', 'soft_closed', 'ready', 'error']).optional(),
     last_heartbeat_at: z.string().datetime().optional(),
     completed_windows: z.number().int().min(0).optional(),
     estimated_total_windows: z.number().int().min(0).optional(),
@@ -343,6 +389,14 @@ export const CultivationSummarySchema = z.object({
       reused_document_count: z.number().int().min(0),
       summary: z.string(),
     }).optional(),
+    network_summary: z.object({
+      entity_count: z.number().int().min(0),
+      relation_count: z.number().int().min(0),
+      context_pack_count: z.number().int().min(0),
+      pending_candidate_count: z.number().int().min(0),
+      dominant_domains: z.array(z.string()).default([]),
+      arc_count: z.number().int().min(0),
+    }).optional(),
   }).default({ total_sources: 0, enabled_sources: 0, source_breakdown: {}, document_count: 0, recent_delta_count: 0 }),
   last_update_check_at: z.string().datetime().optional(),
 });
@@ -357,7 +411,7 @@ export const PersonaConfigSchema = z.object({
     check_interval_minutes: z.number().int().min(5).default(60),
     training_threshold: z.number().int().min(1).max(20000).optional(),
     strategy: z.enum(['incremental']).default('incremental'),
-    current_operation: z.enum(['idle', 'deep_fetch', 'incremental_sync', 'discovery']).optional(),
+    current_operation: z.enum(['idle', 'deep_fetch', 'incremental_sync', 'discovery', 'web_build']).optional(),
     current_source_label: z.string().optional(),
     last_checked_at: z.string().datetime().optional(),
     latest_result: z.string().optional(),
@@ -436,9 +490,18 @@ export interface PersonaSkillSummary {
   distilled_skills: Array<{ id: string; name: string; quality_score: number }>;
 }
 
+export interface PersonaNetworkSummary {
+  entity_count: number;
+  relation_count: number;
+  context_pack_count: number;
+  pending_candidate_count: number;
+  dominant_domains: string[];
+  arc_count: number;
+}
+
 export interface CultivationDetail {
   persona: PersonaSummary;
-  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
+  phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'building_network' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
   skills: PersonaSkillSummary;
   progress: {
     percent: number;
@@ -579,6 +642,7 @@ export interface CultivationDetail {
     reused_document_count: number;
     summary: string;
   };
+  network_summary?: PersonaNetworkSummary;
 }
 
 export interface PersonaWorkbenchProfile {

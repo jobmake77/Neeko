@@ -2476,6 +2476,20 @@ export class WorkbenchService {
     return this.getPersonaConfig(slug).sources;
   }
 
+  private async withPreviewTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async previewPersonaSource(input: {
     persona_name: string;
     source: PersonaSourceInput;
@@ -2509,7 +2523,11 @@ export class WorkbenchService {
     const targetResults: SourcePreviewTarget[] = [];
     for (const target of targets) {
       try {
-        const docs = await this.fetchPreviewDocumentsForTarget(source, target);
+        const docs = await this.withPreviewTimeout(
+          this.fetchPreviewDocumentsForTarget(source, target),
+          20_000,
+          `source preview ${target}`,
+        );
         if (docs.length === 0) {
           targetResults.push({
             target,

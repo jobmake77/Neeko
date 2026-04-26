@@ -192,10 +192,17 @@ export async function updatePersonaSources(
 export async function previewPersonaSource(
   payload: { persona_name: string; source: PersonaSource }
 ): Promise<import('./types').PersonaSourcePreview> {
-  return request(`/api/sources/preview`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 40_000);
+  try {
+    return await request(`/api/sources/preview`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function checkPersonaUpdates(slug: string): Promise<{ imports: unknown[]; run: WorkbenchRun | null; summary: string }> {

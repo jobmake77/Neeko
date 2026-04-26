@@ -462,7 +462,8 @@ function SourceCard({
 }) {
   const template = inferTemplateFromSource(source);
   const templateMeta = TEMPLATE_META[template];
-  const canPreview = Boolean(onPreview) && isRemoteSource(source) && isSourceConfigured(source);
+  const previewVisible = Boolean(onPreview) && isRemoteSource(source);
+  const previewEnabled = previewVisible && isSourceConfigured(source);
   const previewTone = previewStatusTone(preview?.status);
 
   const updateLinks = (value: string) => {
@@ -491,8 +492,14 @@ function SourceCard({
           <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 6 }}>{describeSourceValue(source)}</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          {canPreview ? (
-            <button type="button" className="btn btn-secondary" onClick={onPreview} disabled={previewLoading}>
+          {previewVisible ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onPreview}
+              disabled={!previewEnabled || previewLoading}
+              title={previewEnabled ? '抓取预览' : '先填写来源后再抓取预览'}
+            >
               <RefreshCw size={14} /> {previewLoading ? '抓取中…' : '抓取预览'}
             </button>
           ) : null}
@@ -982,7 +989,8 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
       });
       setSourcePreviews((prev) => ({ ...prev, [source.id]: preview }));
     } catch (nextError) {
-      setError((nextError as Error).message);
+      const message = (nextError as Error).message;
+      setError(message.includes('aborted') ? '抓取预览超时，请稍后重试。' : message);
     } finally {
       setPreviewing((prev) => ({ ...prev, [source.id]: false }));
     }

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { TrainingSeedV3Schema } from '../models/evidence.js';
 
 export type TrainingSeedMode = 'off' | 'topics' | 'signals';
 
@@ -37,6 +38,15 @@ interface StoredTrainingSeed {
   topic_cluster_count?: number;
 }
 
+interface NormalizedTrainingSeedInput {
+  stable_keywords: string[];
+  stable_topics: string[];
+  stable_topic_roots: string[];
+  stable_topic_families: string[];
+  stable_signal_count?: number;
+  topic_cluster_count?: number;
+}
+
 export function normalizeTrainingSeedMode(raw?: string, fallback: TrainingSeedMode = 'off'): TrainingSeedMode {
   const value = String(raw ?? fallback).toLowerCase();
   if (value === 'topics' || value === 'signals') return value;
@@ -63,24 +73,24 @@ export function loadTrainingSeedHints(
     };
   }
 
-  const path = join(personaDir, 'training-seed.json');
-  if (!existsSync(path)) {
+  const payload = loadStoredTrainingSeed(personaDir);
+  if (!payload) {
     return {
       requested_mode: mode,
       mode,
       hints: [],
-      reason: 'training-seed.json not found',
+      reason: 'training-seed assets not found',
       gate: {
         applied: false,
         ready: false,
         readiness_score: 0,
-        summary: 'training-seed.json not found',
+        summary: 'training-seed assets not found',
       },
     };
   }
 
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as StoredTrainingSeed;
+    const parsed = payload;
     const topicHints = selectTopicHints(
       parsed.stable_topics ?? [],
       parsed.stable_topic_roots ?? [],
@@ -127,28 +137,63 @@ export function loadTrainingSeedHints(
       requested_mode: mode,
       mode,
       hints: [],
-      reason: 'training-seed.json parse failed',
+      reason: 'training-seed assets parse failed',
       gate: {
         applied: false,
         ready: false,
         readiness_score: 0,
-        summary: 'training-seed.json parse failed',
+        summary: 'training-seed assets parse failed',
       },
     };
   }
 }
 
+function loadStoredTrainingSeed(personaDir: string): NormalizedTrainingSeedInput | null {
+  const v3Path = join(personaDir, 'training-seed-v3.json');
+  if (existsSync(v3Path)) {
+    try {
+      const parsed = TrainingSeedV3Schema.parse(JSON.parse(readFileSync(v3Path, 'utf-8')));
+      return {
+        stable_keywords: dedupeHints([
+          ...parsed.signals,
+          ...parsed.relationship_hints,
+          ...parsed.identity_hints,
+        ]),
+        stable_topics: dedupeHints(parsed.topics),
+        stable_topic_roots: dedupeHints(parsed.context_hints),
+        stable_topic_families: dedupeHints(parsed.provenance_guardrails),
+        stable_signal_count: parsed.signals.length + parsed.relationship_hints.length + parsed.identity_hints.length,
+        topic_cluster_count: parsed.topics.length,
+      };
+    } catch {
+      // Fall through to legacy seed if v3 exists but is temporarily invalid.
+    }
+  }
+
+  const legacyPath = join(personaDir, 'training-seed.json');
+  if (!existsSync(legacyPath)) return null;
+  const parsed = JSON.parse(readFileSync(legacyPath, 'utf-8')) as StoredTrainingSeed;
+  return {
+    stable_keywords: dedupeHints(parsed.stable_keywords ?? []),
+    stable_topics: dedupeHints(parsed.stable_topics ?? []),
+    stable_topic_roots: dedupeHints(parsed.stable_topic_roots ?? []),
+    stable_topic_families: dedupeHints(parsed.stable_topic_families ?? []),
+    stable_signal_count: parsed.stable_signal_count,
+    topic_cluster_count: parsed.topic_cluster_count,
+  };
+}
+
 function evaluateSignalReadiness(
-  parsed: StoredTrainingSeed,
+  parsed: NormalizedTrainingSeedInput,
   topicHints: string[],
   signalHints: string[]
 ): TrainingSeedGateStatus {
-  const rawTopicCount = dedupeHints(parsed.stable_topics ?? []).length;
-  const rawSignalCount = dedupeHints(parsed.stable_keywords ?? []).length;
+  const rawTopicCount = parsed.stable_topics.length;
+  const rawSignalCount = parsed.stable_keywords.length;
   const usableTopicCount = topicHints.length;
   const usableSignalCount = signalHints.length;
   const multiwordSignalCount = signalHints.filter((hint) => /\s/.test(hint)).length;
-  const familyCount = dedupeHints(parsed.stable_topic_families ?? [])
+  const familyCount = dedupeHints(parsed.stable_topic_families)
     .map((value) => humanizeTopicFamily(value))
     .filter(Boolean)
     .length;

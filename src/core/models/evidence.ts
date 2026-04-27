@@ -94,6 +94,223 @@ export const EvidenceBatchSchema = z.object({
 });
 export type EvidenceBatch = z.infer<typeof EvidenceBatchSchema>;
 
+export const EvidenceReferenceSchema = z.object({
+  evidence_id: z.string().optional(),
+  raw_document_id: z.string().uuid().optional(),
+  source_url: z.string().optional(),
+  speaker_name: z.string().optional(),
+  speaker_role: EvidenceSpeakerRoleSchema.optional(),
+  excerpt: z.string().optional(),
+  timestamp_start: z.string().datetime().optional(),
+  timestamp_end: z.string().datetime().optional(),
+  confidence: z.number().min(0).max(1).default(0.5),
+});
+export type EvidenceReference = z.infer<typeof EvidenceReferenceSchema>;
+
+export const PersonaWebEntityTypeSchema = z.enum([
+  'person',
+  'organization',
+  'project',
+  'product',
+  'topic',
+  'value',
+  'community',
+  'place',
+  'artifact',
+  'identity_facet',
+  'unknown',
+]);
+export type PersonaWebEntityType = z.infer<typeof PersonaWebEntityTypeSchema>;
+
+export const PersonaWebRelationTypeSchema = z.enum([
+  'self_describes',
+  'builds',
+  'works_on',
+  'uses',
+  'prefers',
+  'collaborates_with',
+  'learns_from',
+  'teaches',
+  'cares_about',
+  'avoids',
+  'belongs_to',
+  'influences',
+  'associated_with',
+]);
+export type PersonaWebRelationType = z.infer<typeof PersonaWebRelationTypeSchema>;
+
+export const PersonaWebRelationDirectionSchema = z.enum(['directed', 'undirected']);
+export type PersonaWebRelationDirection = z.infer<typeof PersonaWebRelationDirectionSchema>;
+
+export const PersonaWebRelationValenceSchema = z.enum(['positive', 'neutral', 'negative', 'mixed']);
+export type PersonaWebRelationValence = z.infer<typeof PersonaWebRelationValenceSchema>;
+
+export const PersonaIdentityFacetSchema = z.enum([
+  'role',
+  'value',
+  'style',
+  'focus',
+  'relationship',
+  'trajectory',
+  'boundary',
+  'preference',
+]);
+export type PersonaIdentityFacet = z.infer<typeof PersonaIdentityFacetSchema>;
+
+export const PersonaIdentityTrajectorySchema = z.enum([
+  'emerging',
+  'steady',
+  'evolving',
+  'episodic',
+  'historical',
+]);
+export type PersonaIdentityTrajectory = z.infer<typeof PersonaIdentityTrajectorySchema>;
+
+export const PersonaWebEntitySchema = z.object({
+  id: z.string(),
+  canonical_name: z.string(),
+  entity_type: PersonaWebEntityTypeSchema,
+  aliases: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(1),
+  salience: z.number().min(0).max(1),
+  first_seen_at: z.string().datetime().optional(),
+  last_seen_at: z.string().datetime().optional(),
+  evidence_refs: z.array(EvidenceReferenceSchema).default([]),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+export type PersonaWebEntity = z.infer<typeof PersonaWebEntitySchema>;
+
+export const PersonaWebContextFrameSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  summary: z.string(),
+  scene: EvidenceSceneSchema,
+  speaker_names: z.array(z.string()).default([]),
+  participant_entity_ids: z.array(z.string()).default([]),
+  started_at: z.string().datetime().optional(),
+  ended_at: z.string().datetime().optional(),
+  confidence: z.number().min(0).max(1),
+  evidence_refs: z.array(EvidenceReferenceSchema).default([]),
+});
+export type PersonaWebContextFrame = z.infer<typeof PersonaWebContextFrameSchema>;
+
+export const PersonaWebRelationSchema = z.object({
+  id: z.string(),
+  source_entity_id: z.string(),
+  target_entity_id: z.string(),
+  relation_type: PersonaWebRelationTypeSchema,
+  direction: PersonaWebRelationDirectionSchema.default('directed'),
+  valence: PersonaWebRelationValenceSchema.default('neutral'),
+  confidence: z.number().min(0).max(1),
+  context_frame_ids: z.array(z.string()).default([]),
+  evidence_refs: z.array(EvidenceReferenceSchema).default([]),
+  first_seen_at: z.string().datetime().optional(),
+  last_seen_at: z.string().datetime().optional(),
+  summary: z.string(),
+});
+export type PersonaWebRelation = z.infer<typeof PersonaWebRelationSchema>;
+
+export const PersonaIdentityArcSchema = z.object({
+  id: z.string(),
+  facet: PersonaIdentityFacetSchema,
+  label: z.string(),
+  summary: z.string(),
+  confidence: z.number().min(0).max(1),
+  trajectory: PersonaIdentityTrajectorySchema,
+  related_entity_ids: z.array(z.string()).default([]),
+  first_seen_at: z.string().datetime().optional(),
+  last_seen_at: z.string().datetime().optional(),
+  evidence_refs: z.array(EvidenceReferenceSchema).default([]),
+});
+export type PersonaIdentityArc = z.infer<typeof PersonaIdentityArcSchema>;
+
+export const PersonaWebGraphSourceSchema = z.object({
+  documents_path: z.string().optional(),
+  evidence_index_path: z.string().optional(),
+  prep_artifact_id: z.string().optional(),
+  evidence_import_id: z.string().optional(),
+});
+export type PersonaWebGraphSource = z.infer<typeof PersonaWebGraphSourceSchema>;
+
+export const PersonaWebGraphStatsSchema = z.object({
+  document_count: z.number().int().min(0),
+  evidence_count: z.number().int().min(0),
+  entity_count: z.number().int().min(0),
+  relation_count: z.number().int().min(0),
+  context_count: z.number().int().min(0),
+  identity_arc_count: z.number().int().min(0),
+  high_confidence_entity_count: z.number().int().min(0),
+  high_confidence_relation_count: z.number().int().min(0),
+});
+export type PersonaWebGraphStats = z.infer<typeof PersonaWebGraphStatsSchema>;
+
+export const PersonaWebGraphSchema = z.object({
+  schema_version: z.literal(1),
+  generated_at: z.string().datetime(),
+  persona_slug: z.string().optional(),
+  target_name: z.string().optional(),
+  source: PersonaWebGraphSourceSchema.default({}),
+  stats: PersonaWebGraphStatsSchema,
+  entities: z.array(PersonaWebEntitySchema).default([]),
+  relations: z.array(PersonaWebRelationSchema).default([]),
+  context_frames: z.array(PersonaWebContextFrameSchema).default([]),
+  identity_arcs: z.array(PersonaIdentityArcSchema).default([]),
+});
+export type PersonaWebGraph = z.infer<typeof PersonaWebGraphSchema>;
+
+export const TrainingSeedV3StatsSchema = z.object({
+  entity_count: z.number().int().min(0),
+  relation_count: z.number().int().min(0),
+  context_count: z.number().int().min(0),
+  identity_arc_count: z.number().int().min(0),
+  provenance_coverage_score: z.number().min(0).max(1),
+  verified_relation_count: z.number().int().min(0),
+  guarded_claim_count: z.number().int().min(0),
+});
+export type TrainingSeedV3Stats = z.infer<typeof TrainingSeedV3StatsSchema>;
+
+export const TrainingSeedV3Schema = z.object({
+  schema_version: z.literal(3),
+  generated_at: z.string().datetime(),
+  persona_slug: z.string().optional(),
+  target_name: z.string().optional(),
+  summary: z.string(),
+  stats: TrainingSeedV3StatsSchema,
+  dominant_domains: z.array(z.string()).default([]),
+  topics: z.array(z.string()).default([]),
+  signals: z.array(z.string()).default([]),
+  relationship_hints: z.array(z.string()).default([]),
+  context_hints: z.array(z.string()).default([]),
+  identity_hints: z.array(z.string()).default([]),
+  provenance_guardrails: z.array(z.string()).default([]),
+});
+export type TrainingSeedV3 = z.infer<typeof TrainingSeedV3Schema>;
+
+export const PersonaWebProvenanceReportSchema = z.object({
+  schema_version: z.literal(1),
+  generated_at: z.string().datetime(),
+  persona_slug: z.string().optional(),
+  target_name: z.string().optional(),
+  coverage_score: z.number().min(0).max(1),
+  verified_entity_count: z.number().int().min(0),
+  verified_relation_count: z.number().int().min(0),
+  low_confidence_entity_count: z.number().int().min(0),
+  low_confidence_relation_count: z.number().int().min(0),
+  guardrail_notes: z.array(z.string()).default([]),
+});
+export type PersonaWebProvenanceReport = z.infer<typeof PersonaWebProvenanceReportSchema>;
+
+export const PersonaWebArtifactsSchema = z.object({
+  entity_index_path: z.string(),
+  relation_index_path: z.string(),
+  context_index_path: z.string(),
+  identity_arc_path: z.string(),
+  graph_path: z.string(),
+  training_seed_v3_path: z.string(),
+  provenance_report_path: z.string(),
+});
+export type PersonaWebArtifacts = z.infer<typeof PersonaWebArtifactsSchema>;
+
 export interface ChatMessageEvent {
   id: string;
   sender: string;

@@ -63,3 +63,13 @@ export interface MemoryCandidateForGovernance {
   soul_dimension: MemoryNode['soul_dimension'];
   confidence: number;
 }
+
+export interface GovernanceProvenanceContext {
+  coverage_score?: number;
+  topics?: string[];
+  signals?: string[];
+  relationship_hints?: string[];
+  context_hints?: string[];
+  identity_hints?: string[];
+  guardrail_notes?: string[];
+}

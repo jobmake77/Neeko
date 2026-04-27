@@ -197,6 +197,15 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      if (req.method === 'POST' && path === '/api/sources/preview') {
+        const body = await readBody(req);
+        writeJson(res, 200, await service.previewPersonaSource({
+          persona_name: getString(body.persona_name) ?? '',
+          source: body.source as any,
+        }));
+        return;
+      }
+
       const cultivationMatch = path.match(/^\/api\/cultivating\/([^/]+)$/);
       if (req.method === 'GET' && cultivationMatch) {
         writeJson(res, 200, service.getCultivationDetail(decodeURIComponent(cultivationMatch[1])));

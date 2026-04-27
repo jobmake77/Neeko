@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FolderOpen, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { t } from '@/lib/i18n';
-import type { DiscoveredSourceCandidate, PersonaConfig, PersonaDetail, PersonaSource, PersonaSummary } from '@/lib/types';
+import type { DiscoveredSourceCandidate, PersonaConfig, PersonaDetail, PersonaSource, PersonaSourcePreview, PersonaSummary } from '@/lib/types';
 import * as api from '@/lib/api';
 import { usePersonaStore } from '@/stores/persona';
 import { pickFiles } from '@/lib/tauri';
@@ -311,6 +311,13 @@ function normalizePolicy(policy?: PersonaConfig['update_policy']): PersonaConfig
   };
 }
 
+function previewStatusTone(status?: PersonaSourcePreview['status'] | 'error') {
+  if (status === 'accepted') return { bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.28)', text: '#15803d', label: '已通过' };
+  if (status === 'quarantined') return { bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.28)', text: '#b45309', label: '待确认' };
+  if (status === 'rejected') return { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.28)', text: '#b91c1c', label: '建议移除' };
+  return { bg: 'rgba(148,163,184,0.12)', border: 'rgba(148,163,184,0.24)', text: 'rgb(var(--text-secondary))', label: '抓取失败' };
+}
+
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -439,6 +446,9 @@ function SourceCard({
   onRemove,
   onPickLocalPath,
   allowToggle,
+  preview,
+  previewLoading,
+  onPreview,
 }: {
   heading: string;
   source: PersonaSource;
@@ -446,9 +456,15 @@ function SourceCard({
   onRemove?: () => void;
   onPickLocalPath: () => void;
   allowToggle: boolean;
+  preview?: PersonaSourcePreview;
+  previewLoading?: boolean;
+  onPreview?: () => void;
 }) {
   const template = inferTemplateFromSource(source);
   const templateMeta = TEMPLATE_META[template];
+  const previewVisible = Boolean(onPreview) && isRemoteSource(source);
+  const previewEnabled = previewVisible && isSourceConfigured(source);
+  const previewTone = previewStatusTone(preview?.status);
 
   const updateLinks = (value: string) => {
     onChange({
@@ -476,6 +492,17 @@ function SourceCard({
           <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginTop: 6 }}>{describeSourceValue(source)}</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {previewVisible ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onPreview}
+              disabled={!previewEnabled || previewLoading}
+              title={previewEnabled ? '抓取预览' : '先填写来源后再抓取预览'}
+            >
+              <RefreshCw size={14} /> {previewLoading ? '抓取中…' : '抓取预览'}
+            </button>
+          ) : null}
           {allowToggle ? (
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
               <input
@@ -715,6 +742,51 @@ function SourceCard({
         ) : null}
       </div>
 
+      {previewLoading ? (
+        <div className="card" style={{ padding: 14, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.18)' }}>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>正在抓取并校验这个来源的内容归属…</div>
+        </div>
+      ) : null}
+
+      {preview ? (
+        <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, background: previewTone.bg, border: `1px solid ${previewTone.border}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'rgb(var(--text-primary))' }}>抓取预览</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: previewTone.text }}>{previewTone.label}</div>
+          </div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', lineHeight: 1.7 }}>{preview.summary}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {preview.target_results.map((item) => {
+              const itemTone = previewStatusTone(item.status);
+              return (
+                <div key={item.target} style={{ borderRadius: 10, border: `1px solid ${itemTone.border}`, background: 'rgb(var(--bg-card))', padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'rgb(var(--text-primary))', wordBreak: 'break-all' }}>{item.target}</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: itemTone.text }}>{itemTone.label}</div>
+                  </div>
+                  {item.title ? <div style={{ fontSize: 12, color: 'rgb(var(--text-primary))' }}>标题: <b>{item.title}</b></div> : null}
+                  {item.author ? <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>作者: <b>{item.author}</b></div> : null}
+                  <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', lineHeight: 1.7 }}>{item.summary}</div>
+                  {typeof item.identity_match === 'number' || typeof item.source_integrity === 'number' ? (
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+                      {typeof item.identity_match === 'number' ? <span>归属匹配 {Math.round(item.identity_match * 100)}%</span> : null}
+                      {typeof item.source_integrity === 'number' ? <span>来源完整度 {Math.round(item.source_integrity * 100)}%</span> : null}
+                      {item.fetched_via ? <span>抓取方式 {item.fetched_via}</span> : null}
+                    </div>
+                  ) : null}
+                  {item.content_preview ? (
+                    <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+                      {item.content_preview}
+                    </div>
+                  ) : null}
+                  {item.error ? <div style={{ fontSize: 11, color: '#b91c1c' }}>{item.error}</div> : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       {source.summary ? (
         <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', lineHeight: 1.6 }}>{source.summary}</div>
       ) : null}
@@ -804,6 +876,8 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
   const [policy, setPolicy] = useState<PersonaConfig['update_policy']>(DEFAULT_POLICY);
   const [discovered, setDiscovered] = useState<DiscoveredSourceCandidate[]>([]);
   const [discovering, setDiscovering] = useState(false);
+  const [sourcePreviews, setSourcePreviews] = useState<Record<string, PersonaSourcePreview | undefined>>({});
+  const [previewing, setPreviewing] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -820,6 +894,8 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
       setSources([buildSourceFromTemplate('twitter_account')]);
       setPolicy(DEFAULT_POLICY);
       setDiscovered([]);
+      setSourcePreviews({});
+      setPreviewing({});
       return;
     }
 
@@ -838,7 +914,11 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
         return api.getDiscoveredSources(persona.slug).then(setDiscovered).catch(() => setDiscovered([]));
       })
       .catch((nextError) => setError((nextError as Error).message))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setSourcePreviews({});
+        setPreviewing({});
+        setLoading(false);
+      });
   }, [open, mode, persona]);
 
   const enabledSources = useMemo(
@@ -864,13 +944,56 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
   }
 
   function updateSourceAt(index: number, next: PersonaSource) {
+    const previewKey = sources[index]?.id;
+    if (previewKey) {
+      setSourcePreviews((prev) => {
+        const draft = { ...prev };
+        delete draft[previewKey];
+        return draft;
+      });
+      setPreviewing((prev) => {
+        const draft = { ...prev };
+        delete draft[previewKey];
+        return draft;
+      });
+    }
     setSources((prev) => prev.map((source, sourceIndex) => sourceIndex === index ? normalizeSource(next) : source));
   }
 
   async function pickLocalSourcePath(index: number) {
     const paths = await pickFiles({ multiple: false });
     if (!paths[0]) return;
+    const previewKey = sources[index]?.id;
+    if (previewKey) {
+      setSourcePreviews((prev) => {
+        const draft = { ...prev };
+        delete draft[previewKey];
+        return draft;
+      });
+    }
     setSources((prev) => prev.map((source, sourceIndex) => sourceIndex === index ? normalizeSource({ ...source, local_path: paths[0] }) : source));
+  }
+
+  async function handlePreviewSource(source: PersonaSource) {
+    if (previewing[source.id]) return;
+    if (!name.trim()) {
+      setError('请先填写人格名称，再抓取来源预览。');
+      return;
+    }
+    setPreviewing((prev) => ({ ...prev, [source.id]: true }));
+    setError('');
+    try {
+      const preview = await api.previewPersonaSource({
+        persona_name: name.trim(),
+        source: normalizeSource(source),
+      });
+      setSourcePreviews((prev) => ({ ...prev, [source.id]: preview }));
+    } catch (nextError) {
+      const message = (nextError as Error).message;
+      setError(message.includes('aborted') ? '抓取预览超时，请稍后重试。' : message);
+    } finally {
+      setPreviewing((prev) => ({ ...prev, [source.id]: false }));
+    }
   }
 
   async function handleSave() {
@@ -1049,6 +1172,9 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
                           onChange={(next) => updateSourceAt(0, next)}
                           onPickLocalPath={() => void pickLocalSourcePath(0)}
                           allowToggle={false}
+                          preview={sourcePreviews[primarySource.id]}
+                          previewLoading={previewing[primarySource.id]}
+                          onPreview={() => void handlePreviewSource(primarySource)}
                         />
                         <PolicySection
                           policy={policy}
@@ -1078,9 +1204,24 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
                                 heading={index === 0 ? '主要来源' : `补充来源 ${index}`}
                                 source={source}
                                 onChange={(next) => updateSourceAt(index, next)}
-                                onRemove={() => setSources((prev) => prev.filter((item) => item.id !== source.id))}
+                                onRemove={() => {
+                                  setSources((prev) => prev.filter((item) => item.id !== source.id));
+                                  setSourcePreviews((prev) => {
+                                    const draft = { ...prev };
+                                    delete draft[source.id];
+                                    return draft;
+                                  });
+                                  setPreviewing((prev) => {
+                                    const draft = { ...prev };
+                                    delete draft[source.id];
+                                    return draft;
+                                  });
+                                }}
                                 onPickLocalPath={() => void pickLocalSourcePath(index)}
                                 allowToggle
+                                preview={sourcePreviews[source.id]}
+                                previewLoading={previewing[source.id]}
+                                onPreview={() => void handlePreviewSource(source)}
                               />
                             ))
                           )}

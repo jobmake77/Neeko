@@ -25,7 +25,7 @@ test('loadTrainingSeedHints returns empty hints when disabled or missing', () =>
 
     const missing = loadTrainingSeedHints(dir, 'topics');
     assert.deepEqual(missing.hints, []);
-    assert.equal(missing.reason, 'training-seed.json not found');
+    assert.equal(missing.reason, 'training-seed assets not found');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

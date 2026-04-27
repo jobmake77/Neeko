@@ -18,6 +18,13 @@ import type {
   ChatModelOverride,
 } from './types';
 import { bootstrapWorkbench } from './tauri';
+import {
+  normalizeLocalBaseUrl,
+  probeWorkbenchBaseUrl as probeWorkbenchBaseUrlShared,
+  recoverLocalWorkbenchBaseUrl,
+  isLocalWorkbenchBaseUrl as isLocalWorkbenchBaseUrlShared,
+  waitForWorkbenchHealth as waitForWorkbenchHealthShared,
+} from '../../../src/shared/workbench-recovery.js';
 
 let _baseUrl = localStorage.getItem('neeko.apiBaseUrl') || 'http://127.0.0.1:4310';
 let bootstrapInFlight: Promise<boolean> | null = null;
@@ -27,8 +34,8 @@ export function getBaseUrl(): string {
 }
 
 export function setBaseUrl(url: string) {
-  _baseUrl = url;
-  localStorage.setItem('neeko.apiBaseUrl', url);
+  _baseUrl = normalizeLocalBaseUrl(url);
+  localStorage.setItem('neeko.apiBaseUrl', _baseUrl);
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -36,8 +43,10 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function isLocalWorkbenchBaseUrl(): boolean {
-  return /^https?:\/\/127\.0\.0\.1:4310$/i.test(_baseUrl) || /^https?:\/\/localhost:4310$/i.test(_baseUrl);
+  return isLocalWorkbenchBaseUrlShared(_baseUrl);
 }
+
+_baseUrl = normalizeLocalBaseUrl(_baseUrl);
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${_baseUrl}${path}`, {
@@ -56,30 +65,54 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-async function waitForWorkbenchHealth(maxAttempts = 8): Promise<boolean> {
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      const res = await fetch(`${_baseUrl}/health`);
-      if (res.ok) {
-        const payload = await res.json() as HealthStatus;
-        if (payload.ok) return true;
-      }
-    } catch {
-      // Keep polling until the local service is ready.
-    }
-    await sleep(300 * (attempt + 1));
+async function fetchJsonFromBase<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`API ${res.status}: ${text}`);
   }
-  return false;
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
+async function probeWorkbenchBaseUrl(baseUrl: string, timeoutMs = 2500): Promise<boolean> {
+  return probeWorkbenchBaseUrlShared(baseUrl, {
+    timeoutMs,
+    fetchJsonFromBase,
+    createAbortController: () => new AbortController(),
+    setTimeoutFn: (handler, delay) => window.setTimeout(handler, delay),
+    clearTimeoutFn: (handle) => window.clearTimeout(handle as number),
+  });
+}
+
+async function waitForWorkbenchHealth(baseUrl: string, maxAttempts = 8): Promise<boolean> {
+  return waitForWorkbenchHealthShared({
+    baseUrl,
+    probe: probeWorkbenchBaseUrl,
+    sleep,
+    maxAttempts,
+  });
 }
 
 export async function ensureWorkbenchReachable(forceBootstrap = false): Promise<boolean> {
   if (!isLocalWorkbenchBaseUrl()) return false;
-  if (!forceBootstrap && await waitForWorkbenchHealth(1)) return true;
+  const currentBaseUrl = normalizeLocalBaseUrl(_baseUrl);
+  if (!forceBootstrap && await waitForWorkbenchHealth(currentBaseUrl, 1)) return true;
   if (!bootstrapInFlight) {
-    bootstrapInFlight = (async () => {
-      await bootstrapWorkbench().catch(() => undefined);
-      return waitForWorkbenchHealth();
-    })().finally(() => {
+    bootstrapInFlight = recoverLocalWorkbenchBaseUrl({
+      currentBaseUrl,
+      forceBootstrap,
+      setBaseUrl,
+      probe: probeWorkbenchBaseUrl,
+      bootstrap: (port) => bootstrapWorkbench(port).catch(() => ({ status: 'error', port })),
+      sleep,
+    }).finally(() => {
       bootstrapInFlight = null;
     });
   }
@@ -100,6 +133,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // ── Health ──────────────────────────────────────────────────
 export async function checkHealth(): Promise<HealthStatus> {
   try {
+    if (isLocalWorkbenchBaseUrl()) {
+      await ensureWorkbenchReachable(false);
+    }
     return await fetchJson<HealthStatus>('/health');
   } catch {
     return { ok: false };
@@ -187,6 +223,22 @@ export async function updatePersonaSources(
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+}
+
+export async function previewPersonaSource(
+  payload: { persona_name: string; source: PersonaSource }
+): Promise<import('./types').PersonaSourcePreview> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 40_000);
+  try {
+    return await request(`/api/sources/preview`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function checkPersonaUpdates(slug: string): Promise<{ imports: unknown[]; run: WorkbenchRun | null; summary: string }> {

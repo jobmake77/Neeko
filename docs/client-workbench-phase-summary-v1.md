@@ -24,7 +24,7 @@
 
 ### 2.1 产品主入口已经完成切换
 
-当前产品主入口已经不再以 Web 页面为主，而是正式切到：
+当前产品主入口已经不再以浏览器界面为主，而是正式切到：
 
 `Desktop Workbench -> workbench-server -> Node core/CLI`
 

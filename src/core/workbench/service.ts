@@ -32,8 +32,10 @@ import { TwitterAdapter } from '../pipeline/ingestion/twitter.js';
 import { ArticleAdapter, assessArticleExtractionQuality, classifySourceFailure } from '../pipeline/ingestion/article.js';
 import { enrichAttachment } from '../media/attachment-processing.js';
 import {
+  AnswerPlan,
   AttachmentRef,
   ChatRetrievalPlan,
+  ClaimCandidate,
   CitationItem,
   Conversation,
   ConversationBundle,
@@ -305,7 +307,9 @@ function readJsonFile<T>(path: string, fallback: T): T {
 function inferFailureClassFromValidation(result?: SourceValidationResult): SourceFailureClass {
   if (!result) return 'unknown';
   if (result.reason_code.includes('mismatch') || result.reason_code.includes('conflicting')) return 'identity_mismatch';
-  if (result.reason_code.includes('aggregator') || result.reason_code.includes('quality')) return 'content_quality';
+  if (result.reason_code.includes('aggregator')) return 'aggregator_or_directory_page';
+  if (result.reason_code.includes('quality')) return 'extraction_low_quality';
+  if (result.reason_code.includes('thin')) return 'content_too_thin';
   return result.status === 'accepted' ? 'none' : 'unknown';
 }
 
@@ -442,6 +446,7 @@ interface PersonaNetworkSummary {
   pending_candidate_count: number;
   dominant_domains: string[];
   arc_count: number;
+  high_confidence_claim_count: number;
 }
 
 interface PersonaNetworkPromptContext {
@@ -487,6 +492,7 @@ function readPersonaNetworkSummary(slug: string, pendingCandidates = 0): Persona
         ? networkIndex.dominant_domains.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 8)
         : [],
       arc_count: Math.max(0, Number(networkIndex.identity_arc_count ?? 0)),
+      high_confidence_claim_count: Math.max(0, Number(networkIndex.high_confidence_claim_count ?? 0)),
     };
   }
   const entityIndex = existsSync(join(personaDir, 'persona-web-entities.json'))
@@ -522,6 +528,7 @@ function readPersonaNetworkSummary(slug: string, pendingCandidates = 0): Persona
     pending_candidate_count: pendingCandidates,
     dominant_domains: dominantDomains,
     arc_count: arcs.length,
+    high_confidence_claim_count: Math.max(0, Number((trainingSeedV3.high_confidence_claims as unknown[] | undefined)?.length ?? 0)),
   };
 }
 
@@ -1064,6 +1071,37 @@ function buildArticleIdentityEvidence(doc: RawDocument): string[] {
   ].map((item) => item.trim()).filter(Boolean);
 }
 
+function extractPreviewRelatedEntities(doc: RawDocument, personaName: string): string[] {
+  const text = [readMetadataString(doc, 'title'), doc.author ?? '', String(doc.content ?? '').slice(0, 420)]
+    .filter(Boolean)
+    .join(' ');
+  const matches = text.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g) ?? [];
+  return Array.from(new Set(
+    matches
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 3 && item.toLowerCase() !== personaName.toLowerCase())
+  )).slice(0, 6);
+}
+
+function buildArticleRiskFlags(doc: RawDocument, quality?: ExtractionQualityAssessment): string[] {
+  const flags = new Set<string>();
+  const title = readMetadataString(doc, 'title');
+  const url = String(doc.source_url ?? '');
+  if (/(category|search|tag|archive|rss|feed)/i.test(url) || /\b(all posts|archives|categories|tags)\b/i.test(title)) {
+    flags.add('像聚合页');
+  }
+  if (quality?.status === 'weak') flags.add('正文过薄');
+  if (quality?.issue_codes.includes('too_short')) flags.add('正文过薄');
+  if (quality?.issue_codes.includes('weak_authorial_signal')) flags.add('人物相关度不足');
+  return [...flags];
+}
+
+function describePreviewRelevance(status: SourceValidationResult['status'], result: SourceValidationResult): string {
+  if (status === 'accepted') return '来源内容和目标人物存在稳定归属关系，可继续入池。';
+  if (status === 'quarantined') return '抓到了内容，但它更像弱关联页面，建议先人工确认。';
+  return '当前页面与目标人物不够贴合，或更像目录/聚合页面。';
+}
+
 function extractArticleOwnerHints(doc: RawDocument): string[] {
   const hints = new Set<string>();
   const title = readMetadataString(doc, 'title').replace(/^#+\s*/, '').trim();
@@ -1154,6 +1192,7 @@ export function validateRemoteSourceDocumentsForPersona(
       const title = readMetadataString(doc, 'title');
       const articleEvidence = buildArticleIdentityEvidence(doc);
       const articleHaystack = articleEvidence.join(' ').toLowerCase();
+      const qualityAssessment = assessArticleExtractionQuality(doc);
       const articleIdentityScore = identityTokens.length > 0
         ? Math.min(1, countIdentityMatches(articleHaystack, identityTokens) / Math.max(1, Math.min(identityTokens.length, 3)))
         : 0;
@@ -1168,6 +1207,20 @@ export function validateRemoteSourceDocumentsForPersona(
           identity_match: articleIdentityScore,
           source_integrity: 0.25,
           evidence: articleEvidence,
+        });
+      }
+
+      if (qualityAssessment.status === 'rejected') {
+        return createValidationResult({
+          status: 'rejected',
+          reason_code: qualityAssessment.issue_codes.includes('too_short') ? 'article_content_too_thin' : 'article_extraction_low_quality',
+          summary: qualityAssessment.issue_codes.includes('too_short')
+            ? '网页正文过薄，当前不建议作为稳定来源纳入培养。'
+            : '网页提取质量不足，当前不建议纳入正式培养。',
+          confidence: 0.18,
+          identity_match: articleIdentityScore,
+          source_integrity: 0.2,
+          evidence: [...articleEvidence, qualityAssessment.summary].filter(Boolean),
         });
       }
 
@@ -1189,9 +1242,9 @@ export function validateRemoteSourceDocumentsForPersona(
           status: 'accepted',
           reason_code: 'article_identity_match',
           summary: '网页内容已通过来源归属校验。',
-          confidence: 0.78,
+          confidence: qualityAssessment.status === 'accepted' ? 0.82 : 0.72,
           identity_match: articleIdentityScore,
-          source_integrity: 0.76,
+          source_integrity: qualityAssessment.status === 'accepted' ? 0.82 : 0.68,
           evidence: articleEvidence,
         });
       }
@@ -1702,8 +1755,28 @@ function buildChatRetrievalPlan(
   networkSummary: PersonaNetworkSummary,
 ): ChatRetrievalPlan {
   const knowledgeLayer = detectChatKnowledgeLayer(userMessage);
+  const claimIntent = knowledgeLayer === 'project'
+    ? 'owned_projects'
+    : knowledgeLayer === 'relation'
+      ? 'relationships'
+      : knowledgeLayer === 'background'
+        ? 'background_views'
+        : knowledgeLayer === 'hybrid'
+          ? 'hybrid'
+          : 'self_facts';
   return {
     knowledge_layer: knowledgeLayer,
+    claim_intent: claimIntent,
+    required_entity_types: knowledgeLayer === 'project'
+      ? ['project', 'product', 'artifact']
+      : knowledgeLayer === 'relation'
+        ? ['person', 'organization']
+        : knowledgeLayer === 'background'
+          ? ['topic', 'product', 'organization']
+          : knowledgeLayer === 'hybrid'
+            ? ['person', 'organization', 'project', 'topic']
+            : ['person', 'project', 'organization'],
+    ownership_sensitive: knowledgeLayer === 'project' || knowledgeLayer === 'relation' || isSelfProjectQuery(userMessage),
     use_memory: attachments.length === 0,
     use_network: networkSummary.entity_count > 0 || networkSummary.relation_count > 0 || networkSummary.context_pack_count > 0,
     use_project_facts: knowledgeLayer === 'project',
@@ -1719,6 +1792,193 @@ function buildChatRetrievalPlan(
   };
 }
 
+function inferClaimOwnership(semanticType: string): ClaimCandidate['ownership'] {
+  if (['founded', 'built', 'owns_site'].includes(semanticType)) return 'self_owned';
+  if (['maintains', 'works_on', 'contributes_to', 'hosts', 'appears_on'].includes(semanticType)) return 'self_participated';
+  if (['member_of', 'collaborates_with', 'writes_at', 'invests_in', 'associated_with'].includes(semanticType)) return 'self_related';
+  if (['speaks_about', 'recommends', 'uses'].includes(semanticType)) return 'self_mentioned';
+  return 'unknown';
+}
+
+function inferClaimType(semanticType: string, objectType: string): ClaimCandidate['claim_type'] {
+  if (objectType === 'project' || objectType === 'product' || semanticType === 'built' || semanticType === 'works_on') return 'project';
+  if (objectType === 'organization' || semanticType === 'member_of') return 'organization';
+  if (objectType === 'person' || semanticType === 'collaborates_with') return 'person_relation';
+  if (semanticType === 'owns_site' || semanticType === 'writes_at') return 'website';
+  if (objectType === 'topic') return 'technology';
+  return 'background_fact';
+}
+
+function buildGraphClaimCandidates(
+  slug: string,
+  query: string,
+  retrievalPlan: ChatRetrievalPlan,
+): ClaimCandidate[] {
+  const personaDir = settings.getPersonaDir(slug);
+  const bundle = loadPersonaWebArtifactsFromDir(personaDir);
+  const graph = bundle?.graph ?? readJsonFile<Record<string, unknown>>(join(personaDir, 'persona-web-graph.json'), null as never);
+  if (!graph) return [];
+  const entities = Array.isArray((graph as Record<string, unknown>).entities) ? (graph as Record<string, unknown>).entities as Array<Record<string, unknown>> : [];
+  const relations = Array.isArray((graph as Record<string, unknown>).relations) ? (graph as Record<string, unknown>).relations as Array<Record<string, unknown>> : [];
+  const entityById = new Map(entities.map((item) => [String(item.id ?? ''), item]));
+  return relations
+    .map((relation) => {
+      const target = entityById.get(String(relation.target_entity_id ?? ''));
+      const source = entityById.get(String(relation.source_entity_id ?? ''));
+      const objectLabel = String(target?.canonical_name ?? relation.summary ?? '').trim();
+      const semanticType = String(relation.semantic_type ?? relation.relation_type ?? 'associated_with');
+      const confidence = Math.max(0, Math.min(1, Number(relation.confidence ?? 0)));
+      const evidenceRefs = Array.isArray(relation.evidence_refs) ? relation.evidence_refs as Array<Record<string, unknown>> : [];
+      const ownershipSignals = (relation.ownership_signals as Record<string, unknown> | undefined) ?? {};
+      const supportScore = Math.max(
+        confidence,
+        Math.min(1, computeLexicalOverlap(query, `${String(relation.summary ?? '')} ${objectLabel}`) + (evidenceRefs.length * 0.08)),
+      );
+      const ownership = inferClaimOwnership(semanticType);
+      const claimType = inferClaimType(semanticType, String(target?.entity_type ?? 'unknown'));
+      const firstPersonAllowed = ['self_owned', 'self_participated', 'self_related'].includes(ownership)
+        && (
+          Number(ownershipSignals.first_person_count ?? 0) > 0
+          || Number(ownershipSignals.multi_source_count ?? 0) >= 2
+          || confidence >= 0.82
+        );
+      return {
+        id: String(relation.id ?? ''),
+        subject_entity_id: String(relation.source_entity_id ?? ''),
+        predicate: semanticType,
+        object_entity_id: String(relation.target_entity_id ?? ''),
+        object_label: objectLabel,
+        claim_type: claimType,
+        source_layer: 'graph',
+        confidence,
+        ownership,
+        first_person_allowed: firstPersonAllowed,
+        provenance_scope: evidenceRefs.some((item) => item.speaker_role === 'self') ? 'mixed' : 'public',
+        support_score: supportScore,
+        evidence_refs: evidenceRefs
+          .map((item) => String(item.evidence_id ?? item.raw_document_id ?? item.source_url ?? ''))
+          .filter(Boolean)
+          .slice(0, 6),
+        support_summary: String(relation.summary ?? ''),
+        background_summary: String(target?.background_summary ?? source?.background_summary ?? '').trim() || undefined,
+      } satisfies ClaimCandidate;
+    })
+    .filter((claim) => {
+      if (retrievalPlan.required_entity_types.length > 0) {
+        const target = entityById.get(claim.object_entity_id ?? '');
+        if (target && !retrievalPlan.required_entity_types.includes(String(target.entity_type ?? 'unknown') as ChatRetrievalPlan['required_entity_types'][number])) {
+          if (retrievalPlan.knowledge_layer !== 'hybrid') return false;
+        }
+      }
+      if (retrievalPlan.knowledge_layer === 'project' && !['project', 'website'].includes(claim.claim_type)) return false;
+      if (retrievalPlan.knowledge_layer === 'relation' && !['person_relation', 'organization'].includes(claim.claim_type)) return false;
+      if (retrievalPlan.knowledge_layer === 'background' && !['technology', 'background_fact', 'topic_view'].includes(claim.claim_type)) return false;
+      return claim.support_score >= 0.2;
+    })
+    .sort((a, b) => b.support_score - a.support_score || b.confidence - a.confidence)
+    .slice(0, 12);
+}
+
+function buildProjectHitClaimCandidates(hits: ProjectEvidenceHit[]): ClaimCandidate[] {
+  return hits.map((item, index) => ({
+    id: `project-hit:${index}:${item.label}`,
+    subject_entity_id: 'persona:self',
+    predicate: 'project_evidence',
+    object_label: item.label,
+    claim_type: 'project',
+    source_layer: 'project_hits',
+    confidence: Math.max(0.55, Math.min(1, item.score / 6)),
+    ownership: 'self_owned',
+    first_person_allowed: true,
+    provenance_scope: 'public',
+    support_score: Math.max(0.55, Math.min(1, item.score / 6)),
+    evidence_refs: [item.sourceUrl ?? item.label].filter(Boolean),
+    support_summary: item.snippet,
+  }));
+}
+
+function buildCommunityClaimCandidates(summary?: string): ClaimCandidate[] {
+  if (!summary) return [];
+  return [{
+    id: `community-summary:${createHash('sha1').update(summary).digest('hex').slice(0, 12)}`,
+    subject_entity_id: 'persona:self',
+    predicate: 'community_context',
+    object_label: 'community context',
+    claim_type: 'background_fact',
+    source_layer: 'community_summary',
+    confidence: 0.52,
+    ownership: 'third_party_background',
+    first_person_allowed: false,
+    provenance_scope: 'public',
+    support_score: 0.42,
+    evidence_refs: [],
+    support_summary: summary,
+  }];
+}
+
+function compileAnswerPlan(
+  claims: ClaimCandidate[],
+  communitySummary?: string,
+): AnswerPlan {
+  const primaryClaims = claims
+    .filter((item) => item.first_person_allowed || item.ownership === 'self_mentioned' || item.claim_type === 'background_fact')
+    .sort((a, b) => b.support_score - a.support_score || b.confidence - a.confidence)
+    .slice(0, 5);
+  const disallowedClaims = claims
+    .filter((item) => !item.first_person_allowed && item.ownership === 'third_party_background')
+    .slice(0, 5);
+  const secondaryContext = dedupeStrings([
+    ...primaryClaims.map((item) => item.background_summary),
+    communitySummary,
+    ...claims.filter((item) => item.ownership === 'self_mentioned').map((item) => item.support_summary),
+  ]).slice(0, 4);
+  const groundingSnippets = dedupeStrings(primaryClaims.map((item) => item.support_summary).filter(Boolean)).slice(0, 6);
+  const recommendedVoice = primaryClaims.every((item) => item.first_person_allowed)
+    ? 'first_person'
+    : primaryClaims.some((item) => item.first_person_allowed)
+      ? 'mixed'
+      : 'third_person_explanatory';
+  return {
+    primary_claims: primaryClaims,
+    secondary_context: secondaryContext,
+    disallowed_claims: disallowedClaims,
+    recommended_voice: recommendedVoice,
+    grounding_snippets: groundingSnippets,
+  };
+}
+
+function buildAnswerPlanContext(plan?: AnswerPlan): string {
+  if (!plan || plan.primary_claims.length === 0) return '';
+  const lines = [
+    `Claim plan voice: ${plan.recommended_voice}.`,
+    'Primary grounded claims:',
+    ...plan.primary_claims.map((item, index) => `${index + 1}. [${item.ownership}] ${item.object_label} :: ${item.support_summary ?? item.predicate}`),
+  ];
+  if (plan.secondary_context.length > 0) {
+    lines.push('Secondary context:');
+    lines.push(...plan.secondary_context.map((item) => `- ${item}`));
+  }
+  if (plan.disallowed_claims.length > 0) {
+    lines.push('Do not convert these into first-person facts:');
+    lines.push(...plan.disallowed_claims.map((item) => `- ${item.object_label}: ${item.support_summary ?? item.predicate}`));
+  }
+  return lines.join('\n');
+}
+
+function dedupeClaimCandidates(claims: ClaimCandidate[]): ClaimCandidate[] {
+  const deduped = new Map<string, ClaimCandidate>();
+  for (const claim of claims) {
+    const key = `${claim.claim_type}:${claim.predicate}:${claim.object_entity_id ?? claim.object_label.toLowerCase()}`;
+    const existing = deduped.get(key);
+    if (!existing || existing.support_score < claim.support_score) {
+      deduped.set(key, claim);
+    }
+  }
+  return [...deduped.values()]
+    .sort((a, b) => b.support_score - a.support_score || b.confidence - a.confidence)
+    .slice(0, 12);
+}
+
 function buildRelationFallbackReply(pack: NetworkAnswerPack): string {
   const lines = [
     '基于我公开提到过的关系与上下文，我能稳妥确认的是：',
@@ -1730,6 +1990,21 @@ function buildRelationFallbackReply(pack: NetworkAnswerPack): string {
   return lines.join('\n');
 }
 
+function buildClaimFallbackReply(plan?: AnswerPlan): string | null {
+  if (!plan || plan.primary_claims.length === 0) return null;
+  const lines = ['基于当前语料，我能稳妥确认的是：'];
+  for (const claim of plan.primary_claims.slice(0, 4)) {
+    if (claim.ownership === 'self_owned' || claim.ownership === 'self_participated' || claim.ownership === 'self_related') {
+      lines.push(`- ${claim.object_label}：${claim.support_summary ?? '这是我公开语料里有锚点支持的关联事实。'}`);
+    } else if (claim.ownership === 'self_mentioned') {
+      lines.push(`- 我公开提到过 ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
+    } else {
+      lines.push(`- 背景上下文涉及 ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
+    }
+  }
+  return lines.join('\n');
+}
+
 function buildNetworkAnswerPack(input: {
   retrievalPlan: ChatRetrievalPlan;
   networkSummary: PersonaNetworkSummary;
@@ -1737,6 +2012,8 @@ function buildNetworkAnswerPack(input: {
   relationFallbacks: string[];
   evidenceMapHits: string[];
   communitySummary?: string;
+  claimCandidates?: ClaimCandidate[];
+  answerPlan?: AnswerPlan;
 }): NetworkAnswerPack {
   return {
     retrieval_plan: input.retrievalPlan,
@@ -1752,6 +2029,8 @@ function buildNetworkAnswerPack(input: {
     relation_fallbacks: input.relationFallbacks,
     evidence_map_hits: input.evidenceMapHits,
     community_summary: input.communitySummary,
+    claim_candidates: input.claimCandidates ?? [],
+    answer_plan: input.answerPlan,
     grounding_status: 'grounded',
     grounding_summary: 'Grounding check pending.',
     missing_signals: [],
@@ -1783,6 +2062,14 @@ function finalizeNetworkAnswerPack(
     if (!matched) {
       groundingStatus = groundingStatus === 'fallback' ? 'fallback' : 'partial';
       missingSignals.push('relation_anchor');
+    }
+  }
+
+  if (pack.answer_plan?.primary_claims.length) {
+    const matchedPrimaryClaim = pack.answer_plan.primary_claims.some((item) => answer.toLowerCase().includes(item.object_label.toLowerCase()));
+    if (!matchedPrimaryClaim) {
+      groundingStatus = groundingStatus === 'fallback' ? 'fallback' : 'partial';
+      missingSignals.push('claim_anchor');
     }
   }
 
@@ -1831,7 +2118,7 @@ function buildNetworkPriorityContext(
   const lines = [
     'Persona network context:',
     `- Knowledge layer for this turn: ${knowledgeLayer}.`,
-    `- Network assets available: entities=${networkSummary.entity_count}, relations=${networkSummary.relation_count}, context_packs=${networkSummary.context_pack_count}, identity_arcs=${networkSummary.arc_count}.`,
+    `- Network assets available: entities=${networkSummary.entity_count}, relations=${networkSummary.relation_count}, context_packs=${networkSummary.context_pack_count}, identity_arcs=${networkSummary.arc_count}, high_confidence_claims=${networkSummary.high_confidence_claim_count}.`,
   ];
 
   if (networkSummary.dominant_domains.length > 0) {
@@ -1897,6 +2184,13 @@ function buildNetworkAnswerContext(pack: NetworkAnswerPack): string {
     `Retrieval plan: layer=${pack.retrieval_plan.knowledge_layer}; memory=${pack.retrieval_plan.use_memory}; network=${pack.retrieval_plan.use_network}.`,
     `Grounding status: ${pack.grounding_status}. ${pack.grounding_summary}`,
   ];
+  if (pack.answer_plan?.primary_claims.length) {
+    lines.push(`Claim voice: ${pack.answer_plan.recommended_voice}.`);
+    lines.push('Planned grounded claims:');
+    for (const item of pack.answer_plan.primary_claims.slice(0, 5)) {
+      lines.push(`- [${item.ownership}] ${item.object_label}: ${item.support_summary ?? item.predicate}`);
+    }
+  }
   if (pack.project_hits.length > 0) {
     lines.push('Project facts:');
     for (const item of pack.project_hits.slice(0, 4)) {
@@ -2932,6 +3226,9 @@ export class WorkbenchService {
         },
         status: 'error',
         summary: health.summary,
+        relevance_reason: '本地来源不走在线预览，需在导入后由转写和证据层完成校验。',
+        risk_flags: [],
+        related_entities: [],
         health,
         latest_outcome: buildSourceIngestOutcome({
           status: 'error',
@@ -2971,6 +3268,9 @@ export class WorkbenchService {
             target,
             status: 'error',
             summary: health.summary,
+            relevance_reason: '抓取完成但没有拿到可判断归属的正文内容。',
+            risk_flags: [],
+            related_entities: [],
             evidence: [],
             health,
             latest_outcome: buildSourceIngestOutcome({
@@ -3002,6 +3302,16 @@ export class WorkbenchService {
         const selectedDoc = docs[resultIndex];
         const selectedValidation = validation.results[resultIndex];
         const failureClass = inferFailureClassFromValidation(selectedValidation);
+        const relatedEntities = extractPreviewRelatedEntities(selectedDoc, personaName);
+        const riskFlags = buildArticleRiskFlags(selectedDoc, qualityAssessment);
+        const relevanceReason = describePreviewRelevance(selectedValidation?.status ?? 'error', selectedValidation ?? createValidationResult({
+          status: 'rejected',
+          reason_code: 'preview_unavailable',
+          summary: '当前抓取内容无法完成归属判断。',
+          confidence: 0,
+          identity_match: 0,
+          source_integrity: 0,
+        }));
         const health = buildSourceHealth({
           status: selectedValidation?.status === 'accepted'
             ? 'healthy'
@@ -3030,6 +3340,9 @@ export class WorkbenchService {
           target,
           status: selectedValidation?.status ?? 'error',
           summary: selectedValidation?.summary ?? '当前抓取内容无法完成归属判断。',
+          relevance_reason: relevanceReason,
+          risk_flags: riskFlags,
+          related_entities: relatedEntities,
           fetched_via: readMetadataString(selectedDoc, 'fetched_via'),
           source_url: selectedDoc.source_url,
           source_platform: selectedDoc.source_platform,
@@ -3056,6 +3369,9 @@ export class WorkbenchService {
           target,
           status: 'error',
           summary: health.summary,
+          relevance_reason: '当前来源暂时无法完成预览抓取，暂时无法判断与目标人物的相关性。',
+          risk_flags: [],
+          related_entities: [],
           error: String(error instanceof Error ? error.message : error).slice(0, 180),
           evidence: [],
           health,
@@ -3120,6 +3436,9 @@ export class WorkbenchService {
       },
       status: overallStatus,
       summary,
+      relevance_reason: targetResults.find((item) => item.relevance_reason)?.relevance_reason,
+      risk_flags: Array.from(new Set(targetResults.flatMap((item) => item.risk_flags ?? []))).slice(0, 6),
+      related_entities: Array.from(new Set(targetResults.flatMap((item) => item.related_entities ?? []))).slice(0, 8),
       health: previewHealth,
       latest_outcome: previewOutcome,
       quality_assessment: previewQuality,
@@ -7475,6 +7794,12 @@ export class WorkbenchService {
       communitySummary,
     );
     const evidenceMapHits = buildEvidenceMapHits(lastMessage?.content ?? '', evidenceMap);
+    const claimCandidates = dedupeClaimCandidates([
+      ...buildGraphClaimCandidates(persona.slug, lastMessage?.content ?? '', retrievalPlan),
+      ...buildProjectHitClaimCandidates(projectEvidenceHits),
+      ...buildCommunityClaimCandidates(communitySummary.summary),
+    ]);
+    const answerPlan = compileAnswerPlan(claimCandidates, communitySummary.summary);
     const networkAnswerPack = buildNetworkAnswerPack({
       retrievalPlan,
       networkSummary,
@@ -7482,8 +7807,11 @@ export class WorkbenchService {
       relationFallbacks,
       evidenceMapHits,
       communitySummary: communitySummary.summary,
+      claimCandidates,
+      answerPlan,
     });
     const networkAnswerContext = buildNetworkAnswerContext(networkAnswerPack);
+    const answerPlanContext = buildAnswerPlanContext(answerPlan);
     const projectEvidenceContext = buildProjectEvidenceContext(projectEvidenceHits);
     const userMessage = buildAttachmentUserMessage(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const history = messages.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'assistant' as const : 'user' as const, content: item.content }));
@@ -7491,6 +7819,7 @@ export class WorkbenchService {
       priorityContext: [
         networkPriorityContext,
         networkAnswerContext,
+        answerPlanContext,
         projectEvidenceContext,
         conversationPolicyContext,
         turnPlanContext,
@@ -7523,6 +7852,8 @@ export class WorkbenchService {
       projectEvidenceHits,
     )
       ? buildProjectFactFallbackReply(projectEvidenceHits)
+      : isPersonaMetaDeflection(sanitizedText) && answerPlan.primary_claims.length > 0
+        ? (buildClaimFallbackReply(answerPlan) ?? sanitizedText)
       : shouldUseRelationFallback(
         lastMessage?.content ?? '',
         sanitizedText,
@@ -8455,6 +8786,8 @@ export const __workbenchTestables = {
   isProjectFactQuery,
   detectChatKnowledgeLayer,
   buildProjectEvidenceHits,
+  buildGraphClaimCandidates,
+  compileAnswerPlan,
   buildProjectFactFallbackReply,
   shouldUseProjectFactFallback,
   buildNetworkPriorityContext,

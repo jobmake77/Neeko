@@ -341,6 +341,7 @@ export function compileTrainingSeedV3(
   graph: PersonaWebGraph,
   provenanceReport: PersonaWebProvenanceReport = buildProvenanceReport(graph)
 ): TrainingSeedV3 {
+  const highConfidenceClaims = buildHighConfidenceClaims(graph);
   const topicEntities = graph.entities
     .filter((item) => item.entity_type === 'project' || item.entity_type === 'product' || item.entity_type === 'topic' || item.entity_type === 'value')
     .sort((a, b) => b.salience - a.salience || b.confidence - a.confidence)
@@ -383,7 +384,7 @@ export function compileTrainingSeedV3(
       identity_arc_count: graph.stats.identity_arc_count,
       provenance_coverage_score: provenanceReport.coverage_score,
       verified_relation_count: provenanceReport.verified_relation_count,
-      guarded_claim_count: guardrails.length,
+      guarded_claim_count: guardrails.length + highConfidenceClaims.length,
     },
     dominant_domains: dominantDomains,
     topics: topicEntities,
@@ -391,6 +392,24 @@ export function compileTrainingSeedV3(
     relationship_hints: relationshipHints,
     context_hints: contextHints,
     identity_hints: identityHints,
+    entity_cards: graph.entities
+      .slice(0, 10)
+      .map((item) => ({
+        id: item.id,
+        name: item.canonical_name,
+        entity_type: item.entity_type,
+        background_summary: item.background_summary,
+        aliases: item.aliases.slice(0, 6),
+      })),
+    relation_summaries: graph.relations
+      .slice(0, 12)
+      .map((item) => ({
+        id: item.id,
+        semantic_type: item.semantic_type,
+        summary: item.summary,
+        confidence: item.confidence,
+      })),
+    high_confidence_claims: highConfidenceClaims,
     provenance_guardrails: guardrails,
   });
 }
@@ -516,7 +535,7 @@ export function loadPersonaWebArtifactsFromDir(dir: string): PersonaWebArtifactB
   });
   if (!artifacts.success) return null;
   const paths = artifacts.data;
-  const requiredPaths = Object.values(paths);
+  const requiredPaths = Object.values(paths).filter((filePath): filePath is string => typeof filePath === 'string' && filePath.length > 0);
   if (requiredPaths.some((filePath) => !existsSync(filePath))) return null;
   try {
     const graph = PersonaWebGraphSchema.parse(JSON.parse(readFileSync(paths.graph_path, 'utf-8')));
@@ -736,9 +755,11 @@ function finalizeRelations(relationMap: Map<string, RelationAccumulator>, limit:
       source_entity_id: item.sourceEntityId,
       target_entity_id: item.targetEntityId,
       relation_type: item.relationType,
+      semantic_type: mapRelationTypeToSemanticType(item.relationType),
       direction: item.direction,
       valence: item.valence,
       confidence: average(item.confidenceValues),
+      ownership_signals: buildOwnershipSignalSummary(item),
       context_frame_ids: [...item.contextFrameIds].filter(Boolean),
       evidence_refs: dedupeEvidenceRefs(item.evidenceRefs),
       first_seen_at: item.firstSeenAt,
@@ -848,11 +869,14 @@ function finalizeEntities(
         canonical_name: item.canonicalName,
         entity_type: item.entityType,
         aliases: [...item.aliases].filter((entry) => entry !== item.canonicalName),
+        handles: dedupeStrings(extractHandlesFromEvidence(item.evidenceRefs)),
+        normalized_urls: dedupeStrings(extractUrlsFromEvidence(item.evidenceRefs)),
         confidence,
         salience,
         first_seen_at: item.firstSeenAt,
         last_seen_at: item.lastSeenAt,
         evidence_refs: dedupeEvidenceRefs(item.evidenceRefs),
+        background_summary: summarizeEntityBackground(item, relations),
         metadata: item.metadata,
       });
     })
@@ -1051,6 +1075,55 @@ function summarizeRelation(relationType: PersonaWebRelationType, phrase: string)
   }
 }
 
+function buildOwnershipSignalSummary(item: RelationAccumulator): {
+  first_person_count: number;
+  profile_claim_count: number;
+  repeated_support_count: number;
+  multi_source_count: number;
+} {
+  const excerpts = item.evidenceRefs.map((ref) => String(ref.excerpt ?? ''));
+  const firstPersonCount = excerpts.filter((excerpt) => /\b(i|i'm|i am|my|we|our)\b/i.test(excerpt)).length;
+  const profileClaimCount = excerpts.filter((excerpt) => /\b(bio|about|homepage|founder|maintainer|creator)\b/i.test(excerpt)).length;
+  const rawIds = new Set(item.evidenceRefs.map((ref) => ref.raw_document_id).filter(Boolean));
+  return {
+    first_person_count: firstPersonCount,
+    profile_claim_count: profileClaimCount,
+    repeated_support_count: Math.max(0, item.evidenceRefs.length - 1),
+    multi_source_count: rawIds.size,
+  };
+}
+
+function mapRelationTypeToSemanticType(relationType: PersonaWebRelationType): PersonaWebRelation['semantic_type'] {
+  switch (relationType) {
+    case 'builds':
+      return 'built';
+    case 'works_on':
+      return 'works_on';
+    case 'uses':
+      return 'uses';
+    case 'prefers':
+      return 'recommends';
+    case 'collaborates_with':
+      return 'collaborates_with';
+    case 'learns_from':
+      return 'speaks_about';
+    case 'teaches':
+      return 'speaks_about';
+    case 'cares_about':
+      return 'speaks_about';
+    case 'avoids':
+      return 'speaks_about';
+    case 'belongs_to':
+      return 'member_of';
+    case 'associated_with':
+      return 'associated_with';
+    case 'self_describes':
+      return 'associated_with';
+    default:
+      return 'associated_with';
+  }
+}
+
 function mapRelationToIdentityFacet(relationType: PersonaWebRelationType): PersonaIdentityFacet | null {
   switch (relationType) {
     case 'self_describes':
@@ -1108,7 +1181,31 @@ function summarizeGraph(graph: PersonaWebGraph): string {
   return fragments.join(' | ');
 }
 
+function buildHighConfidenceClaims(graph: PersonaWebGraph): Array<{
+  claim: string;
+  ownership: 'self_owned' | 'self_participated' | 'self_related' | 'self_mentioned' | 'third_party_background' | 'unknown';
+  confidence: number;
+}> {
+  return graph.relations
+    .filter((item) => item.confidence >= HIGH_CONFIDENCE_THRESHOLD)
+    .slice(0, 16)
+    .map((relation) => ({
+      claim: relation.summary,
+      ownership: relation.semantic_type === 'built' || relation.semantic_type === 'founded' || relation.semantic_type === 'owns_site'
+        ? 'self_owned'
+        : relation.semantic_type === 'works_on' || relation.semantic_type === 'contributes_to' || relation.semantic_type === 'maintains'
+          ? 'self_participated'
+          : relation.semantic_type === 'collaborates_with' || relation.semantic_type === 'member_of'
+            ? 'self_related'
+            : relation.semantic_type === 'speaks_about' || relation.semantic_type === 'recommends' || relation.semantic_type === 'uses'
+              ? 'self_mentioned'
+              : 'unknown',
+      confidence: relation.confidence,
+    }));
+}
+
 function buildNetworkIndex(result: PersonaWebBuildResult): Record<string, unknown> {
+  const highConfidenceClaims = buildHighConfidenceClaims(result.graph);
   return {
     schema_version: 1,
     generated_at: result.graph.generated_at,
@@ -1120,20 +1217,27 @@ function buildNetworkIndex(result: PersonaWebBuildResult): Record<string, unknow
     relation_count: result.graph.relations.length,
     context_count: result.graph.context_frames.length,
     identity_arc_count: result.graph.identity_arcs.length,
+    high_confidence_claim_count: highConfidenceClaims.length,
+    high_confidence_claims: highConfidenceClaims,
     top_entities: result.graph.entities.slice(0, 12).map((item) => ({
       id: item.id,
       canonical_name: item.canonical_name,
       entity_type: item.entity_type,
       salience: item.salience,
       confidence: item.confidence,
+      background_summary: item.background_summary,
+      handles: item.handles,
+      normalized_urls: item.normalized_urls,
     })),
     top_relations: result.graph.relations.slice(0, 12).map((item) => ({
       id: item.id,
       relation_type: item.relation_type,
+      semantic_type: item.semantic_type,
       summary: item.summary,
       confidence: item.confidence,
       source_entity_id: item.source_entity_id,
       target_entity_id: item.target_entity_id,
+      ownership_signals: item.ownership_signals,
     })),
   };
 }
@@ -1189,6 +1293,7 @@ function buildCommunitySummary(result: PersonaWebBuildResult): Record<string, un
     summary: summaryParts.join(' ') || summarizeGraph(result.graph),
     communities: communityEntities.map((item) => item.canonical_name),
     relation_hints: relationHints,
+    high_confidence_claims: buildHighConfidenceClaims(result.graph),
   };
 }
 
@@ -1222,6 +1327,39 @@ function sanitizeRelationObject(value: string): string | null {
   if (!trimmed || shouldIgnoreEntity(trimmed)) return null;
   if (trimmed.split(/\s+/).length > 6) return trimmed.split(/\s+/).slice(0, 6).join(' ');
   return trimmed;
+}
+
+function extractHandlesFromEvidence(refs: EvidenceReference[]): string[] {
+  return refs
+    .map((ref) => String(ref.speaker_name ?? '').trim())
+    .filter((value) => value.startsWith('@'));
+}
+
+function extractUrlsFromEvidence(refs: EvidenceReference[]): string[] {
+  return refs
+    .map((ref) => String(ref.source_url ?? '').trim())
+    .filter(Boolean)
+    .map((value) => {
+      try {
+        const parsed = new URL(value);
+        parsed.hash = '';
+        return parsed.toString();
+      } catch {
+        return value;
+      }
+    });
+}
+
+function summarizeEntityBackground(
+  item: EntityAccumulator,
+  relations: PersonaWebRelation[],
+): string | undefined {
+  const related = relations
+    .filter((relation) => relation.target_entity_id === item.id || relation.source_entity_id === item.id)
+    .slice(0, 2)
+    .map((relation) => relation.summary);
+  if (related.length === 0) return undefined;
+  return dedupeStrings(related).join(' | ');
 }
 
 function cleanPhrase(value: string): string | null {

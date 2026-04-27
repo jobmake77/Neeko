@@ -49,6 +49,7 @@ export interface PersonaNetworkSummary {
   pending_candidate_count: number;
   dominant_domains: string[];
   arc_count: number;
+  high_confidence_claim_count?: number;
 }
 
 export interface SourceProgressItem {
@@ -318,16 +319,23 @@ export interface AttachmentRef {
 
 export type SourceFailureClass =
   | 'none'
+  | 'dns_failed'
   | 'network_unreachable'
   | 'timeout'
   | 'rate_limited'
   | 'provider_unhealthy'
+  | 'provider_structural_failure'
   | 'identity_mismatch'
+  | 'aggregator_or_directory_page'
   | 'content_quality'
+  | 'content_too_thin'
+  | 'extraction_low_quality'
   | 'content_empty'
   | 'access_denied'
   | 'not_found'
   | 'unsupported'
+  | 'history_exhausted'
+  | 'provider_exhausted'
   | 'unknown';
 
 export interface ExtractionQualityAssessment {
@@ -384,6 +392,9 @@ export interface SourcePreviewTarget {
   target: string;
   status: 'accepted' | 'rejected' | 'quarantined' | 'error';
   summary: string;
+  relevance_reason?: string;
+  risk_flags: string[];
+  related_entities: string[];
   fetched_via?: string;
   source_url?: string;
   source_platform?: string;
@@ -411,14 +422,54 @@ export interface PersonaSourcePreview {
   };
   status: 'accepted' | 'rejected' | 'quarantined' | 'error';
   summary: string;
+  relevance_reason?: string;
+  risk_flags: string[];
+  related_entities: string[];
   health?: PersonaSourceHealth;
   latest_outcome?: SourceIngestOutcome;
   quality_assessment?: ExtractionQualityAssessment;
   target_results: SourcePreviewTarget[];
 }
 
+export type ClaimOwnership =
+  | 'self_owned'
+  | 'self_participated'
+  | 'self_related'
+  | 'self_mentioned'
+  | 'third_party_background'
+  | 'unknown';
+
+export interface ClaimCandidate {
+  id: string;
+  subject_entity_id: string;
+  predicate: string;
+  object_entity_id?: string;
+  object_label: string;
+  claim_type: 'project' | 'organization' | 'person_relation' | 'website' | 'technology' | 'topic_view' | 'background_fact';
+  source_layer: 'graph' | 'project_hits' | 'memory' | 'context' | 'evidence_map' | 'community_summary';
+  confidence: number;
+  ownership: ClaimOwnership;
+  first_person_allowed: boolean;
+  provenance_scope: 'public' | 'private' | 'mixed' | 'unknown';
+  support_score: number;
+  evidence_refs: string[];
+  support_summary?: string;
+  background_summary?: string;
+}
+
+export interface AnswerPlan {
+  primary_claims: ClaimCandidate[];
+  secondary_context: string[];
+  disallowed_claims: ClaimCandidate[];
+  recommended_voice: 'first_person' | 'mixed' | 'third_person_explanatory';
+  grounding_snippets: string[];
+}
+
 export interface ChatRetrievalPlan {
   knowledge_layer: 'self' | 'project' | 'relation' | 'background' | 'hybrid';
+  claim_intent: 'self_facts' | 'owned_projects' | 'relationships' | 'background_views' | 'hybrid';
+  required_entity_types: Array<'person' | 'organization' | 'project' | 'product' | 'topic' | 'artifact' | 'unknown'>;
+  ownership_sensitive: boolean;
   use_memory: boolean;
   use_network: boolean;
   use_project_facts: boolean;
@@ -443,6 +494,8 @@ export interface NetworkAnswerPack {
   relation_fallbacks: string[];
   evidence_map_hits: string[];
   community_summary?: string;
+  claim_candidates: ClaimCandidate[];
+  answer_plan?: AnswerPlan;
   grounding_status: 'grounded' | 'partial' | 'fallback';
   grounding_summary: string;
   missing_signals: string[];

@@ -36,7 +36,7 @@ test('article attribution rejects pages that clearly belong to a different perso
       source_type: 'article',
       source_url: 'https://garrytan.com/',
       source_platform: 'garrytan.com',
-      content: "Hey! I'm Anthony Fu, a fanatical open sourceror and design engineer.",
+      content: "Hey! I'm Anthony Fu, a fanatical open sourceror and design engineer. This page is Anthony's profile page, where he introduces his own open source work, design engineering interests, and the projects he maintains. It is clearly centered on Anthony Fu rather than Garry Tan, so the attribution layer should reject it.",
       author: 'unknown',
       fetched_at: '2026-04-26T00:00:00.000Z',
       metadata: {
@@ -68,7 +68,7 @@ test('article attribution accepts pages with explicit first-party identity signa
       source_type: 'article',
       source_url: 'https://garrytan.com/about',
       source_platform: 'garrytan.com',
-      content: "I'm Garry Tan. I invest in founders and write about startups, software, and communities.",
+      content: "I'm Garry Tan. I invest in founders and write about startups, software, and communities. This page explains my background, the kinds of founders I work with, the software topics I care about, and the broader communities I participate in. It is a first-party about page with explicit identity signals tied to Garry Tan.",
       author: 'Garry Tan',
       fetched_at: '2026-04-26T00:00:00.000Z',
       metadata: {

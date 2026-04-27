@@ -59,16 +59,23 @@ export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
 
 export const SourceFailureClassSchema = z.enum([
   'none',
+  'dns_failed',
   'network_unreachable',
   'timeout',
   'rate_limited',
   'provider_unhealthy',
+  'provider_structural_failure',
   'identity_mismatch',
+  'aggregator_or_directory_page',
   'content_quality',
+  'content_too_thin',
+  'extraction_low_quality',
   'content_empty',
   'access_denied',
   'not_found',
   'unsupported',
+  'history_exhausted',
+  'provider_exhausted',
   'unknown',
 ]);
 export type SourceFailureClass = z.infer<typeof SourceFailureClassSchema>;
@@ -131,6 +138,9 @@ export const SourcePreviewTargetSchema = z.object({
   target: z.string(),
   status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
   summary: z.string(),
+  relevance_reason: z.string().optional(),
+  risk_flags: z.array(z.string()).default([]),
+  related_entities: z.array(z.string()).default([]),
   fetched_via: z.string().optional(),
   source_url: z.string().optional(),
   source_platform: z.string().optional(),
@@ -159,6 +169,9 @@ export const PersonaSourcePreviewSchema = z.object({
   }),
   status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
   summary: z.string(),
+  relevance_reason: z.string().optional(),
+  risk_flags: z.array(z.string()).default([]),
+  related_entities: z.array(z.string()).default([]),
   health: PersonaSourceHealthSchema.optional(),
   latest_outcome: SourceIngestOutcomeSchema.optional(),
   quality_assessment: ExtractionQualityAssessmentSchema.optional(),
@@ -166,8 +179,57 @@ export const PersonaSourcePreviewSchema = z.object({
 });
 export type PersonaSourcePreview = z.infer<typeof PersonaSourcePreviewSchema>;
 
+export const ClaimOwnershipSchema = z.enum([
+  'self_owned',
+  'self_participated',
+  'self_related',
+  'self_mentioned',
+  'third_party_background',
+  'unknown',
+]);
+export type ClaimOwnership = z.infer<typeof ClaimOwnershipSchema>;
+
+export const ClaimCandidateSchema = z.object({
+  id: z.string(),
+  subject_entity_id: z.string(),
+  predicate: z.string(),
+  object_entity_id: z.string().optional(),
+  object_label: z.string(),
+  claim_type: z.enum([
+    'project',
+    'organization',
+    'person_relation',
+    'website',
+    'technology',
+    'topic_view',
+    'background_fact',
+  ]),
+  source_layer: z.enum(['graph', 'project_hits', 'memory', 'context', 'evidence_map', 'community_summary']),
+  confidence: z.number().min(0).max(1),
+  ownership: ClaimOwnershipSchema.default('unknown'),
+  first_person_allowed: z.boolean().default(false),
+  provenance_scope: z.enum(['public', 'private', 'mixed', 'unknown']).default('unknown'),
+  support_score: z.number().min(0).max(1).default(0),
+  evidence_refs: z.array(z.string()).default([]),
+  support_summary: z.string().optional(),
+  background_summary: z.string().optional(),
+});
+export type ClaimCandidate = z.infer<typeof ClaimCandidateSchema>;
+
+export const AnswerPlanSchema = z.object({
+  primary_claims: z.array(ClaimCandidateSchema).default([]),
+  secondary_context: z.array(z.string()).default([]),
+  disallowed_claims: z.array(ClaimCandidateSchema).default([]),
+  recommended_voice: z.enum(['first_person', 'mixed', 'third_person_explanatory']).default('mixed'),
+  grounding_snippets: z.array(z.string()).default([]),
+});
+export type AnswerPlan = z.infer<typeof AnswerPlanSchema>;
+
 export const ChatRetrievalPlanSchema = z.object({
   knowledge_layer: z.enum(['self', 'project', 'relation', 'background', 'hybrid']).default('self'),
+  claim_intent: z.enum(['self_facts', 'owned_projects', 'relationships', 'background_views', 'hybrid']).default('self_facts'),
+  required_entity_types: z.array(z.enum(['person', 'organization', 'project', 'product', 'topic', 'artifact', 'unknown'])).default([]),
+  ownership_sensitive: z.boolean().default(false),
   use_memory: z.boolean().default(true),
   use_network: z.boolean().default(false),
   use_project_facts: z.boolean().default(false),
@@ -188,6 +250,7 @@ export const NetworkAnswerPackSchema = z.object({
     pending_candidate_count: z.number().int().min(0),
     dominant_domains: z.array(z.string()).default([]),
     arc_count: z.number().int().min(0),
+    high_confidence_claim_count: z.number().int().min(0).default(0),
   }),
   project_hits: z.array(z.object({
     label: z.string(),
@@ -200,6 +263,8 @@ export const NetworkAnswerPackSchema = z.object({
   relation_fallbacks: z.array(z.string()).default([]),
   evidence_map_hits: z.array(z.string()).default([]),
   community_summary: z.string().optional(),
+  claim_candidates: z.array(ClaimCandidateSchema).default([]),
+  answer_plan: AnswerPlanSchema.optional(),
   grounding_status: z.enum(['grounded', 'partial', 'fallback']).default('grounded'),
   grounding_summary: z.string(),
   missing_signals: z.array(z.string()).default([]),
@@ -562,6 +627,7 @@ export const CultivationSummarySchema = z.object({
       pending_candidate_count: z.number().int().min(0),
       dominant_domains: z.array(z.string()).default([]),
       arc_count: z.number().int().min(0),
+      high_confidence_claim_count: z.number().int().min(0).default(0),
     }).optional(),
   }).default({ total_sources: 0, enabled_sources: 0, source_breakdown: {}, document_count: 0, recent_delta_count: 0 }),
   last_update_check_at: z.string().datetime().optional(),
@@ -663,6 +729,7 @@ export interface PersonaNetworkSummary {
   pending_candidate_count: number;
   dominant_domains: string[];
   arc_count: number;
+  high_confidence_claim_count?: number;
 }
 
 export interface CultivationDetail {

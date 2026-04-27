@@ -57,13 +57,16 @@ export function isBrowserErrorPage(content: string): boolean {
 export function classifySourceFailure(error: unknown): SourceFailureClass {
   const message = String(error instanceof Error ? (error.stack ?? error.message) : error ?? '').toLowerCase();
   if (!message) return 'unknown';
-  if (/enotfound|getaddrinfo|could not resolve host|name_not_resolved/.test(message)) return 'network_unreachable';
+  if (/enotfound|getaddrinfo|could not resolve host|name_not_resolved/.test(message)) return 'dns_failed';
   if (/timed out|timeout|err_timed_out/.test(message)) return 'timeout';
   if (/429|rate limit|too many requests/.test(message)) return 'rate_limited';
   if (/403|401|forbidden|unauthorized|access denied/.test(message)) return 'access_denied';
   if (/404|not found/.test(message)) return 'not_found';
   if (/empty markdown|did not produce a markdown file|returned empty/.test(message)) return 'content_empty';
-  if (/quality gate|browser error page|aggregator|too short|content quality/.test(message)) return 'content_quality';
+  if (/provider.*html|provider.*layout|unexpected page structure/.test(message)) return 'provider_structural_failure';
+  if (/aggregator|directory/.test(message)) return 'aggregator_or_directory_page';
+  if (/too short|thin content/.test(message)) return 'content_too_thin';
+  if (/quality gate|browser error page|content quality/.test(message)) return 'extraction_low_quality';
   if (/unsupported|not available/.test(message)) return 'unsupported';
   return 'unknown';
 }

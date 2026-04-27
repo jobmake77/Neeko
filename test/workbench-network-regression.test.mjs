@@ -55,6 +55,9 @@ test('workbench cultivation detail reads training-seed-v3 and exposes network su
     mkdirSync(personaDir, { recursive: true });
     saveJson(join(personaDir, 'training-seed-v3.json'), {
       dominant_domains: ['Relationships', 'Systems'],
+      high_confidence_claims: [
+        { claim: 'Worked with collaborator entities', ownership: 'self_related', confidence: 0.82 },
+      ],
     });
     saveJson(join(personaDir, 'entity-index.json'), {
       entities: [
@@ -84,10 +87,12 @@ test('workbench cultivation detail reads training-seed-v3 and exposes network su
     assert.equal(detail.network_summary.relation_count, 1);
     assert.equal(detail.network_summary.context_pack_count, 1);
     assert.equal(detail.network_summary.arc_count, 1);
+    assert.equal(detail.network_summary.high_confidence_claim_count, 1);
     assert.equal(detail.source_summary.network_summary.entity_count, 1);
     assert.equal(detail.source_summary.network_summary.relation_count, 1);
     assert.equal(detail.source_summary.network_summary.context_pack_count, 1);
     assert.equal(detail.source_summary.network_summary.arc_count, 1);
+    assert.equal(detail.source_summary.network_summary.high_confidence_claim_count, 1);
     assert.deepEqual(
       detail.network_summary.dominant_domains,
       ['relationships', 'systems', 'collaboration', 'private context'],

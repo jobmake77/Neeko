@@ -334,6 +334,7 @@ function NetworkSummaryBlock({ detail }: { detail: CultivationDetail }) {
     || network.relation_count > 0
     || network.context_pack_count > 0
     || network.arc_count > 0
+    || (network.high_confidence_claim_count ?? 0) > 0
     || network.pending_candidate_count > 0
     || network.dominant_domains.length > 0;
   if (!hasSignals) return null;
@@ -356,6 +357,7 @@ function NetworkSummaryBlock({ detail }: { detail: CultivationDetail }) {
         <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>关系数: <b>{network.relation_count}</b></div>
         <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>背景包: <b>{network.context_pack_count}</b></div>
         <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>身份轨迹: <b>{network.arc_count}</b></div>
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>高置信事实: <b>{network.high_confidence_claim_count ?? 0}</b></div>
         <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>待审核候选: <b>{network.pending_candidate_count}</b></div>
       </div>
       {network.dominant_domains.length > 0 ? (
@@ -687,6 +689,7 @@ function TrainingCard({
               <InfoStat label="人物关系" value={networkSummary?.relation_count ?? 0} />
               <InfoStat label="背景包" value={networkSummary?.context_pack_count ?? 0} />
               <InfoStat label="身份轨迹" value={networkSummary?.arc_count ?? 0} />
+              <InfoStat label="高置信事实" value={networkSummary?.high_confidence_claim_count ?? 0} />
               <InfoStat label="历史缓存复用" value={detail.cache_reuse?.active ? `${detail.cache_reuse.reused_document_count} 条` : '无'} />
               <InfoStat label="历史窗口状态" value={historyExhausted ? '已耗尽' : '未耗尽'} />
               <InfoStat label="Provider 状态" value={providerExhausted ? '待恢复' : '正常'} />

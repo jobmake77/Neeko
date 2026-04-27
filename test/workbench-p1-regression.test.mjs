@@ -14,6 +14,8 @@ const serial = { concurrency: false };
 
 const {
   buildCollectionContinuationDecision,
+  buildGraphClaimCandidates,
+  compileAnswerPlan,
   buildNetworkPriorityContext,
   detectChatKnowledgeLayer,
   validateRemoteSourceDocumentsForPersona,
@@ -62,7 +64,7 @@ function makeAcceptedArticleDoc() {
     source_type: 'article',
     source_url: 'https://example.com/about',
     source_platform: 'example.com',
-    content: "I'm onevcat. I build tools and write about Swift, Apple platforms, and software craftsmanship.",
+    content: "I'm onevcat. I build tools and write about Swift, Apple platforms, and software craftsmanship. This page explains my long-term focus on engineering quality, product taste, and sustainable software systems. I regularly document how I approach open source, maintain macOS and iOS tooling, and think about developer experience over time.",
     author: 'onevcat',
     fetched_at: '2026-04-27T00:00:00.000Z',
     metadata: {
@@ -78,7 +80,7 @@ function makeWeakArticleDoc() {
     source_type: 'article',
     source_url: 'https://example.com/notes/field-journal',
     source_platform: 'example.com',
-    content: 'Collected notes about software taste, engineering tradeoffs, and long-term systems design.',
+    content: 'Collected notes about software taste, engineering tradeoffs, and long-term systems design. This page reads like a field journal rather than a clear first-party profile. It talks about engineering decisions, long-term systems thinking, and product tradeoffs, but it does not clearly identify who owns the page or whether it belongs to the target persona.',
     author: '',
     fetched_at: '2026-04-27T00:00:00.000Z',
     metadata: {
@@ -94,7 +96,7 @@ function makeRejectedArticleDoc() {
     source_type: 'article',
     source_url: 'https://example.com/about',
     source_platform: 'example.com',
-    content: "Hey! I'm Anthony Fu, a fanatical open sourcerer and design engineer.",
+    content: "Hey! I'm Anthony Fu, a fanatical open sourcerer and design engineer. This page is clearly about Anthony Fu, his open source work, his design engineering practice, and his own projects. It is not a page authored by onevcat and should be rejected by the identity and ownership checks.",
     author: 'Anthony Fu',
     fetched_at: '2026-04-27T00:00:00.000Z',
     metadata: {
@@ -117,6 +119,8 @@ test('source preview keeps unified accepted and quarantined summaries for remote
   assert.equal(accepted.summary, '当前来源预览已通过归属检查，可继续作为培养来源。');
   assert.equal(accepted.target_results[0].status, 'accepted');
   assert.equal(accepted.target_results[0].reason_code, 'article_identity_match');
+  assert.equal(accepted.target_results[0].relevance_reason, '来源内容和目标人物存在稳定归属关系，可继续入池。');
+  assert.ok(Array.isArray(accepted.target_results[0].related_entities));
 
   const quarantinedService = new WorkbenchService();
   quarantinedService.fetchPreviewDocumentsForTarget = async () => [makeWeakArticleDoc()];
@@ -130,6 +134,7 @@ test('source preview keeps unified accepted and quarantined summaries for remote
   assert.equal(quarantined.summary, '当前来源抓到了内容，但归属信号不足，建议先人工确认。');
   assert.equal(quarantined.target_results[0].status, 'quarantined');
   assert.equal(quarantined.target_results[0].reason_code, 'article_identity_weak');
+  assert.equal(quarantined.target_results[0].relevance_reason, '抓到了内容，但它更像弱关联页面，建议先人工确认。');
 });
 
 test('extraction quality gate keeps accepted rejected and quarantined counts distinct', serial, () => {
@@ -184,6 +189,194 @@ test('chat knowledge routing keeps project relation background hybrid and self l
 
   assert.match(backgroundContext, /Background\/context hints:/);
   assert.match(backgroundContext, /Do not collapse domain background into fabricated personal experience/);
+});
+
+test('claim planning compiles first-person project claims and blocks weak background claims', serial, async () => {
+  await withTempDataDir('neeko-workbench-p1-', async (dataDir) => {
+    const slug = 'claim-persona';
+    const personaDir = join(dataDir, 'personas', slug);
+    mkdirSync(personaDir, { recursive: true });
+    const graph = {
+      schema_version: 1,
+      generated_at: '2026-04-27T00:00:00.000Z',
+      persona_slug: slug,
+      target_name: 'Claim Persona',
+      source: {},
+      stats: {
+        document_count: 1,
+        evidence_count: 1,
+        entity_count: 3,
+        relation_count: 2,
+        context_count: 0,
+        identity_arc_count: 0,
+        high_confidence_entity_count: 2,
+        high_confidence_relation_count: 2,
+      },
+      entities: [
+        {
+          id: 'entity:self',
+          canonical_name: 'Claim Persona',
+          entity_type: 'person',
+          aliases: [],
+          handles: ['@claimpersona'],
+          normalized_urls: [],
+          confidence: 0.98,
+          salience: 0.98,
+          evidence_refs: [],
+          metadata: {},
+        },
+        {
+          id: 'entity:project',
+          canonical_name: 'Pake',
+          entity_type: 'project',
+          aliases: [],
+          handles: [],
+          normalized_urls: ['https://github.com/example/pake'],
+          confidence: 0.88,
+          salience: 0.8,
+          evidence_refs: [],
+          background_summary: 'A lightweight packaging project.',
+          metadata: {},
+        },
+        {
+          id: 'entity:topic',
+          canonical_name: 'AI infra',
+          entity_type: 'topic',
+          aliases: [],
+          handles: [],
+          normalized_urls: [],
+          confidence: 0.76,
+          salience: 0.68,
+          evidence_refs: [],
+          background_summary: 'A background domain topic.',
+          metadata: {},
+        },
+      ],
+      relations: [
+        {
+          id: 'relation:1',
+          source_entity_id: 'entity:self',
+          target_entity_id: 'entity:project',
+          relation_type: 'builds',
+          semantic_type: 'built',
+          direction: 'directed',
+          valence: 'positive',
+          confidence: 0.9,
+          ownership_signals: {
+            first_person_count: 1,
+            profile_claim_count: 0,
+            repeated_support_count: 1,
+            multi_source_count: 1,
+          },
+          context_frame_ids: [],
+          evidence_refs: [
+            {
+              raw_document_id: 'doc:1',
+              source_url: 'https://x.com/claim/status/1',
+              excerpt: 'I built Pake as a lightweight Rust packaging tool.',
+              confidence: 0.92,
+            },
+          ],
+          summary: 'Builds Pake',
+        },
+        {
+          id: 'relation:2',
+          source_entity_id: 'entity:self',
+          target_entity_id: 'entity:topic',
+          relation_type: 'teaches',
+          semantic_type: 'speaks_about',
+          direction: 'directed',
+          valence: 'neutral',
+          confidence: 0.7,
+          ownership_signals: {
+            first_person_count: 0,
+            profile_claim_count: 0,
+            repeated_support_count: 0,
+            multi_source_count: 1,
+          },
+          context_frame_ids: [],
+          evidence_refs: [
+            {
+              raw_document_id: 'doc:2',
+              source_url: 'https://x.com/claim/status/2',
+              excerpt: 'I often write about AI infra and model tooling.',
+              confidence: 0.7,
+            },
+          ],
+          summary: 'Shares about AI infra',
+        },
+      ],
+      context_frames: [],
+      identity_arcs: [],
+    };
+    const trainingSeed = {
+      schema_version: 3,
+      generated_at: '2026-04-27T00:00:00.000Z',
+      persona_slug: slug,
+      target_name: 'Claim Persona',
+      summary: 'Builds Pake | Shares about AI infra',
+      stats: {
+        entity_count: 3,
+        relation_count: 2,
+        context_count: 0,
+        identity_arc_count: 0,
+        provenance_coverage_score: 0.8,
+        verified_relation_count: 2,
+        guarded_claim_count: 2,
+      },
+      dominant_domains: ['developer tools'],
+      topics: ['Pake', 'AI infra'],
+      signals: ['builder'],
+      relationship_hints: ['Builds Pake'],
+      context_hints: ['public: tool building'],
+      identity_hints: [],
+      entity_cards: [],
+      relation_summaries: [],
+      high_confidence_claims: [
+        { claim: 'Builds Pake', ownership: 'self_owned', confidence: 0.9 },
+      ],
+      provenance_guardrails: ['Do not collapse background context into fabricated personal experience'],
+    };
+    const provenance = {
+      schema_version: 1,
+      generated_at: '2026-04-27T00:00:00.000Z',
+      persona_slug: slug,
+      target_name: 'Claim Persona',
+      coverage_score: 0.8,
+      verified_entity_count: 2,
+      verified_relation_count: 2,
+      low_confidence_entity_count: 0,
+      low_confidence_relation_count: 0,
+      guardrail_notes: [],
+    };
+    saveJson(join(personaDir, 'persona-web-entities.json'), graph.entities);
+    saveJson(join(personaDir, 'persona-web-relations.json'), graph.relations);
+    saveJson(join(personaDir, 'persona-web-contexts.json'), []);
+    saveJson(join(personaDir, 'persona-web-identity-arcs.json'), []);
+    saveJson(join(personaDir, 'persona-web-graph.json'), graph);
+    saveJson(join(personaDir, 'training-seed-v3.json'), trainingSeed);
+    saveJson(join(personaDir, 'persona-web-provenance-report.json'), provenance);
+
+    const claims = buildGraphClaimCandidates(slug, '你做过哪些项目？你怎么看 AI infra？', {
+      knowledge_layer: 'hybrid',
+      claim_intent: 'hybrid',
+      required_entity_types: ['project', 'topic'],
+      ownership_sensitive: true,
+      use_memory: true,
+      use_network: true,
+      use_project_facts: true,
+      use_relation_fallback: false,
+      use_community_summary: true,
+      use_attachments: false,
+      grounding_required: true,
+    });
+    const plan = compileAnswerPlan(claims, 'Open-source builder context');
+
+    assert.ok(claims.some((item) => item.object_label === 'Pake' && item.first_person_allowed));
+    assert.ok(claims.some((item) => item.object_label === 'AI infra' && item.ownership === 'self_mentioned'));
+    assert.ok(plan.primary_claims.some((item) => item.object_label === 'Pake'));
+    assert.equal(plan.recommended_voice, 'mixed');
+  });
 });
 
 test('discovered podcast candidates require stronger identity matches for handle-like personas', serial, async () => {

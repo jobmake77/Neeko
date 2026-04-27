@@ -50,7 +50,9 @@ test('persona web builder compiles relation and seed hints from anchored evidenc
   });
 
   assert.ok(result.graph.relations.length > 0);
+  assert.ok(result.graph.relations.some((item) => item.semantic_type === 'built'));
   assert.ok(result.trainingSeedV3.relationship_hints.length > 0);
+  assert.ok(result.trainingSeedV3.high_confidence_claims.length > 0);
   assert.ok(result.trainingSeedV3.topics.some((item) => /bookface|founders|tools/i.test(item)));
   assert.ok(result.trainingSeedV3.dominant_domains.some((item) => /developer tools|open source|startups/i.test(item)));
 });

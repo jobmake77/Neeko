@@ -776,6 +776,29 @@ function SourceCard({
             <div style={{ fontSize: 11, fontWeight: 700, color: previewTone.text }}>{previewTone.label}</div>
           </div>
           <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', lineHeight: 1.7 }}>{formatPreviewSummary(preview.summary)}</div>
+          {preview.relevance_reason ? (
+            <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', lineHeight: 1.7 }}>
+              关联理由: <b>{preview.relevance_reason}</b>
+            </div>
+          ) : null}
+          {preview.related_entities.length > 0 ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {preview.related_entities.map((entity) => (
+                <span key={entity} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, background: 'rgb(var(--bg-hover))', border: '1px solid rgb(var(--border))', color: 'rgb(var(--text-secondary))' }}>
+                  {entity}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {preview.risk_flags.length > 0 ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {preview.risk_flags.map((flag) => (
+                <span key={flag} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.28)', color: '#b45309' }}>
+                  {flag}
+                </span>
+              ))}
+            </div>
+          ) : null}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {preview.target_results.map((item) => {
               const itemTone = previewStatusTone(item.status);
@@ -788,6 +811,7 @@ function SourceCard({
                   {item.title ? <div style={{ fontSize: 12, color: 'rgb(var(--text-primary))' }}>标题: <b>{item.title}</b></div> : null}
                   {item.author ? <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>作者: <b>{item.author}</b></div> : null}
                   <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', lineHeight: 1.7 }}>{item.summary}</div>
+                  {item.relevance_reason ? <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>关联理由: <b>{item.relevance_reason}</b></div> : null}
                   {typeof item.identity_match === 'number' || typeof item.source_integrity === 'number' ? (
                     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
                       {typeof item.identity_match === 'number' ? <span>归属匹配 {Math.round(item.identity_match * 100)}%</span> : null}
@@ -799,6 +823,24 @@ function SourceCard({
                     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
                       {item.health ? <span>来源健康 {formatSourceHealthLabel(item.health.status)}</span> : null}
                       {item.quality_assessment ? <span>提取质量 {Math.round(item.quality_assessment.score * 100)}%</span> : null}
+                    </div>
+                  ) : null}
+                  {item.related_entities.length > 0 ? (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {item.related_entities.map((entity) => (
+                        <span key={entity} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'rgb(var(--bg-hover))', border: '1px solid rgb(var(--border))', color: 'rgb(var(--text-secondary))' }}>
+                          {entity}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {item.risk_flags.length > 0 ? (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {item.risk_flags.map((flag) => (
+                        <span key={flag} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.28)', color: '#b45309' }}>
+                          {flag}
+                        </span>
+                      ))}
                     </div>
                   ) : null}
                   {item.content_preview ? (

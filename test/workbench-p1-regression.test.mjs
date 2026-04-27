@@ -186,6 +186,26 @@ test('chat knowledge routing keeps project relation background hybrid and self l
   assert.match(backgroundContext, /Do not collapse domain background into fabricated personal experience/);
 });
 
+test('discovered podcast candidates require stronger identity matches for handle-like personas', serial, async () => {
+  const service = new WorkbenchService();
+  service.fetchDiscoveryPageMeta = async () => ({
+    title: 'Whitto and Herbie - hit93.1 Riverina',
+    description: 'A radio podcast episode page unrelated to HiTw93.',
+    siteName: 'Pod Paradise',
+  });
+
+  const candidate = await service.buildDiscoveredCandidate(
+    'hitw93',
+    'https://www.podparadise.com/Podcast/784254135',
+    'Listen To Whitto and Herbie - hit93.1 Riverina Podcast Online',
+    'HiTw93 guest podcast',
+    'HiTw93',
+    ['@HiTw93'],
+  );
+
+  assert.equal(candidate, null);
+});
+
 test('network answer grounding persists citation items into the saved assistant message', serial, async () => {
   const store = new WorkbenchStore(mkdtempSync(join(tmpdir(), 'neeko-grounding-store-')));
   const service = new WorkbenchService(store);

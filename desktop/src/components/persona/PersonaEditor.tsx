@@ -335,6 +335,10 @@ function formatPreviewSummary(summary?: string) {
   return summary;
 }
 
+function formatSourceSummary(summary?: string) {
+  return formatPreviewSummary(summary);
+}
+
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -811,7 +815,7 @@ function SourceCard({
       ) : null}
 
       {source.summary ? (
-        <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', lineHeight: 1.6 }}>{source.summary}</div>
+        <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', lineHeight: 1.6 }}>{formatSourceSummary(source.summary)}</div>
       ) : null}
     </div>
   );

@@ -944,19 +944,51 @@ function normalizeHostTokens(value: string): string[] {
     .filter((item) => item.length >= 3);
 }
 
-function buildIdentityTokens(personaName: string, query: string, href: string): string[] {
+function buildIdentityTokens(personaName: string, query: string): string[] {
   const tokens = new Set<string>();
+  const stopwords = new Set([
+    'official',
+    'website',
+    'site',
+    'personal',
+    'youtube',
+    'podcast',
+    'guest',
+    'interview',
+    'transcript',
+    'blog',
+    'video',
+    'channel',
+  ]);
   const collect = (value: string) => {
     value
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .map((item) => item.trim())
-      .filter((item) => item.length >= 3)
+      .filter((item) => item.length >= 3 && !stopwords.has(item))
       .forEach((item) => tokens.add(item));
   };
   collect(personaName);
   collect(query);
-  normalizeHostTokens(href).forEach((item) => tokens.add(item));
+  return [...tokens];
+}
+
+function buildStrongIdentityTokens(personaName: string, query: string, refs: string[] = []): string[] {
+  const tokens = new Set<string>();
+  const collect = (value: string) => {
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9@._-]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((item) => {
+        const normalized = item.replace(/^@/, '').trim();
+        if (normalized.length >= 4) tokens.add(normalized);
+      });
+  };
+  collect(personaName);
+  collect(query);
+  refs.forEach(collect);
   return [...tokens];
 }
 
@@ -978,6 +1010,17 @@ function countIdentityMatches(text: string, tokens: string[]): number {
     const compactToken = normalized.replace(/[^a-z0-9]+/g, '');
     return lower.includes(normalized) || (compactToken.length >= 3 && compact.includes(compactToken));
   }).length;
+}
+
+function includesStrongIdentityToken(text: string, tokens: string[]): boolean {
+  if (tokens.length === 0) return false;
+  const normalizedParts = text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const partSet = new Set(normalizedParts);
+  return tokens.some((token) => partSet.has(token.toLowerCase()));
 }
 
 function buildSourceIdentityTokens(personaName: string, source: PersonaSource): string[] {
@@ -4347,6 +4390,10 @@ export class WorkbenchService {
     query: string,
     personaName: string
   ): Promise<DiscoveredSourceCandidate[]> {
+    const config = this.getPersonaConfig(slug);
+    const sourceIdentityRefs = config.sources
+      .map((item) => item.handle_or_url ?? item.target_label ?? '')
+      .filter(Boolean);
     const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
     const response = await fetch(url, {
       headers: {
@@ -4359,7 +4406,7 @@ export class WorkbenchService {
     const candidateList = await Promise.all(matches.slice(0, 6).map(async (match) => {
       const href = this.decodeSearchHref(match[1]);
       const title = this.stripHtml(match[2]);
-      return this.buildDiscoveredCandidate(slug, href, title, query, personaName);
+      return this.buildDiscoveredCandidate(slug, href, title, query, personaName, sourceIdentityRefs);
     }));
     const candidates: DiscoveredSourceCandidate[] = [];
     for (const candidate of candidateList) {
@@ -4392,7 +4439,8 @@ export class WorkbenchService {
     href: string,
     title: string,
     query: string,
-    personaName: string
+    personaName: string,
+    sourceIdentityRefs: string[] = [],
   ): Promise<DiscoveredSourceCandidate | null> {
     if (!/^https?:\/\//i.test(href)) return null;
     const lowerHref = href.toLowerCase();
@@ -4401,7 +4449,8 @@ export class WorkbenchService {
     const lowerQuery = query.toLowerCase();
     const nameToken = lowerName.replace(/\s+/g, '');
     const queryToken = lowerQuery.replace(/\s+/g, '');
-    const identityTokens = buildIdentityTokens(personaName, query, href);
+    const identityTokens = buildIdentityTokens(personaName, query);
+    const strongIdentityTokens = buildStrongIdentityTokens(personaName, query, sourceIdentityRefs);
     const hasIdentityMatch = (nameToken.length >= 4 && (lowerTitle.includes(lowerName) || lowerHref.includes(nameToken)))
       || (queryToken.length >= 4 && (lowerTitle.includes(lowerQuery) || lowerHref.includes(queryToken)))
       || includesIdentityToken(`${lowerTitle} ${lowerHref}`, identityTokens);
@@ -4416,6 +4465,8 @@ export class WorkbenchService {
       .join(' ')
       .toLowerCase();
     if (!includesIdentityToken(combinedText, identityTokens)) return null;
+    const strongIdentityMatch = includesStrongIdentityToken(combinedText, strongIdentityTokens);
+    const identityMatchCount = countIdentityMatches(combinedText, identityTokens);
     const podcastMarker = /\b(podcast|episode|show|guest|interview)\b/i;
     const podcastHost = /(spotify\.com|open\.spotify\.com|podcasts\.apple\.com|substack\.com|buzzsprout\.com|transistor\.fm|simplecast\.com|libsyn\.com|podbean\.com|anchor\.fm|castbox\.fm|overcast\.fm)/i.test(host);
     const likelyOfficialHost = host.includes(nameToken) || host.includes(queryToken);
@@ -4438,6 +4489,7 @@ export class WorkbenchService {
       confidence = 0.86;
       summary = '发现到可能的官网或官方主页';
     } else if (likelyPodcast) {
+      if (!strongIdentityMatch && identityMatchCount < 2) return null;
       type = /(interview|访谈|guest)/i.test(combinedText) ? 'interview/article_page' : 'podcast_episode_page';
       platform = 'web';
       confidence = podcastHost ? 0.84 : 0.78;

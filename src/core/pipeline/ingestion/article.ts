@@ -1,5 +1,9 @@
 import { BaseSourceAdapter } from './base.js';
 import { RawDocument } from '../../models/memory.js';
+import {
+  type ExtractionQualityAssessment,
+  type SourceFailureClass,
+} from '../../models/workbench.js';
 import { execSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { homedir } from 'os';
@@ -50,6 +54,99 @@ export function isBrowserErrorPage(content: string): boolean {
     || normalized.includes('无法访问此网站');
 }
 
+export function classifySourceFailure(error: unknown): SourceFailureClass {
+  const message = String(error instanceof Error ? (error.stack ?? error.message) : error ?? '').toLowerCase();
+  if (!message) return 'unknown';
+  if (/enotfound|getaddrinfo|could not resolve host|name_not_resolved/.test(message)) return 'network_unreachable';
+  if (/timed out|timeout|err_timed_out/.test(message)) return 'timeout';
+  if (/429|rate limit|too many requests/.test(message)) return 'rate_limited';
+  if (/403|401|forbidden|unauthorized|access denied/.test(message)) return 'access_denied';
+  if (/404|not found/.test(message)) return 'not_found';
+  if (/empty markdown|did not produce a markdown file|returned empty/.test(message)) return 'content_empty';
+  if (/quality gate|browser error page|aggregator|too short|content quality/.test(message)) return 'content_quality';
+  if (/unsupported|not available/.test(message)) return 'unsupported';
+  return 'unknown';
+}
+
+export function assessArticleExtractionQuality(contentOrDoc: string | RawDocument): ExtractionQualityAssessment {
+  const content = typeof contentOrDoc === 'string'
+    ? contentOrDoc
+    : String(contentOrDoc.content ?? '');
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  const paragraphs = content
+    .split(/\n{2,}|\r\n\r\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const issueCodes: string[] = [];
+  let score = 0.82;
+
+  if (!normalized) {
+    return {
+      status: 'rejected',
+      summary: '提取结果为空，无法作为稳定网页内容使用。',
+      score: 0,
+      content_length: 0,
+      excerpt_count: 0,
+      signal_count: 0,
+      issue_codes: ['empty_content'],
+    };
+  }
+
+  if (normalized.length < 280) {
+    score -= 0.42;
+    issueCodes.push('too_short');
+  }
+  if (paragraphs.length < 2) {
+    score -= 0.18;
+    issueCodes.push('low_structure');
+  }
+  if (isBrowserErrorPage(normalized)) {
+    score = 0;
+    issueCodes.push('browser_error_page');
+  }
+  if (/(subscribe|sign in|login|cookie|javascript required|enable javascript)/i.test(normalized)) {
+    score -= 0.16;
+    issueCodes.push('shell_page_noise');
+  }
+  const signalCount = [
+    /^#\s+/m.test(content),
+    /\b(i am|i'm|my|we|our|project|build|work|prefer)\b/i.test(content),
+    /[\u4e00-\u9fff]/u.test(content),
+  ].filter(Boolean).length;
+  if (signalCount === 0) {
+    score -= 0.12;
+    issueCodes.push('weak_authorial_signal');
+  }
+
+  const clampedScore = Math.max(0, Math.min(1, score));
+  const status = clampedScore >= 0.58
+    ? 'accepted'
+    : clampedScore >= 0.34
+      ? 'weak'
+      : 'rejected';
+  const summary = status === 'accepted'
+    ? '网页提取质量通过，可继续用于来源校验和摄取。'
+    : status === 'weak'
+      ? '网页提取拿到了正文，但结构或内容信号偏弱，建议谨慎使用。'
+      : '网页提取质量不足，已被质量门禁拦截。';
+  return {
+    status,
+    summary,
+    score: clampedScore,
+    content_length: normalized.length,
+    excerpt_count: paragraphs.length,
+    signal_count: signalCount,
+    issue_codes: issueCodes,
+  };
+}
+
+function ensureArticleQuality(contentOrDoc: string | RawDocument, context: string): void {
+  const quality = assessArticleExtractionQuality(contentOrDoc);
+  if (quality.status === 'rejected') {
+    throw new Error(`${context} quality gate rejected: ${quality.issue_codes.join(',') || 'content_quality'}`);
+  }
+}
+
 /**
  * Article adapter — reads blog posts / web articles via opencli first,
  * then agent-reach, and finally falls back to raw HTTP fetch.
@@ -64,6 +161,7 @@ export class ArticleAdapter extends BaseSourceAdapter {
       try {
         const page = await this.fetchViaOpenCli(candidate);
         if (page.content.trim().length > 0) {
+          ensureArticleQuality(page.content, 'opencli article extraction');
           return [
             this.makeDoc({
               source_type: 'article',
@@ -95,6 +193,7 @@ export class ArticleAdapter extends BaseSourceAdapter {
           author?: string;
           published_at?: string;
         };
+        ensureArticleQuality(page.content, 'agent-reach article extraction');
 
         return [
           this.makeDoc({
@@ -178,12 +277,15 @@ export class ArticleAdapter extends BaseSourceAdapter {
       .replace(/\s+/g, ' ')
       .trim();
 
+    const content = text.slice(0, 50_000);
+    ensureArticleQuality(content, 'raw article extraction');
+
     return [
       this.makeDoc({
         source_type: 'article',
         source_url: url,
         source_platform: new URL(url).hostname,
-        content: text.slice(0, 50_000), // cap
+        content,
         author: 'unknown',
         metadata: { fetched_via: 'raw_fetch' },
       }),

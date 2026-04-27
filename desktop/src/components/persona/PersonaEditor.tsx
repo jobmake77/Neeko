@@ -318,6 +318,23 @@ function previewStatusTone(status?: PersonaSourcePreview['status'] | 'error') {
   return { bg: 'rgba(148,163,184,0.12)', border: 'rgba(148,163,184,0.24)', text: 'rgb(var(--text-secondary))', label: '抓取失败' };
 }
 
+function formatSourceHealthLabel(status?: string) {
+  if (status === 'healthy') return '健康';
+  if (status === 'degraded') return '不稳定';
+  if (status === 'cooldown') return '冷却中';
+  if (status === 'blocked') return '已阻断';
+  return '未记录';
+}
+
+function formatPreviewSummary(summary?: string) {
+  if (!summary) return '当前没有可展示的预览结果。';
+  if (summary === 'No new source content.') return '当前没有抓到新的来源内容。';
+  if (summary === 'No new source content was available for additional cultivation.') {
+    return '当前没有更多可继续纳入培养的新来源内容。';
+  }
+  return summary;
+}
+
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -754,7 +771,7 @@ function SourceCard({
             <div style={{ fontSize: 13, fontWeight: 700, color: 'rgb(var(--text-primary))' }}>抓取预览</div>
             <div style={{ fontSize: 11, fontWeight: 700, color: previewTone.text }}>{previewTone.label}</div>
           </div>
-          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', lineHeight: 1.7 }}>{preview.summary}</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))', lineHeight: 1.7 }}>{formatPreviewSummary(preview.summary)}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {preview.target_results.map((item) => {
               const itemTone = previewStatusTone(item.status);
@@ -772,6 +789,12 @@ function SourceCard({
                       {typeof item.identity_match === 'number' ? <span>归属匹配 {Math.round(item.identity_match * 100)}%</span> : null}
                       {typeof item.source_integrity === 'number' ? <span>来源完整度 {Math.round(item.source_integrity * 100)}%</span> : null}
                       {item.fetched_via ? <span>抓取方式 {item.fetched_via}</span> : null}
+                    </div>
+                  ) : null}
+                  {item.health || item.quality_assessment ? (
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+                      {item.health ? <span>来源健康 {formatSourceHealthLabel(item.health.status)}</span> : null}
+                      {item.quality_assessment ? <span>提取质量 {Math.round(item.quality_assessment.score * 100)}%</span> : null}
                     </div>
                   ) : null}
                   {item.content_preview ? (

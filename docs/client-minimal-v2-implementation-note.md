@@ -13,6 +13,7 @@ This note defines:
 - task split and ownership boundaries
 - integration acceptance checklist
 - rollout risks, migration impact, and GUI verification expectations
+- phase taskboard, interface governance, and merge readiness linkage
 
 This is a coordination artifact only. It does not authorize scope expansion beyond the current stage rules.
 

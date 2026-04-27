@@ -88,6 +88,21 @@ function formatWindowStatus(status?: string) {
   return '等待推进';
 }
 
+function formatSourceHealthLabel(status?: string) {
+  if (status === 'healthy') return '健康';
+  if (status === 'degraded') return '不稳定';
+  if (status === 'cooldown') return '冷却中';
+  if (status === 'blocked') return '已阻断';
+  return '未记录';
+}
+
+function formatQualityStatusLabel(status?: string) {
+  if (status === 'accepted') return '通过';
+  if (status === 'weak') return '偏弱';
+  if (status === 'rejected') return '已拒绝';
+  return '未记录';
+}
+
 function formatCollectionStopReasonLabel(reason?: string) {
   if (!reason) return null;
   if (reason === 'soft_closed_material_exhausted') return '公开素材已触边，连续 2 轮未获得新增素材';
@@ -403,10 +418,13 @@ function SourceItems({ detail }: { detail: CultivationDetail }) {
                 <div>最近同步: <b>{formatDate(item.last_synced_at)}</b></div>
                 <div>最近结果: <b>{item.last_result || '等待下一步推进'}</b></div>
                 <div>当前状态: <b>{item.status === 'error' ? '待重试' : item.status === 'syncing' ? '同步中' : item.status === 'ready' ? '已同步' : '等待同步'}</b></div>
+                <div>来源健康: <b>{item.health ? `${formatSourceHealthLabel(item.health.status)} · ${item.health.summary}` : '未记录'}</b></div>
                 <div>最近心跳: <b>{formatRelativeTime(item.last_heartbeat_at)}</b></div>
                 <div>缓存复用: <b>{item.cache_reused ? `已复用 ${item.cache_document_count ?? 0} 条` : '无'}</b></div>
                 <div>当前窗口: <b>{item.active_window?.window_start && item.active_window?.window_end ? `${item.active_window.window_start.slice(0, 10)} ~ ${item.active_window.window_end.slice(0, 10)}` : '未记录'}</b></div>
                 <div>窗口状态: <b>{formatWindowStatus(item.active_window?.status)}</b></div>
+                <div>提取质量: <b>{item.quality_assessment ? `${Math.round(item.quality_assessment.score * 100)}% · ${formatQualityStatusLabel(item.quality_assessment.status)}` : '未记录'}</b></div>
+                <div>最近结算: <b>{item.checkpoint?.settle_summary || item.latest_outcome?.summary || '未记录'}</b></div>
                 <div style={{ gridColumn: '1 / -1' }}>校验摘要: <b>{item.validation_summary?.latest_summary ?? '当前来源暂无额外校验提示。'}</b></div>
                 {item.cache_reused ? <div style={{ gridColumn: '1 / -1' }}>缓存说明: <b>{item.cache_summary ?? '当前来源已复用历史素材缓存作为起始语料。'}</b></div> : null}
               </div>

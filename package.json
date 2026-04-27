@@ -21,7 +21,7 @@
     "test:core": "npm run -s build && npm run -s test:node:only && npm run -s test:api-contract:only",
     "test:desktop": "npm run -s desktop:build",
     "test:node": "npm run -s build && npm run -s test:node:only",
-    "test:node:only": "node --test test/*.mjs",
+    "test:node:only": "node --test --test-concurrency=1 test/*.mjs",
     "test:skills": "npm run -s build && node --test test/skills-library.test.mjs",
     "test:ab": "npm run -s build && node --test test/ab-report.test.mjs",
     "test:api-contract": "npm run -s build && npm run -s test:api-contract:only",

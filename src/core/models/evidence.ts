@@ -300,6 +300,45 @@ export const PersonaWebProvenanceReportSchema = z.object({
 });
 export type PersonaWebProvenanceReport = z.infer<typeof PersonaWebProvenanceReportSchema>;
 
+export const PersonaWebIndexSchema = z.object({
+  schema_version: z.literal(1),
+  generated_at: z.string().datetime(),
+  persona_slug: z.string().optional(),
+  target_name: z.string().optional(),
+  entity_lookup: z.record(z.string(), z.array(z.string())).default({}),
+  relation_lookup: z.record(z.string(), z.array(z.string())).default({}),
+  domain_lookup: z.record(z.string(), z.array(z.string())).default({}),
+  adjacency: z.record(z.string(), z.array(z.string())).default({}),
+  canonical_aliases: z.record(z.string(), z.array(z.string())).default({}),
+});
+export type PersonaWebIndex = z.infer<typeof PersonaWebIndexSchema>;
+
+export const PersonaWebEvidenceMapSchema = z.object({
+  schema_version: z.literal(1),
+  generated_at: z.string().datetime(),
+  persona_slug: z.string().optional(),
+  target_name: z.string().optional(),
+  entity_to_evidence: z.record(z.string(), z.array(z.string())).default({}),
+  relation_to_evidence: z.record(z.string(), z.array(z.string())).default({}),
+  context_to_evidence: z.record(z.string(), z.array(z.string())).default({}),
+});
+export type PersonaWebEvidenceMap = z.infer<typeof PersonaWebEvidenceMapSchema>;
+
+export const PersonaWebCommunitySummarySchema = z.object({
+  schema_version: z.literal(1),
+  generated_at: z.string().datetime(),
+  persona_slug: z.string().optional(),
+  target_name: z.string().optional(),
+  dominant_domains: z.array(z.string()).default([]),
+  communities: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    entity_ids: z.array(z.string()).default([]),
+    summary: z.string(),
+  })).default([]),
+});
+export type PersonaWebCommunitySummary = z.infer<typeof PersonaWebCommunitySummarySchema>;
+
 export const PersonaWebArtifactsSchema = z.object({
   entity_index_path: z.string(),
   relation_index_path: z.string(),
@@ -308,6 +347,9 @@ export const PersonaWebArtifactsSchema = z.object({
   graph_path: z.string(),
   training_seed_v3_path: z.string(),
   provenance_report_path: z.string(),
+  network_index_path: z.string().optional(),
+  evidence_map_path: z.string().optional(),
+  community_summary_path: z.string().optional(),
 });
 export type PersonaWebArtifacts = z.infer<typeof PersonaWebArtifactsSchema>;
 

@@ -1,30 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   WorkbenchService,
   WorkbenchStore,
-  settings,
 } from '../dist/testing/train-test-entry.js';
 import { buildChatEvidenceBatchFromFile } from '../dist/testing/evidence-layer-test-entry.js';
 import { buildEvidencePacks } from '../dist/testing/shard-distillation-test-entry.js';
-
-async function withTempDataDir(run) {
-  const previousDataDir = settings.get('neekoDataDir');
-  const dataDir = mkdtempSync(join(tmpdir(), 'neeko-workbench-network-'));
-  settings.set('neekoDataDir', dataDir);
-
-  try {
-    return await run(dataDir);
-  } finally {
-    if (previousDataDir) {
-      settings.set('neekoDataDir', previousDataDir);
-    }
-    rmSync(dataDir, { recursive: true, force: true });
-  }
-}
+import { withTempDataDir } from './helpers/with-temp-data-dir.mjs';
 
 function saveJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
@@ -50,7 +34,7 @@ function makeSource(id = 'source-1') {
 }
 
 test('workbench cultivation detail reads training-seed-v3 and exposes network summary', async () => {
-  await withTempDataDir(async (dataDir) => {
+  await withTempDataDir('neeko-workbench-network-', async (dataDir) => {
     const slug = 'relation-net';
     const now = '2026-04-25T10:00:00.000Z';
     const store = new WorkbenchStore(join(dataDir, 'workbench'));
@@ -112,7 +96,7 @@ test('workbench cultivation detail reads training-seed-v3 and exposes network su
 });
 
 test('workbench cultivation detail backfills persona-web artifacts from legacy training prep', async () => {
-  await withTempDataDir(async (dataDir) => {
+  await withTempDataDir('neeko-workbench-network-', async (dataDir) => {
     const slug = 'legacy-network';
     const now = '2026-04-25T12:00:00.000Z';
     const store = new WorkbenchStore(join(dataDir, 'workbench'));
@@ -217,7 +201,7 @@ test('workbench cultivation detail backfills persona-web artifacts from legacy t
 });
 
 test('private chat evidence stays private and never expands into public soul candidates', async () => {
-  await withTempDataDir(async (dataDir) => {
+  await withTempDataDir('neeko-workbench-network-', async (dataDir) => {
     const transcriptPath = join(dataDir, 'private-chat.jsonl');
     writeFileSync(transcriptPath, [
       JSON.stringify({

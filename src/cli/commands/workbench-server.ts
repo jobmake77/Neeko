@@ -105,6 +105,20 @@ function toClientSafeError(error: unknown): string {
   return 'The workbench could not finish this action right now.';
 }
 
+function formatServerError(error: unknown): string {
+  if (error instanceof Error) {
+    const stack = typeof error.stack === 'string' && error.stack.trim().length > 0
+      ? `\n${error.stack}`
+      : '';
+    return `${error.name}: ${error.message}${stack}`;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 export async function cmdWorkbenchServer(
   options: WorkbenchServerOptions = {},
   cliEntryPath = process.argv[1]
@@ -703,7 +717,7 @@ export async function cmdWorkbenchServer(
 
       writeSafeError(res, 404, 'Not found');
     } catch (error) {
-      console.error('[workbench-server]', error);
+      console.error('[workbench-server]', formatServerError(error));
       writeJson(res, 500, { error: toClientSafeError(error) });
     }
   });

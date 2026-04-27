@@ -42,6 +42,9 @@ const PERSONA_WEB_FILENAMES = {
   graph: 'persona-web-graph.json',
   trainingSeedV3: 'training-seed-v3.json',
   provenanceReport: 'persona-web-provenance-report.json',
+  networkIndex: 'persona-network-index.json',
+  evidenceMap: 'persona-evidence-map.json',
+  communitySummary: 'persona-community-summary.json',
 } as const;
 
 interface PersonaWebBuildInput {
@@ -440,6 +443,9 @@ export function writePersonaWebArtifacts(outputDir: string, result: PersonaWebBu
   const graphPath = join(outputDir, PERSONA_WEB_FILENAMES.graph);
   const trainingSeedV3Path = join(outputDir, PERSONA_WEB_FILENAMES.trainingSeedV3);
   const provenanceReportPath = join(outputDir, PERSONA_WEB_FILENAMES.provenanceReport);
+  const networkIndexPath = join(outputDir, PERSONA_WEB_FILENAMES.networkIndex);
+  const evidenceMapPath = join(outputDir, PERSONA_WEB_FILENAMES.evidenceMap);
+  const communitySummaryPath = join(outputDir, PERSONA_WEB_FILENAMES.communitySummary);
 
   writeFileSync(entityIndexPath, JSON.stringify(result.graph.entities, null, 2), 'utf-8');
   writeFileSync(relationIndexPath, JSON.stringify(result.graph.relations, null, 2), 'utf-8');
@@ -448,6 +454,9 @@ export function writePersonaWebArtifacts(outputDir: string, result: PersonaWebBu
   writeFileSync(graphPath, JSON.stringify(result.graph, null, 2), 'utf-8');
   writeFileSync(trainingSeedV3Path, JSON.stringify(result.trainingSeedV3, null, 2), 'utf-8');
   writeFileSync(provenanceReportPath, JSON.stringify(result.provenanceReport, null, 2), 'utf-8');
+  writeFileSync(networkIndexPath, JSON.stringify(buildNetworkIndex(result), null, 2), 'utf-8');
+  writeFileSync(evidenceMapPath, JSON.stringify(buildEvidenceMap(result.graph), null, 2), 'utf-8');
+  writeFileSync(communitySummaryPath, JSON.stringify(buildCommunitySummary(result), null, 2), 'utf-8');
 
   return PersonaWebArtifactsSchema.parse({
     entity_index_path: entityIndexPath,
@@ -457,6 +466,9 @@ export function writePersonaWebArtifacts(outputDir: string, result: PersonaWebBu
     graph_path: graphPath,
     training_seed_v3_path: trainingSeedV3Path,
     provenance_report_path: provenanceReportPath,
+    network_index_path: networkIndexPath,
+    evidence_map_path: evidenceMapPath,
+    community_summary_path: communitySummaryPath,
   });
 }
 
@@ -492,6 +504,15 @@ export function loadPersonaWebArtifactsFromDir(dir: string): PersonaWebArtifactB
     graph_path: join(dir, PERSONA_WEB_FILENAMES.graph),
     training_seed_v3_path: join(dir, PERSONA_WEB_FILENAMES.trainingSeedV3),
     provenance_report_path: join(dir, PERSONA_WEB_FILENAMES.provenanceReport),
+    network_index_path: existsSync(join(dir, PERSONA_WEB_FILENAMES.networkIndex))
+      ? join(dir, PERSONA_WEB_FILENAMES.networkIndex)
+      : undefined,
+    evidence_map_path: existsSync(join(dir, PERSONA_WEB_FILENAMES.evidenceMap))
+      ? join(dir, PERSONA_WEB_FILENAMES.evidenceMap)
+      : undefined,
+    community_summary_path: existsSync(join(dir, PERSONA_WEB_FILENAMES.communitySummary))
+      ? join(dir, PERSONA_WEB_FILENAMES.communitySummary)
+      : undefined,
   });
   if (!artifacts.success) return null;
   const paths = artifacts.data;
@@ -1085,6 +1106,90 @@ function summarizeGraph(graph: PersonaWebGraph): string {
     return `Persona web built from ${graph.stats.document_count} documents and ${graph.stats.evidence_count} evidence items.`;
   }
   return fragments.join(' | ');
+}
+
+function buildNetworkIndex(result: PersonaWebBuildResult): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    generated_at: result.graph.generated_at,
+    persona_slug: result.graph.persona_slug,
+    target_name: result.graph.target_name,
+    summary: summarizeGraph(result.graph),
+    dominant_domains: result.trainingSeedV3.dominant_domains,
+    entity_count: result.graph.entities.length,
+    relation_count: result.graph.relations.length,
+    context_count: result.graph.context_frames.length,
+    identity_arc_count: result.graph.identity_arcs.length,
+    top_entities: result.graph.entities.slice(0, 12).map((item) => ({
+      id: item.id,
+      canonical_name: item.canonical_name,
+      entity_type: item.entity_type,
+      salience: item.salience,
+      confidence: item.confidence,
+    })),
+    top_relations: result.graph.relations.slice(0, 12).map((item) => ({
+      id: item.id,
+      relation_type: item.relation_type,
+      summary: item.summary,
+      confidence: item.confidence,
+      source_entity_id: item.source_entity_id,
+      target_entity_id: item.target_entity_id,
+    })),
+  };
+}
+
+function buildEvidenceMap(graph: PersonaWebGraph): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    generated_at: graph.generated_at,
+    entities: graph.entities.map((item) => ({
+      id: item.id,
+      canonical_name: item.canonical_name,
+      evidence_refs: item.evidence_refs,
+    })),
+    relations: graph.relations.map((item) => ({
+      id: item.id,
+      summary: item.summary,
+      evidence_refs: item.evidence_refs,
+    })),
+    context_frames: graph.context_frames.map((item) => ({
+      id: item.id,
+      label: item.label,
+      evidence_refs: item.evidence_refs,
+    })),
+    identity_arcs: graph.identity_arcs.map((item) => ({
+      id: item.id,
+      label: item.label,
+      evidence_refs: item.evidence_refs,
+    })),
+  };
+}
+
+function buildCommunitySummary(result: PersonaWebBuildResult): Record<string, unknown> {
+  const communityEntities = result.graph.entities
+    .filter((item) => item.entity_type === 'community' || item.entity_type === 'organization' || item.entity_type === 'person')
+    .slice(0, 8);
+  const relationHints = result.trainingSeedV3.relationship_hints.slice(0, 6);
+  const summaryParts = [
+    communityEntities.length > 0
+      ? `Key people and communities: ${communityEntities.map((item) => item.canonical_name).join(', ')}.`
+      : undefined,
+    relationHints.length > 0
+      ? `Anchored social context: ${relationHints.join(' | ')}.`
+      : undefined,
+    result.trainingSeedV3.context_hints[0]
+      ? `Context focus: ${result.trainingSeedV3.context_hints[0]}.`
+      : undefined,
+  ].filter(Boolean);
+  return {
+    schema_version: 1,
+    generated_at: result.graph.generated_at,
+    persona_slug: result.graph.persona_slug,
+    target_name: result.graph.target_name,
+    summary: summaryParts.join(' ') || summarizeGraph(result.graph),
+    communities: communityEntities.map((item) => item.canonical_name),
+    relation_hints: relationHints,
+  };
 }
 
 function buildGuardrailNotes(

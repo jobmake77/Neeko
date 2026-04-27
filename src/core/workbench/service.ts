@@ -29,10 +29,11 @@ import {
 import { VideoAdapter } from '../pipeline/ingestion/video.js';
 import { AgentReachAdapter } from '../pipeline/ingestion/agentreach.js';
 import { TwitterAdapter } from '../pipeline/ingestion/twitter.js';
-import { ArticleAdapter } from '../pipeline/ingestion/article.js';
+import { ArticleAdapter, assessArticleExtractionQuality, classifySourceFailure } from '../pipeline/ingestion/article.js';
 import { enrichAttachment } from '../media/attachment-processing.js';
 import {
   AttachmentRef,
+  ChatRetrievalPlan,
   CitationItem,
   Conversation,
   ConversationBundle,
@@ -41,17 +42,24 @@ import {
   CultivationSummary,
   CultivationDetail,
   DiscoveredSourceCandidate,
+  ExtractionQualityAssessment,
   MemoryCandidate,
+  NetworkAnswerPack,
   PersonaConfig,
   PersonaDetail,
   PersonaMutationResult,
   PersonaSource,
+  PersonaSourceHealth,
   PersonaSourcePreview,
   PersonaSkillSummary,
   PersonaSummary,
   PersonaWorkbenchProfile,
   PromotionHandoff,
+  SourceFailureClass,
+  SourceIngestOutcome,
+  SourceProgressItem,
   SourcePreviewTarget,
+  SourceSyncCheckpoint,
   SourceValidationResult,
   TrainingPrepArtifact,
   SessionSummary,
@@ -183,6 +191,7 @@ export interface PersonaResponseMeta {
   retrievedMemories: MemoryNode[];
   personaDimensions: string[];
   orchestration?: ChatTurnPlan;
+  networkAnswerPack?: NetworkAnswerPack;
 }
 
 interface ChatTurnPlan extends ConversationOrchestration {}
@@ -226,52 +235,8 @@ type CultivationPhase =
   | 'ready'
   | 'error';
 
-type SourceWindowStatus = 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
-
-interface SourceProgressItem {
-  source_id?: string;
-  source_label?: string;
-  window_start?: string;
-  window_end?: string;
-  provider?: string;
-  filter_mode?: string;
-  status?: SourceWindowStatus;
-  attempt?: number;
-  started_at?: string;
-  finished_at?: string;
-  updated_at?: string;
-  duration_ms?: number;
-  result_count?: number;
-  new_count?: number;
-  matched_count?: number;
-  rejected_count?: number;
-  quarantined_count?: number;
-  error?: string;
-}
-
-interface SourceSyncProgressState {
-  handle?: string;
-  out?: string;
-  phase?: string;
-  until?: string;
-  windowDays?: number;
-  queryCount?: number;
-  count?: number;
-  updated_at?: string;
-  last_heartbeat_at?: string;
-  estimated_total_windows?: number;
-  completed_windows?: number;
-  providerStats?: Record<string, { failures?: number; empty?: number; successes?: number }>;
-  provider_stats?: Record<string, { failures?: number; empty?: number; successes?: number }>;
-  consecutive_primary_provider_failures?: number;
-  history_exhausted?: boolean;
-  provider_exhausted?: boolean;
-  collection_stop_reason?: string;
-  current_window?: SourceProgressItem;
-  recent_windows?: SourceProgressItem[];
-  last_success_window?: SourceProgressItem;
-  last_failure_window?: SourceProgressItem;
-}
+type SourceWindowStatus = NonNullable<SourceProgressItem['status']>;
+type SourceSyncProgressState = SourceSyncCheckpoint;
 
 interface ValidationSummaryTotals {
   accepted_count: number;
@@ -337,6 +302,139 @@ function readJsonFile<T>(path: string, fallback: T): T {
   }
 }
 
+function inferFailureClassFromValidation(result?: SourceValidationResult): SourceFailureClass {
+  if (!result) return 'unknown';
+  if (result.reason_code.includes('mismatch') || result.reason_code.includes('conflicting')) return 'identity_mismatch';
+  if (result.reason_code.includes('aggregator') || result.reason_code.includes('quality')) return 'content_quality';
+  return result.status === 'accepted' ? 'none' : 'unknown';
+}
+
+function buildExtractionQualityAssessment(docs: RawDocument[]): ExtractionQualityAssessment | undefined {
+  if (docs.length === 0) return undefined;
+  const assessments = docs.map((doc) => assessArticleExtractionQuality(doc));
+  const aggregateScore = assessments.reduce((sum, item) => sum + item.score, 0) / assessments.length;
+  const mergedIssueCodes = Array.from(new Set(assessments.flatMap((item) => item.issue_codes))).slice(0, 8);
+  const maxSignalCount = Math.max(...assessments.map((item) => item.signal_count), 0);
+  const contentLength = Math.max(...assessments.map((item) => item.content_length), 0);
+  const excerptCount = Math.max(...assessments.map((item) => item.excerpt_count), 0);
+  const status = aggregateScore >= 0.58
+    ? 'accepted'
+    : aggregateScore >= 0.34
+      ? 'weak'
+      : 'rejected';
+  const summary = status === 'accepted'
+    ? '抽取质量通过，可继续用于来源校验与摄取。'
+    : status === 'weak'
+      ? '抽取结果可读，但正文结构或有效信号偏弱。'
+      : '抽取质量不足，建议阻止继续摄取。';
+  return {
+    status,
+    summary,
+    score: Math.max(0, Math.min(1, aggregateScore)),
+    content_length: contentLength,
+    excerpt_count: excerptCount,
+    signal_count: maxSignalCount,
+    issue_codes: mergedIssueCodes,
+  };
+}
+
+function buildSourceHealth(input: {
+  status: PersonaSourceHealth['status'];
+  failureClass?: SourceFailureClass;
+  summary: string;
+  checkedAt?: string;
+  retryAfter?: string;
+  consecutiveFailures?: number;
+  cooldownMinutes?: number;
+  lastSuccessAt?: string;
+  provider?: string;
+}): PersonaSourceHealth {
+  return {
+    status: input.status,
+    failure_class: input.failureClass ?? (input.status === 'healthy' ? 'none' : 'unknown'),
+    summary: input.summary,
+    checked_at: input.checkedAt,
+    retry_after: input.retryAfter,
+    consecutive_failures: input.consecutiveFailures,
+    cooldown_minutes: input.cooldownMinutes,
+    last_success_at: input.lastSuccessAt,
+    provider: input.provider,
+  };
+}
+
+function buildSourceIngestOutcome(input: {
+  status: SourceIngestOutcome['status'];
+  summary: string;
+  rawDocumentCount: number;
+  cleanDocumentCount: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  quarantinedCount: number;
+  validation?: SourceValidationResult;
+  qualityAssessment?: ExtractionQualityAssessment;
+  health?: PersonaSourceHealth;
+  failureClass?: SourceFailureClass;
+}): SourceIngestOutcome {
+  return {
+    status: input.status,
+    failure_class: input.failureClass
+      ?? input.health?.failure_class
+      ?? inferFailureClassFromValidation(input.validation)
+      ?? (input.status === 'accepted' ? 'none' : 'unknown'),
+    summary: input.summary,
+    raw_document_count: Math.max(0, input.rawDocumentCount),
+    clean_document_count: Math.max(0, input.cleanDocumentCount),
+    accepted_count: Math.max(0, input.acceptedCount),
+    rejected_count: Math.max(0, input.rejectedCount),
+    quarantined_count: Math.max(0, input.quarantinedCount),
+    confidence: input.validation?.confidence,
+    identity_match: input.validation?.identity_match,
+    source_integrity: input.validation?.source_integrity,
+    reason_code: input.validation?.reason_code,
+    evidence: input.validation?.evidence ?? [],
+    quality_assessment: input.qualityAssessment,
+    health: input.health,
+  };
+}
+
+function normalizeSourceSyncCheckpoint(raw: Record<string, unknown> | null): SourceSyncCheckpoint | null {
+  if (!raw) return null;
+  const recentWindows = asArray(raw.recent_windows).map((item) => item as unknown as SourceProgressItem);
+  return {
+    schema_version: 1,
+    handle: typeof raw.handle === 'string' ? raw.handle : undefined,
+    out: typeof raw.out === 'string' ? raw.out : undefined,
+    phase: typeof raw.phase === 'string' ? raw.phase : undefined,
+    source_label: typeof raw.source_label === 'string' ? raw.source_label : undefined,
+    until: typeof raw.until === 'string' ? raw.until : undefined,
+    window_days: Number.isFinite(Number(raw.window_days ?? raw.windowDays)) ? Number(raw.window_days ?? raw.windowDays) : undefined,
+    query_count: Number.isFinite(Number(raw.query_count ?? raw.queryCount)) ? Number(raw.query_count ?? raw.queryCount) : undefined,
+    count: Number.isFinite(Number(raw.count)) ? Number(raw.count) : undefined,
+    updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : undefined,
+    last_heartbeat_at: typeof raw.last_heartbeat_at === 'string' ? raw.last_heartbeat_at : undefined,
+    estimated_total_windows: Number.isFinite(Number(raw.estimated_total_windows)) ? Number(raw.estimated_total_windows) : undefined,
+    completed_windows: Number.isFinite(Number(raw.completed_windows)) ? Number(raw.completed_windows) : undefined,
+    zero_streak: Number.isFinite(Number(raw.zero_streak ?? raw.zeroStreak)) ? Number(raw.zero_streak ?? raw.zeroStreak) : undefined,
+    empty_days_past_oldest: Number.isFinite(Number(raw.empty_days_past_oldest ?? raw.emptyDaysPastOldest))
+      ? Number(raw.empty_days_past_oldest ?? raw.emptyDaysPastOldest)
+      : undefined,
+    history_exhausted: raw.history_exhausted === true,
+    provider_exhausted: raw.provider_exhausted === true,
+    collection_stop_reason: typeof raw.collection_stop_reason === 'string' ? raw.collection_stop_reason : undefined,
+    current_window: raw.current_window as SourceProgressItem | undefined,
+    recent_windows: recentWindows,
+    last_success_window: raw.last_success_window as SourceProgressItem | undefined,
+    last_failure_window: raw.last_failure_window as SourceProgressItem | undefined,
+    health: raw.health as PersonaSourceHealth | undefined,
+    latest_outcome: raw.latest_outcome as SourceIngestOutcome | undefined,
+    settle_summary: typeof raw.settle_summary === 'string' ? raw.settle_summary : undefined,
+    provider_stats: (raw.provider_stats ?? raw.providerStats) as Record<string, unknown> | undefined,
+    consecutive_primary_provider_failures: Number.isFinite(Number(raw.consecutive_primary_provider_failures ?? raw.consecutivePrimaryProviderFailures))
+      ? Number(raw.consecutive_primary_provider_failures ?? raw.consecutivePrimaryProviderFailures)
+      : undefined,
+  };
+}
+
 interface PersonaNetworkSummary {
   entity_count: number;
   relation_count: number;
@@ -378,6 +476,19 @@ function normalizeDomainLabel(value: unknown): string | null {
 
 function readPersonaNetworkSummary(slug: string, pendingCandidates = 0): PersonaNetworkSummary {
   const personaDir = settings.getPersonaDir(slug);
+  const networkIndex = readJsonFile<Record<string, unknown>>(join(personaDir, 'persona-network-index.json'), {});
+  if (Number.isFinite(Number(networkIndex.entity_count)) || Number.isFinite(Number(networkIndex.relation_count))) {
+    return {
+      entity_count: Math.max(0, Number(networkIndex.entity_count ?? 0)),
+      relation_count: Math.max(0, Number(networkIndex.relation_count ?? 0)),
+      context_pack_count: Math.max(0, Number(networkIndex.context_count ?? 0)),
+      pending_candidate_count: pendingCandidates,
+      dominant_domains: Array.isArray(networkIndex.dominant_domains)
+        ? networkIndex.dominant_domains.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 8)
+        : [],
+      arc_count: Math.max(0, Number(networkIndex.identity_arc_count ?? 0)),
+    };
+  }
   const entityIndex = existsSync(join(personaDir, 'persona-web-entities.json'))
     ? readJsonFile<unknown>(join(personaDir, 'persona-web-entities.json'), [])
     : readJsonFile<unknown>(join(personaDir, 'entity-index.json'), {});
@@ -417,14 +528,19 @@ function readPersonaNetworkSummary(slug: string, pendingCandidates = 0): Persona
 function readPersonaNetworkPromptContext(slug: string): PersonaNetworkPromptContext {
   const personaDir = settings.getPersonaDir(slug);
   const trainingSeedV3 = readJsonFile<Record<string, unknown>>(join(personaDir, 'training-seed-v3.json'), {});
+  const communitySummary = readJsonFile<Record<string, unknown>>(join(personaDir, 'persona-community-summary.json'), {});
   const list = (value: unknown): string[] => Array.isArray(value)
     ? value.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 8)
     : [];
+  const communityHints = [
+    typeof communitySummary.summary === 'string' ? communitySummary.summary : undefined,
+    ...list(communitySummary.communities),
+  ].filter((item): item is string => Boolean(item));
   return {
     topics: list(trainingSeedV3.topics),
     signals: list(trainingSeedV3.signals),
     relationship_hints: list(trainingSeedV3.relationship_hints),
-    context_hints: list(trainingSeedV3.context_hints),
+    context_hints: dedupeStrings([...list(trainingSeedV3.context_hints), ...communityHints]).slice(0, 8),
     identity_hints: list(trainingSeedV3.identity_hints),
     provenance_guardrails: list(trainingSeedV3.provenance_guardrails),
   };
@@ -440,6 +556,9 @@ function mirrorPersonaWebArtifactsToPersonaDir(
     graph_path?: string;
     training_seed_v3_path?: string;
     provenance_report_path?: string;
+    network_index_path?: string;
+    evidence_map_path?: string;
+    community_summary_path?: string;
   } | null,
 ): void {
   if (!artifacts) return;
@@ -457,6 +576,9 @@ function mirrorPersonaWebArtifactsToPersonaDir(
     [artifacts.graph_path, 'persona-web-graph.json'],
     [artifacts.training_seed_v3_path, 'training-seed-v3.json'],
     [artifacts.provenance_report_path, 'persona-web-provenance-report.json'],
+    [artifacts.network_index_path, 'persona-network-index.json'],
+    [artifacts.evidence_map_path, 'persona-evidence-map.json'],
+    [artifacts.community_summary_path, 'persona-community-summary.json'],
   ];
   for (const [sourcePath, filename] of copies) {
     if (!sourcePath || !existsSync(sourcePath)) continue;
@@ -478,6 +600,9 @@ function hasMirroredPersonaWebArtifacts(personaDir: string): boolean {
     'relation-graph.json',
     'context-packs.json',
     'identity-arcs.json',
+    'persona-network-index.json',
+    'persona-evidence-map.json',
+    'persona-community-summary.json',
   ];
   if (!mirrorCandidates.every((filename) => existsSync(join(personaDir, filename)))) {
     return false;
@@ -520,6 +645,31 @@ function normalizeStringArray(values: Array<string | undefined> | undefined): st
       .map((item) => String(item ?? '').trim())
       .filter(Boolean)
   ));
+}
+
+function dedupeStrings(values: Array<string | undefined>): string[] {
+  return Array.from(new Set(
+    values
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+  ));
+}
+
+function extractLexicalTerms(query: string): string[] {
+  const asciiTerms = (query.toLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? [])
+    .filter((term) => !['what', 'have', 'with', 'about', 'open', 'source', 'project', 'projects'].includes(term));
+  const cjkTerms = (query.match(/[\u4e00-\u9fff]{2,12}/g) ?? [])
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2 && !['你有什么', '可以给我', '讲解一下', '这个项目', '有哪些项目'].includes(term));
+  return Array.from(new Set([...asciiTerms, ...cjkTerms]));
+}
+
+function computeLexicalOverlap(query: string, haystack: string): number {
+  const terms = extractLexicalTerms(query);
+  if (terms.length === 0) return 0;
+  const normalizedHaystack = haystack.toLowerCase();
+  const hits = terms.filter((term) => normalizedHaystack.includes(term.toLowerCase())).length;
+  return hits / terms.length;
 }
 
 function normalizePersonaSource(input: PersonaSourceInput): PersonaSource {
@@ -1436,6 +1586,186 @@ function shouldUseProjectFactFallback(userMessage: string, answer: string, hits:
   return !responseContainsProjectLabel(answer, hits);
 }
 
+function isRelationQuery(query: string): boolean {
+  return detectChatKnowledgeLayer(query) === 'relation';
+}
+
+function readPersonaEvidenceMap(slug: string): Record<string, unknown> {
+  return readJsonFile<Record<string, unknown>>(join(settings.getPersonaDir(slug), 'persona-evidence-map.json'), {});
+}
+
+function readPersonaCommunitySummary(slug: string): { summary?: string; communities: string[] } {
+  const raw = readJsonFile<Record<string, unknown>>(join(settings.getPersonaDir(slug), 'persona-community-summary.json'), {});
+  return {
+    summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+    communities: Array.isArray(raw.communities)
+      ? raw.communities.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 8)
+      : [],
+  };
+}
+
+function buildRelationFallbacks(
+  query: string,
+  networkPromptContext: PersonaNetworkPromptContext,
+  communitySummary: ReturnType<typeof readPersonaCommunitySummary>,
+): string[] {
+  if (!isRelationQuery(query)) return [];
+  const terms = extractLexicalTerms(query);
+  const candidates = dedupeStrings([
+    ...networkPromptContext.relationship_hints,
+    ...networkPromptContext.context_hints,
+    communitySummary.summary,
+    ...communitySummary.communities,
+  ]);
+  return candidates
+    .map((item) => ({
+      item,
+      score: terms.length === 0
+        ? 1
+        : computeLexicalOverlap(query, item) + (/with|合作|团队|关联|朋友|组织|company/i.test(item) ? 0.4 : 0),
+    }))
+    .filter((item) => item.score > 0.1)
+    .sort((a, b) => b.score - a.score || a.item.localeCompare(b.item))
+    .slice(0, 4)
+    .map((item) => item.item);
+}
+
+function buildEvidenceMapHits(query: string, evidenceMap: Record<string, unknown>): string[] {
+  const terms = extractLexicalTerms(query);
+  if (terms.length === 0) return [];
+  const buckets = [
+    ...asArray(evidenceMap.entities),
+    ...asArray(evidenceMap.relations),
+    ...asArray(evidenceMap.context_frames),
+    ...asArray(evidenceMap.identity_arcs),
+  ];
+  return buckets
+    .map((item) => {
+      const label = String(item.summary ?? item.canonical_name ?? item.label ?? '').trim();
+      return {
+        label,
+        score: computeLexicalOverlap(query, label),
+      };
+    })
+    .filter((item) => item.label && item.score > 0)
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))
+    .slice(0, 5)
+    .map((item) => item.label);
+}
+
+function buildChatRetrievalPlan(
+  userMessage: string,
+  attachments: AttachmentRef[],
+  networkSummary: PersonaNetworkSummary,
+): ChatRetrievalPlan {
+  const knowledgeLayer = detectChatKnowledgeLayer(userMessage);
+  return {
+    knowledge_layer: knowledgeLayer,
+    use_memory: attachments.length === 0,
+    use_network: networkSummary.entity_count > 0 || networkSummary.relation_count > 0 || networkSummary.context_pack_count > 0,
+    use_project_facts: knowledgeLayer === 'project',
+    use_relation_fallback: knowledgeLayer === 'relation',
+    use_community_summary: knowledgeLayer === 'relation' || knowledgeLayer === 'background' || knowledgeLayer === 'hybrid',
+    use_attachments: attachments.length > 0,
+    grounding_required: true,
+    rationale: knowledgeLayer === 'project'
+      ? 'Project facts should override generic persona memories for this turn.'
+      : knowledgeLayer === 'relation'
+        ? 'Relation/context evidence should anchor collaborator and organization claims.'
+        : 'Use persona memories first, then network/background context when it adds grounded detail.',
+  };
+}
+
+function buildRelationFallbackReply(pack: NetworkAnswerPack): string {
+  const lines = [
+    '基于我公开提到过的关系与上下文，我能稳妥确认的是：',
+    ...pack.relation_fallbacks.slice(0, 4).map((item) => `- ${item}`),
+  ];
+  if (pack.community_summary) {
+    lines.push(`补充背景：${pack.community_summary}`);
+  }
+  return lines.join('\n');
+}
+
+function buildNetworkAnswerPack(input: {
+  retrievalPlan: ChatRetrievalPlan;
+  networkSummary: PersonaNetworkSummary;
+  projectEvidenceHits: ProjectEvidenceHit[];
+  relationFallbacks: string[];
+  evidenceMapHits: string[];
+  communitySummary?: string;
+}): NetworkAnswerPack {
+  return {
+    retrieval_plan: input.retrievalPlan,
+    network_summary: input.networkSummary,
+    project_hits: input.projectEvidenceHits.map((item) => ({
+      label: item.label,
+      snippet: item.snippet,
+      source_type: item.sourceType,
+      source_url: item.sourceUrl,
+      published_at: safeIso(item.publishedAt),
+      score: item.score,
+    })),
+    relation_fallbacks: input.relationFallbacks,
+    evidence_map_hits: input.evidenceMapHits,
+    community_summary: input.communitySummary,
+    grounding_status: 'grounded',
+    grounding_summary: 'Grounding check pending.',
+    missing_signals: [],
+  };
+}
+
+function finalizeNetworkAnswerPack(
+  pack: NetworkAnswerPack,
+  userMessage: string,
+  answer: string,
+): NetworkAnswerPack {
+  const missingSignals: string[] = [];
+  let groundingStatus: NetworkAnswerPack['grounding_status'] = 'grounded';
+
+  if (isProjectFactQuery(userMessage) && pack.project_hits.length > 0 && !responseContainsProjectLabel(answer, pack.project_hits.map((item) => ({
+    label: item.label,
+    snippet: item.snippet,
+    publishedAt: item.published_at,
+    sourceType: item.source_type as RawDocument['source_type'],
+    sourceUrl: item.source_url,
+    score: item.score,
+  })))) {
+    groundingStatus = 'fallback';
+    missingSignals.push('project_fact_anchor');
+  }
+
+  if (isRelationQuery(userMessage) && pack.relation_fallbacks.length > 0) {
+    const matched = pack.relation_fallbacks.some((item) => answer.toLowerCase().includes(item.toLowerCase()));
+    if (!matched) {
+      groundingStatus = groundingStatus === 'fallback' ? 'fallback' : 'partial';
+      missingSignals.push('relation_anchor');
+    }
+  }
+
+  return {
+    ...pack,
+    grounding_status: groundingStatus,
+    grounding_summary: groundingStatus === 'grounded'
+      ? 'The answer stayed aligned with the selected grounded sources.'
+      : groundingStatus === 'fallback'
+        ? 'The drafted answer missed one or more required grounded anchors, so fallback wording is recommended.'
+        : 'The drafted answer is partially grounded but missed some relation/context anchors.',
+    missing_signals: missingSignals,
+  };
+}
+
+function sanitizeNetworkAnswerPack(pack: NetworkAnswerPack | undefined): NetworkAnswerPack | undefined {
+  if (!pack) return undefined;
+  return {
+    ...pack,
+    project_hits: pack.project_hits.map((item) => ({
+      ...item,
+      published_at: safeIso(item.published_at),
+    })),
+  };
+}
+
 function buildNetworkPriorityContext(
   knowledgeLayer: ChatKnowledgeLayer,
   networkSummary: PersonaNetworkSummary,
@@ -1502,6 +1832,46 @@ function buildNetworkPriorityContext(
     lines.push('- Do not deny having projects when anchored evidence exists.');
   }
 
+  return lines.join('\n');
+}
+
+function responseContainsRelationHint(text: string, hints: string[]): boolean {
+  const normalized = text.toLowerCase();
+  return hints.some((hint) => {
+    const parts = hint.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/).filter((item) => item.length >= 2);
+    return parts.some((part) => normalized.includes(part));
+  });
+}
+
+function shouldUseRelationFallback(userMessage: string, answer: string, pack: NetworkAnswerPack): boolean {
+  if (detectChatKnowledgeLayer(userMessage) !== 'relation' || pack.relation_fallbacks.length === 0) return false;
+  if (isPersonaMetaDeflection(answer)) return true;
+  return !responseContainsRelationHint(answer, pack.relation_fallbacks);
+}
+
+function buildNetworkAnswerContext(pack: NetworkAnswerPack): string {
+  const lines = [
+    `Retrieval plan: layer=${pack.retrieval_plan.knowledge_layer}; memory=${pack.retrieval_plan.use_memory}; network=${pack.retrieval_plan.use_network}.`,
+    `Grounding status: ${pack.grounding_status}. ${pack.grounding_summary}`,
+  ];
+  if (pack.project_hits.length > 0) {
+    lines.push('Project facts:');
+    for (const item of pack.project_hits.slice(0, 4)) {
+      lines.push(`- ${item.label}: ${item.snippet}`);
+    }
+  }
+  if (pack.relation_fallbacks.length > 0) {
+    lines.push('Anchored relation hints:');
+    for (const item of pack.relation_fallbacks.slice(0, 4)) {
+      lines.push(`- ${item}`);
+    }
+  }
+  if (pack.community_summary) {
+    lines.push(`Community summary: ${pack.community_summary}`);
+  }
+  if (pack.evidence_map_hits.length > 0) {
+    lines.push(`Evidence map hits: ${pack.evidence_map_hits.join(', ')}`);
+  }
   return lines.join('\n');
 }
 
@@ -2502,6 +2872,12 @@ export class WorkbenchService {
     });
     const targets = this.resolveSourceTargets(source).slice(0, 3);
     if (!this.isRemoteSource(source)) {
+      const health = buildSourceHealth({
+        status: 'blocked',
+        failureClass: 'unsupported',
+        summary: '当前来源是本地上传素材，暂不支持在线抓取预览。',
+        checkedAt: new Date().toISOString(),
+      });
       return {
         source: {
           id: source.id,
@@ -2512,7 +2888,19 @@ export class WorkbenchService {
           links: source.links ?? [],
         },
         status: 'error',
-        summary: '当前来源是本地上传素材，暂不支持在线抓取预览。',
+        summary: health.summary,
+        health,
+        latest_outcome: buildSourceIngestOutcome({
+          status: 'error',
+          summary: health.summary,
+          rawDocumentCount: 0,
+          cleanDocumentCount: 0,
+          acceptedCount: 0,
+          rejectedCount: 0,
+          quarantinedCount: 0,
+          health,
+          failureClass: health.failure_class,
+        }),
         target_results: [],
       };
     }
@@ -2521,6 +2909,7 @@ export class WorkbenchService {
     }
 
     const targetResults: SourcePreviewTarget[] = [];
+    const previewCheckedAt = new Date().toISOString();
     for (const target of targets) {
       try {
         const docs = await this.withPreviewTimeout(
@@ -2529,11 +2918,29 @@ export class WorkbenchService {
           `source preview ${target}`,
         );
         if (docs.length === 0) {
+          const health = buildSourceHealth({
+            status: 'degraded',
+            failureClass: 'content_empty',
+            summary: '抓取已完成，但当前没有可预览的内容。',
+            checkedAt: previewCheckedAt,
+          });
           targetResults.push({
             target,
             status: 'error',
-            summary: '抓取已完成，但当前没有可预览的内容。',
+            summary: health.summary,
             evidence: [],
+            health,
+            latest_outcome: buildSourceIngestOutcome({
+              status: 'error',
+              summary: health.summary,
+              rawDocumentCount: 0,
+              cleanDocumentCount: 0,
+              acceptedCount: 0,
+              rejectedCount: 0,
+              quarantinedCount: 0,
+              health,
+              failureClass: health.failure_class,
+            }),
           });
           continue;
         }
@@ -2541,6 +2948,7 @@ export class WorkbenchService {
           ? { ...source, handle_or_url: target }
           : source;
         const validation = validateRemoteSourceDocumentsForPersona(personaName, previewSource, docs);
+        const qualityAssessment = buildExtractionQualityAssessment(docs);
         const selectedIndex = validation.results.findIndex((item) => item.status === 'accepted');
         const fallbackIndex = selectedIndex >= 0
           ? selectedIndex
@@ -2550,6 +2958,31 @@ export class WorkbenchService {
           : 0;
         const selectedDoc = docs[resultIndex];
         const selectedValidation = validation.results[resultIndex];
+        const failureClass = inferFailureClassFromValidation(selectedValidation);
+        const health = buildSourceHealth({
+          status: selectedValidation?.status === 'accepted'
+            ? 'healthy'
+            : selectedValidation?.status === 'quarantined'
+              ? 'degraded'
+              : 'blocked',
+          failureClass: selectedValidation?.status === 'accepted' ? 'none' : failureClass,
+          summary: selectedValidation?.summary ?? '当前抓取内容无法完成归属判断。',
+          checkedAt: previewCheckedAt,
+          provider: readMetadataString(selectedDoc, 'fetched_via') || selectedDoc.source_platform,
+        });
+        const latestOutcome = buildSourceIngestOutcome({
+          status: selectedValidation?.status ?? 'error',
+          summary: selectedValidation?.summary ?? '当前抓取内容无法完成归属判断。',
+          rawDocumentCount: docs.length,
+          cleanDocumentCount: validation.accepted.length,
+          acceptedCount: validation.summary.accepted_count,
+          rejectedCount: validation.summary.rejected_count,
+          quarantinedCount: validation.summary.quarantined_count,
+          validation: selectedValidation,
+          qualityAssessment,
+          health,
+          failureClass: selectedValidation?.status === 'accepted' ? 'none' : failureClass,
+        });
         targetResults.push({
           target,
           status: selectedValidation?.status ?? 'error',
@@ -2564,14 +2997,36 @@ export class WorkbenchService {
           source_integrity: selectedValidation?.source_integrity,
           reason_code: selectedValidation?.reason_code,
           evidence: selectedValidation?.evidence ?? [],
+          health,
+          latest_outcome: latestOutcome,
+          quality_assessment: qualityAssessment,
         });
       } catch (error) {
+        const failureClass = classifySourceFailure(error);
+        const health = buildSourceHealth({
+          status: failureClass === 'network_unreachable' || failureClass === 'timeout' ? 'cooldown' : 'degraded',
+          failureClass,
+          summary: '当前来源暂时无法完成抓取预览。',
+          checkedAt: previewCheckedAt,
+        });
         targetResults.push({
           target,
           status: 'error',
-          summary: '当前来源暂时无法完成抓取预览。',
+          summary: health.summary,
           error: String(error instanceof Error ? error.message : error).slice(0, 180),
           evidence: [],
+          health,
+          latest_outcome: buildSourceIngestOutcome({
+            status: 'error',
+            summary: health.summary,
+            rawDocumentCount: 0,
+            cleanDocumentCount: 0,
+            acceptedCount: 0,
+            rejectedCount: 0,
+            quarantinedCount: 0,
+            health,
+            failureClass,
+          }),
         });
       }
     }
@@ -2589,8 +3044,27 @@ export class WorkbenchService {
       : overallStatus === 'quarantined'
         ? '当前来源抓到了内容，但归属信号不足，建议先人工确认。'
         : overallStatus === 'rejected'
-          ? '当前来源内容与目标明显不一致，建议不要纳入培养。'
-          : '当前来源暂时无法给出有效预览，请稍后重试。';
+        ? '当前来源内容与目标明显不一致，建议不要纳入培养。'
+        : '当前来源暂时无法给出有效预览，请稍后重试。';
+
+    const previewHealth = targetResults.find((item) => item.health)?.health ?? buildSourceHealth({
+      status: overallStatus === 'accepted' ? 'healthy' : overallStatus === 'quarantined' ? 'degraded' : 'blocked',
+      failureClass: overallStatus === 'accepted' ? 'none' : 'unknown',
+      summary,
+      checkedAt: previewCheckedAt,
+    });
+    const previewOutcome = targetResults.find((item) => item.latest_outcome)?.latest_outcome ?? buildSourceIngestOutcome({
+      status: overallStatus,
+      summary,
+      rawDocumentCount: 0,
+      cleanDocumentCount: 0,
+      acceptedCount: targetResults.filter((item) => item.status === 'accepted').length,
+      rejectedCount: targetResults.filter((item) => item.status === 'rejected').length,
+      quarantinedCount: targetResults.filter((item) => item.status === 'quarantined').length,
+      health: previewHealth,
+      failureClass: previewHealth.failure_class,
+    });
+    const previewQuality = targetResults.find((item) => item.quality_assessment)?.quality_assessment;
 
     return {
       source: {
@@ -2603,6 +3077,9 @@ export class WorkbenchService {
       },
       status: overallStatus,
       summary,
+      health: previewHealth,
+      latest_outcome: previewOutcome,
+      quality_assessment: previewQuality,
       target_results: targetResults,
     };
   }
@@ -2962,6 +3439,7 @@ export class WorkbenchService {
       writeback_candidate_ids: candidates.map((item) => item.id),
       attachments: [],
       orchestration: response.orchestration,
+      network_answer_pack: sanitizeNetworkAnswerPack(response.networkAnswerPack),
     };
 
     this.store.appendMessage(assistantMessage);
@@ -3292,6 +3770,34 @@ export class WorkbenchService {
 
     const docs = convertEvidenceItemsToDocuments(batch.items, sourceDocs);
     const validation = this.validateImportedEvidenceDocs(input.personaSlug, input.sourceKind, docs, manifest, input.sourcePath);
+    const qualityAssessment = buildExtractionQualityAssessment(docs);
+    const checkedAt = new Date().toISOString();
+    const primaryValidation = validation.results.find((item) => item.status === 'accepted')
+      ?? validation.results.find((item) => item.status === 'quarantined')
+      ?? validation.results[0];
+    const health = buildSourceHealth({
+      status: validation.accepted.length > 0
+        ? 'healthy'
+        : validation.quarantined.length > 0
+          ? 'degraded'
+          : 'blocked',
+      failureClass: validation.accepted.length > 0 ? 'none' : inferFailureClassFromValidation(primaryValidation),
+      summary: validation.summary.latest_summary ?? buildEvidenceImportSummary(input.sourceKind, batch.stats),
+      checkedAt,
+    });
+    const latestOutcome = buildSourceIngestOutcome({
+      status: validation.accepted.length > 0 ? 'accepted' : validation.quarantined.length > 0 ? 'quarantined' : 'error',
+      summary: validation.summary.latest_summary ?? buildEvidenceImportSummary(input.sourceKind, batch.stats),
+      rawDocumentCount: docs.length,
+      cleanDocumentCount: validation.accepted.length,
+      acceptedCount: validation.summary.accepted_count,
+      rejectedCount: validation.summary.rejected_count,
+      quarantinedCount: validation.summary.quarantined_count,
+      validation: primaryValidation,
+      qualityAssessment,
+      health,
+      failureClass: health.failure_class,
+    });
     const artifacts = writeEvidenceArtifacts(importDir, batch, manifest);
     const documentsPath = join(importDir, 'documents.json');
     writeFileSync(documentsPath, JSON.stringify(validation.accepted, null, 2), 'utf-8');
@@ -3316,6 +3822,9 @@ export class WorkbenchService {
         ...batch.stats,
         raw_messages: docs.length,
       },
+      health,
+      latest_outcome: latestOutcome,
+      quality_assessment: qualityAssessment,
       artifacts: {
         ...artifacts,
         documents_path: documentsPath,
@@ -4401,6 +4910,7 @@ export class WorkbenchService {
     forceRemote: boolean
   ): Promise<WorkbenchEvidenceImport | null> {
     const now = new Date();
+    const checkedAt = now.toISOString();
     const checkInterval = (config.update_policy.check_interval_minutes ?? 60) * 60 * 1000;
     if (!forceRemote && source.last_synced_at) {
       const last = new Date(source.last_synced_at).getTime();
@@ -4419,6 +4929,8 @@ export class WorkbenchService {
         last_synced_at: source.last_synced_at,
         status: 'error',
         summary: hostFailureCooldown.summary,
+        health: hostFailureCooldown.health,
+        latest_outcome: hostFailureCooldown.outcome,
       });
       return null;
     }
@@ -4516,10 +5028,29 @@ export class WorkbenchService {
         }
         docs = dedupeRawDocuments(mergedDocs);
         if (docs.length === 0 && targetFetchFailed) {
+          const failureClass = classifySourceFailure(lastTargetError ?? 'source fetch failed');
+          const health = buildSourceHealth({
+            status: failureClass === 'network_unreachable' || failureClass === 'timeout' ? 'cooldown' : 'degraded',
+            failureClass,
+            summary: `Source fetch failed: ${lastTargetError ?? 'unknown error'}`,
+            checkedAt,
+          });
           this.touchSourceSyncState(slug, config, source.id, {
             last_synced_at: now.toISOString(),
             status: 'error',
-            summary: `Source fetch failed: ${lastTargetError ?? 'unknown error'}`,
+            summary: health.summary,
+            health,
+            latest_outcome: buildSourceIngestOutcome({
+              status: 'error',
+              summary: health.summary,
+              rawDocumentCount: 0,
+              cleanDocumentCount: 0,
+              acceptedCount: 0,
+              rejectedCount: 0,
+              quarantinedCount: 0,
+              health,
+              failureClass,
+            }),
           });
           this.clearSyncOperation(slug);
           return null;
@@ -4528,10 +5059,28 @@ export class WorkbenchService {
 
       if (docs.length === 0) {
         this.appendPersonaRunLog(slug, `source ${describeSourceLabel(source)} produced no new documents`, '当前窗口已完成，但没有新增素材');
+        const health = buildSourceHealth({
+          status: 'healthy',
+          failureClass: 'none',
+          summary: 'No new source content.',
+          checkedAt,
+        });
         this.touchSourceSyncState(slug, config, source.id, {
           last_synced_at: now.toISOString(),
           status: 'ready',
-          summary: 'No new source content.',
+          summary: health.summary,
+          health,
+          latest_outcome: buildSourceIngestOutcome({
+            status: 'accepted',
+            summary: health.summary,
+            rawDocumentCount: 0,
+            cleanDocumentCount: 0,
+            acceptedCount: 0,
+            rejectedCount: 0,
+            quarantinedCount: 0,
+            health,
+            failureClass: 'none',
+          }),
         });
         this.clearSyncOperation(slug);
         return null;
@@ -4551,6 +5100,7 @@ export class WorkbenchService {
         },
       }));
       const validation = this.validateRemoteSourceDocuments(config.name, source, docs);
+      const qualityAssessment = buildExtractionQualityAssessment(docs);
       const acceptedDocs = validation.accepted;
       const cacheReuse = this.summarizeCacheReuseDocuments(acceptedDocs, describeSourceLabel(source));
       if (validation.rejected.length > 0 || validation.quarantined.length > 0) {
@@ -4561,10 +5111,36 @@ export class WorkbenchService {
         );
       }
       if (acceptedDocs.length === 0) {
+        const primaryValidation = validation.results.find((item) => item.status === 'rejected')
+          ?? validation.results.find((item) => item.status === 'quarantined')
+          ?? validation.results[0];
+        const health = buildSourceHealth({
+          status: validation.rejected.length > 0 ? 'blocked' : 'degraded',
+          failureClass: inferFailureClassFromValidation(primaryValidation),
+          summary: validation.summary.latest_summary ?? '来源未通过校验，未进入正式培养。',
+          checkedAt,
+          provider: sourcePlatform,
+        });
+        const latestOutcome = buildSourceIngestOutcome({
+          status: validation.rejected.length > 0 ? 'rejected' : 'quarantined',
+          summary: validation.summary.latest_summary ?? '来源未通过校验，未进入正式培养。',
+          rawDocumentCount: docs.length,
+          cleanDocumentCount: 0,
+          acceptedCount: validation.summary.accepted_count,
+          rejectedCount: validation.summary.rejected_count,
+          quarantinedCount: validation.summary.quarantined_count,
+          validation: primaryValidation,
+          qualityAssessment,
+          health,
+          failureClass: health.failure_class,
+        });
         this.touchSourceSyncState(slug, config, source.id, {
           last_synced_at: now.toISOString(),
           status: validation.rejected.length > 0 ? 'error' : 'ready',
-          summary: validation.summary.latest_summary ?? '来源未通过校验，未进入正式培养。',
+          summary: latestOutcome.summary,
+          health,
+          latest_outcome: latestOutcome,
+          quality_assessment: qualityAssessment,
         });
         this.clearSyncOperation(slug);
         return this.store.saveEvidenceImport({
@@ -4598,6 +5174,9 @@ export class WorkbenchService {
             scene_summary_path: '',
             documents_path: '',
           },
+          health,
+          latest_outcome: latestOutcome,
+          quality_assessment: qualityAssessment,
           created_at: now.toISOString(),
           updated_at: now.toISOString(),
         });
@@ -4607,10 +5186,33 @@ export class WorkbenchService {
         .update(JSON.stringify(acceptedDocs.map((item) => [item.source_url, item.published_at, item.content.slice(0, 120)])))
         .digest('hex');
       if (source.last_cursor && source.last_cursor === cursor) {
+        const acceptedValidation = validation.results.find((item) => item.status === 'accepted') ?? validation.results[0];
+        const health = buildSourceHealth({
+          status: 'healthy',
+          failureClass: 'none',
+          summary: 'No source delta detected.',
+          checkedAt,
+          provider: sourcePlatform,
+        });
         this.touchSourceSyncState(slug, config, source.id, {
           last_synced_at: now.toISOString(),
           status: 'ready',
-          summary: 'No source delta detected.',
+          summary: health.summary,
+          health,
+          latest_outcome: buildSourceIngestOutcome({
+            status: 'accepted',
+            summary: health.summary,
+            rawDocumentCount: docs.length,
+            cleanDocumentCount: acceptedDocs.length,
+            acceptedCount: validation.summary.accepted_count,
+            rejectedCount: validation.summary.rejected_count,
+            quarantinedCount: validation.summary.quarantined_count,
+            validation: acceptedValidation,
+            qualityAssessment,
+            health,
+            failureClass: 'none',
+          }),
+          quality_assessment: qualityAssessment,
         });
         this.clearSyncOperation(slug);
         return null;
@@ -4635,6 +5237,30 @@ export class WorkbenchService {
       });
       mirrorPersonaWebArtifactsToPersonaDir(slug, personaWeb?.artifacts);
 
+      const acceptedValidation = validation.results.find((item) => item.status === 'accepted') ?? validation.results[0];
+      const health = buildSourceHealth({
+        status: 'healthy',
+        failureClass: 'none',
+        summary: cacheReuse?.summary
+          ?? validation.summary.latest_summary
+          ?? `Imported ${acceptedDocs.length} new items from ${sourcePlatform}.`,
+        checkedAt,
+        lastSuccessAt: checkedAt,
+        provider: sourcePlatform,
+      });
+      const latestOutcome = buildSourceIngestOutcome({
+        status: 'accepted',
+        summary: health.summary,
+        rawDocumentCount: docs.length,
+        cleanDocumentCount: acceptedDocs.length,
+        acceptedCount: validation.summary.accepted_count,
+        rejectedCount: validation.summary.rejected_count,
+        quarantinedCount: validation.summary.quarantined_count,
+        validation: acceptedValidation,
+        qualityAssessment,
+        health,
+        failureClass: 'none',
+      });
       const imported = this.store.saveEvidenceImport({
         id: importId,
         persona_slug: slug,
@@ -4648,6 +5274,9 @@ export class WorkbenchService {
           ?? validation.summary.latest_summary
           ?? `Imported ${acceptedDocs.length} new items from ${sourcePlatform}.`,
         stats: batch.stats,
+        health,
+        latest_outcome: latestOutcome,
+        quality_assessment: qualityAssessment,
         artifacts: {
           ...artifacts,
           documents_path: documentsPath,
@@ -4663,15 +5292,37 @@ export class WorkbenchService {
         last_seen_published_at: extractLatestPublishedAt(acceptedDocs),
         status: 'ready',
         summary: imported.summary,
+        health,
+        latest_outcome: latestOutcome,
+        quality_assessment: qualityAssessment,
       });
       this.appendPersonaRunLog(slug, `source ${describeSourceLabel(source)} imported accepted=${acceptedDocs.length} raw=${docs.length}`, imported.summary);
       this.clearSyncOperation(slug);
       return imported;
     } catch (error) {
       this.appendPersonaRunLog(slug, `source ${describeSourceLabel(source)} failed: ${String(error instanceof Error ? error.message : error).slice(0, 180)}`, '来源暂时不可用，稍后会继续尝试');
+      const failureClass = classifySourceFailure(error);
+      const health = buildSourceHealth({
+        status: failureClass === 'network_unreachable' || failureClass === 'timeout' ? 'cooldown' : 'degraded',
+        failureClass,
+        summary: `Source sync failed: ${String(error instanceof Error ? error.message : error).slice(0, 160)}`,
+        checkedAt,
+      });
       this.touchSourceSyncState(slug, config, source.id, {
         status: 'error',
-        summary: `Source sync failed: ${String(error instanceof Error ? error.message : error).slice(0, 160)}`,
+        summary: health.summary,
+        health,
+        latest_outcome: buildSourceIngestOutcome({
+          status: 'error',
+          summary: health.summary,
+          rawDocumentCount: 0,
+          cleanDocumentCount: 0,
+          acceptedCount: 0,
+          rejectedCount: 0,
+          quarantinedCount: 0,
+          health,
+          failureClass,
+        }),
       });
       this.clearSyncOperation(slug);
       throw error;
@@ -4681,17 +5332,40 @@ export class WorkbenchService {
   private getRemoteSourceHostFailureCooldown(
     source: PersonaSource,
     now = new Date(),
-  ): { summary: string } | null {
+  ): { summary: string; health: PersonaSourceHealth; outcome: SourceIngestOutcome } | null {
     if (source.type === 'social') return null;
-    if (!this.isRemoteSourceHostFailureSummary(source.summary)) return null;
+    const health = source.health;
+    const sourceFailureClass = source.latest_outcome?.failure_class ?? health?.failure_class;
+    if (!(sourceFailureClass === 'network_unreachable' || this.isRemoteSourceHostFailureSummary(source.summary))) return null;
     if (!source.last_synced_at) return null;
     const lastSyncedAt = new Date(source.last_synced_at).getTime();
     if (!Number.isFinite(lastSyncedAt)) return null;
     const remainingMs = (lastSyncedAt + WorkbenchService.REMOTE_SOURCE_HOST_FAILURE_COOLDOWN_MS) - now.getTime();
     if (remainingMs <= 0) return null;
     const remainingHours = Math.max(1, Math.ceil(remainingMs / (60 * 60 * 1000)));
-    return {
+    const retryAfter = new Date(lastSyncedAt + WorkbenchService.REMOTE_SOURCE_HOST_FAILURE_COOLDOWN_MS).toISOString();
+    const nextHealth = buildSourceHealth({
+      status: 'cooldown',
+      failureClass: 'network_unreachable',
       summary: `来源域名当前不可解析，已跳过本轮重试，约 ${remainingHours} 小时后再检查`,
+      checkedAt: now.toISOString(),
+      retryAfter,
+      cooldownMinutes: Math.ceil(remainingMs / 60000),
+    });
+    return {
+      summary: nextHealth.summary,
+      health: nextHealth,
+      outcome: buildSourceIngestOutcome({
+        status: 'error',
+        summary: nextHealth.summary,
+        rawDocumentCount: 0,
+        cleanDocumentCount: 0,
+        acceptedCount: 0,
+        rejectedCount: 0,
+        quarantinedCount: 0,
+        health: nextHealth,
+        failureClass: 'network_unreachable',
+      }),
     };
   }
 
@@ -6149,6 +6823,14 @@ export class WorkbenchService {
             rejected_count: 0,
             quarantined_count: 0,
           };
+      const health = latestImport?.health
+        ?? source.health
+        ?? sourceProgress?.health;
+      const latestOutcome = latestImport?.latest_outcome
+        ?? source.latest_outcome
+        ?? sourceProgress?.latest_outcome;
+      const qualityAssessment = latestImport?.quality_assessment
+        ?? source.quality_assessment;
       const syncedAt = sourceProgress?.updated_at ?? source.last_synced_at ?? matchingImports.map((item) => item.updated_at).sort().at(-1);
       const coveragePoints = options?.preferCachedCounts
         ? []
@@ -6178,14 +6860,23 @@ export class WorkbenchService {
         coverage_start: inferredCoverageStart,
         coverage_end: inferredCoverageEnd,
         last_synced_at: syncedAt,
-        last_result: productizeWindowResult(sourceProgress?.current_window, source.summary || (matchingImports.at(-1)?.summary ?? undefined)),
+        last_result: productizeWindowResult(
+          sourceProgress?.current_window,
+          sourceProgress?.settle_summary
+            || source.summary
+            || (matchingImports.at(-1)?.summary ?? undefined),
+        ),
         status: source.status,
         last_heartbeat_at: sourceProgress?.last_heartbeat_at,
         cache_reused: cacheReuse?.active ?? false,
         cache_document_count: cacheReuse?.reused_document_count ?? 0,
         cache_summary: cacheReuse?.summary,
+        health,
+        latest_outcome: latestOutcome,
+        quality_assessment: qualityAssessment,
         validation_summary: validationSummary,
         active_window: sourceProgress?.current_window,
+        checkpoint: sourceProgress ?? undefined,
       };
     });
   }
@@ -6266,7 +6957,8 @@ export class WorkbenchService {
     const statePath = this.getSourceSyncStatePath(source);
     if (!statePath || !existsSync(statePath)) return null;
     try {
-      return JSON.parse(readFileSync(statePath, 'utf-8')) as SourceSyncProgressState;
+      const raw = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+      return normalizeSourceSyncCheckpoint(raw);
     } catch {
       return null;
     }
@@ -6708,29 +7400,56 @@ export class WorkbenchService {
     );
     const networkPromptContext = readPersonaNetworkPromptContext(persona.slug);
     const knowledgeLayer = detectChatKnowledgeLayer(lastMessage?.content ?? '');
+    const retrievalPlan = buildChatRetrievalPlan(
+      lastMessage?.content ?? '',
+      lastMessage?.attachments ?? [],
+      networkSummary,
+    );
     const networkPriorityContext = buildNetworkPriorityContext(
       knowledgeLayer,
       networkSummary,
       networkPromptContext,
       lastMessage?.content ?? '',
     );
+    const evidenceMap = readPersonaEvidenceMap(persona.slug);
+    const communitySummary = readPersonaCommunitySummary(persona.slug);
     const projectEvidenceHits = buildProjectEvidenceHits(
       lastMessage?.content ?? '',
       loadPersonaRawDocsForChat(persona.slug),
     );
+    const relationFallbacks = buildRelationFallbacks(
+      lastMessage?.content ?? '',
+      networkPromptContext,
+      communitySummary,
+    );
+    const evidenceMapHits = buildEvidenceMapHits(lastMessage?.content ?? '', evidenceMap);
+    const networkAnswerPack = buildNetworkAnswerPack({
+      retrievalPlan,
+      networkSummary,
+      projectEvidenceHits,
+      relationFallbacks,
+      evidenceMapHits,
+      communitySummary: communitySummary.summary,
+    });
+    const networkAnswerContext = buildNetworkAnswerContext(networkAnswerPack);
     const projectEvidenceContext = buildProjectEvidenceContext(projectEvidenceHits);
     const userMessage = buildAttachmentUserMessage(lastMessage?.content ?? '', lastMessage?.attachments ?? []);
     const history = messages.slice(0, -1).map((item) => ({ role: item.role === 'assistant' ? 'assistant' as const : 'user' as const, content: item.content }));
     const result = await agent.respondWithMeta(userMessage, history, {
       priorityContext: [
         networkPriorityContext,
+        networkAnswerContext,
         projectEvidenceContext,
         conversationPolicyContext,
         turnPlanContext,
         styleDistillationContext,
         attachmentPriorityContext,
       ].filter(Boolean).join('\n\n') || undefined,
-      memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? []) ? 0 : undefined,
+      memoryLimit: hasReadyAttachmentFacts(lastMessage?.attachments ?? [])
+        ? 0
+        : retrievalPlan.use_memory
+          ? undefined
+          : 0,
       modelOverride,
     });
     const rewrittenText = await rewriteResponseInPersonaVoice({
@@ -6741,12 +7460,23 @@ export class WorkbenchService {
       modelOverride,
     });
     const sanitizedText = sanitizeAssistantOutput(rewrittenText, lastMessage?.content ?? '');
+    const groundedPack = finalizeNetworkAnswerPack(
+      networkAnswerPack,
+      lastMessage?.content ?? '',
+      sanitizedText,
+    );
     const finalText = shouldUseProjectFactFallback(
       lastMessage?.content ?? '',
       sanitizedText,
       projectEvidenceHits,
     )
       ? buildProjectFactFallbackReply(projectEvidenceHits)
+      : shouldUseRelationFallback(
+        lastMessage?.content ?? '',
+        sanitizedText,
+        groundedPack,
+      )
+        ? buildRelationFallbackReply(groundedPack)
       : sanitizedText;
     return {
       text: finalText,
@@ -6754,7 +7484,15 @@ export class WorkbenchService {
       normalizedQuery: result.normalizedQuery,
       retrievedMemories: result.retrievedMemories,
       personaDimensions: result.personaDimensions,
-      orchestration: turnPlan,
+      orchestration: {
+        ...turnPlan,
+        retrieval_plan: retrievalPlan,
+      },
+      networkAnswerPack: finalizeNetworkAnswerPack(
+        groundedPack,
+        lastMessage?.content ?? '',
+        finalText,
+      ),
     };
   }
 
@@ -7479,6 +8217,30 @@ export class WorkbenchService {
     const latestWindow = phase === 'ready'
       ? undefined
       : currentWindow ?? activeWindows[0];
+    const checkpoint = sourceItems
+      .map((item) => item.checkpoint)
+      .filter((item): item is SourceSyncCheckpoint => Boolean(item))
+      .sort((a, b) => String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? '')))[0];
+    const ingestSummary = sourceItems
+      .map((item) => item.latest_outcome)
+      .filter((item): item is SourceIngestOutcome => Boolean(item))
+      .sort((a, b) => {
+        const aScore = a.accepted_count + a.quarantined_count + a.rejected_count;
+        const bScore = b.accepted_count + b.quarantined_count + b.rejected_count;
+        return bScore - aScore;
+      })[0];
+    const sourceHealthSummary = sourceItems.reduce((acc, item) => {
+      const status = item.health?.status;
+      if (!status || status === 'healthy') return acc;
+      acc.unhealthy_sources += 1;
+      if (status === 'cooldown') acc.cooling_down_sources += 1;
+      if (status === 'blocked') acc.blocked_sources += 1;
+      return acc;
+    }, {
+      unhealthy_sources: 0,
+      cooling_down_sources: 0,
+      blocked_sources: 0,
+    });
     const windowProgress = sourceItems.reduce((acc, item) => {
       const progress = item.type === 'social' ? this.readSourceSyncProgress(config.sources.find((source) => source.id === item.source_id) ?? config.sources[0]) : null;
       acc.completed_windows += progress?.completed_windows ?? 0;
@@ -7488,6 +8250,11 @@ export class WorkbenchService {
     const lastHeartbeatAt = activeWindows
       .map((item) => item.updated_at ?? item.started_at)
       .filter((value): value is string => Boolean(value))
+      .concat(
+        sourceItems
+          .map((item) => item.last_heartbeat_at)
+          .filter((value): value is string => Boolean(value)),
+      )
       .sort()
       .at(-1);
     return {
@@ -7544,9 +8311,12 @@ export class WorkbenchService {
       last_heartbeat_at: lastHeartbeatAt,
       current_window: currentWindow,
       active_windows: activeWindows,
+      checkpoint,
       source_items: sourceItems,
       rounds,
       validation_summary: validationSummary,
+      ingest_summary: ingestSummary,
+      source_health_summary: sourceHealthSummary,
       cache_reuse: cacheReuse,
       network_summary: networkSummary,
       source_summary: {

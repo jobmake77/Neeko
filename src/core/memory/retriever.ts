@@ -6,9 +6,17 @@ const PROJECT_EVIDENCE_PATTERN = /(开源|项目|作品|仓库|repo|repository|g
 const PROJECT_FOCUSED_CATEGORIES = new Set<MemoryNode['category']>(['fact', 'knowledge', 'experience']);
 const PROJECT_FOCUSED_DIMENSIONS = new Set<MemoryNode['soul_dimension']>(['knowledge_domains', 'general']);
 const PROJECT_GENERIC_DIMENSIONS = new Set<MemoryNode['soul_dimension']>(['values', 'thinking_patterns']);
+const RELATION_QUERY_PATTERN = /(合作|关系|团队|组织|公司|朋友|同事|导师|inspired|collaborat|team|company|organization|with whom|who works with)/i;
+const RELATION_EVIDENCE_PATTERN = /(合作|团队|组织|公司|社区|朋友|同事|导师|collaborat|team|company|organization|community|friend|mentor)/i;
+const RELATION_FOCUSED_CATEGORIES = new Set<MemoryNode['category']>(['fact', 'experience', 'knowledge']);
+const RELATION_FOCUSED_DIMENSIONS = new Set<MemoryNode['soul_dimension']>(['general', 'behavioral_traits', 'knowledge_domains']);
 
 function isProjectFactQuery(query: string): boolean {
   return PROJECT_QUERY_PATTERN.test(query);
+}
+
+function isRelationFactQuery(query: string): boolean {
+  return RELATION_QUERY_PATTERN.test(query);
 }
 
 function extractLexicalTerms(query: string): string[] {
@@ -51,12 +59,13 @@ export class MemoryRetriever {
   ): Promise<MemoryNode[]> {
     const { limit = 10, soulDimension, minConfidence = 0.3, includeArchived = false } = options;
     const projectFactQuery = isProjectFactQuery(query);
+    const relationFactQuery = isRelationFactQuery(query);
 
     // Fetch more than needed so we can re-rank
     let candidates: MemoryNode[] = [];
     try {
       candidates = await this.store.search(collection, query, {
-        limit: limit * (projectFactQuery ? 8 : 3),
+        limit: limit * (projectFactQuery || relationFactQuery ? 8 : 3),
         filter: {
           status: includeArchived ? undefined : 'active',
           soulDimension,
@@ -65,6 +74,21 @@ export class MemoryRetriever {
       });
       if (projectFactQuery) {
         const expanded = await this.store.search(collection, `${query} github 开源 项目 仓库 repo`, {
+          limit: limit * 4,
+          filter: {
+            status: includeArchived ? undefined : 'active',
+            soulDimension,
+            minConfidence,
+          },
+        });
+        const merged = new Map<string, MemoryNode>();
+        for (const node of [...candidates, ...expanded]) {
+          merged.set(node.id, node);
+        }
+        candidates = Array.from(merged.values());
+      }
+      if (relationFactQuery) {
+        const expanded = await this.store.search(collection, `${query} 合作 团队 组织 company community collaborator`, {
           limit: limit * 4,
           filter: {
             status: includeArchived ? undefined : 'active',
@@ -149,6 +173,7 @@ export class MemoryRetriever {
     let score = node.confidence;
     const query = _query;
     const projectFactQuery = isProjectFactQuery(query);
+    const relationFactQuery = isRelationFactQuery(query);
     const searchableText = [
       node.summary,
       node.original_text,
@@ -168,6 +193,13 @@ export class MemoryRetriever {
       if (PROJECT_FOCUSED_DIMENSIONS.has(node.soul_dimension)) score += 0.14;
       if (PROJECT_GENERIC_DIMENSIONS.has(node.soul_dimension)) score -= 0.12;
       if (PROJECT_EVIDENCE_PATTERN.test(searchableText)) score += 0.25;
+    }
+
+    if (relationFactQuery) {
+      if (RELATION_FOCUSED_CATEGORIES.has(node.category)) score += 0.18;
+      if (RELATION_FOCUSED_DIMENSIONS.has(node.soul_dimension)) score += 0.12;
+      if (RELATION_EVIDENCE_PATTERN.test(searchableText)) score += 0.22;
+      if (PROJECT_GENERIC_DIMENSIONS.has(node.soul_dimension)) score -= 0.08;
     }
 
     // Time decay: memories from the last year score higher

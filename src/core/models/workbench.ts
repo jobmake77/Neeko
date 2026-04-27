@@ -57,6 +57,46 @@ export const AttachmentRefSchema = z.object({
 });
 export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
 
+export const SourceFailureClassSchema = z.enum([
+  'none',
+  'network_unreachable',
+  'timeout',
+  'rate_limited',
+  'provider_unhealthy',
+  'identity_mismatch',
+  'content_quality',
+  'content_empty',
+  'access_denied',
+  'not_found',
+  'unsupported',
+  'unknown',
+]);
+export type SourceFailureClass = z.infer<typeof SourceFailureClassSchema>;
+
+export const ExtractionQualityAssessmentSchema = z.object({
+  status: z.enum(['accepted', 'weak', 'rejected']),
+  summary: z.string(),
+  score: z.number().min(0).max(1),
+  content_length: z.number().int().min(0),
+  excerpt_count: z.number().int().min(0).default(0),
+  signal_count: z.number().int().min(0).default(0),
+  issue_codes: z.array(z.string()).default([]),
+});
+export type ExtractionQualityAssessment = z.infer<typeof ExtractionQualityAssessmentSchema>;
+
+export const PersonaSourceHealthSchema = z.object({
+  status: z.enum(['healthy', 'degraded', 'cooldown', 'blocked']),
+  failure_class: SourceFailureClassSchema.default('none'),
+  summary: z.string(),
+  checked_at: z.string().datetime().optional(),
+  retry_after: z.string().datetime().optional(),
+  consecutive_failures: z.number().int().min(0).optional(),
+  cooldown_minutes: z.number().int().min(0).optional(),
+  last_success_at: z.string().datetime().optional(),
+  provider: z.string().optional(),
+});
+export type PersonaSourceHealth = z.infer<typeof PersonaSourceHealthSchema>;
+
 export const SourceValidationResultSchema = z.object({
   status: z.enum(['accepted', 'rejected', 'quarantined']),
   reason_code: z.string(),
@@ -67,6 +107,25 @@ export const SourceValidationResultSchema = z.object({
   evidence: z.array(z.string()).default([]),
 });
 export type SourceValidationResult = z.infer<typeof SourceValidationResultSchema>;
+
+export const SourceIngestOutcomeSchema = z.object({
+  status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
+  failure_class: SourceFailureClassSchema.default('none'),
+  summary: z.string(),
+  raw_document_count: z.number().int().min(0),
+  clean_document_count: z.number().int().min(0),
+  accepted_count: z.number().int().min(0),
+  rejected_count: z.number().int().min(0),
+  quarantined_count: z.number().int().min(0),
+  confidence: z.number().min(0).max(1).optional(),
+  identity_match: z.number().min(0).max(1).optional(),
+  source_integrity: z.number().min(0).max(1).optional(),
+  reason_code: z.string().optional(),
+  evidence: z.array(z.string()).default([]),
+  quality_assessment: ExtractionQualityAssessmentSchema.optional(),
+  health: PersonaSourceHealthSchema.optional(),
+});
+export type SourceIngestOutcome = z.infer<typeof SourceIngestOutcomeSchema>;
 
 export const SourcePreviewTargetSchema = z.object({
   target: z.string(),
@@ -83,6 +142,9 @@ export const SourcePreviewTargetSchema = z.object({
   reason_code: z.string().optional(),
   evidence: z.array(z.string()).default([]),
   error: z.string().optional(),
+  health: PersonaSourceHealthSchema.optional(),
+  latest_outcome: SourceIngestOutcomeSchema.optional(),
+  quality_assessment: ExtractionQualityAssessmentSchema.optional(),
 });
 export type SourcePreviewTarget = z.infer<typeof SourcePreviewTargetSchema>;
 
@@ -97,9 +159,52 @@ export const PersonaSourcePreviewSchema = z.object({
   }),
   status: z.enum(['accepted', 'rejected', 'quarantined', 'error']),
   summary: z.string(),
+  health: PersonaSourceHealthSchema.optional(),
+  latest_outcome: SourceIngestOutcomeSchema.optional(),
+  quality_assessment: ExtractionQualityAssessmentSchema.optional(),
   target_results: z.array(SourcePreviewTargetSchema).default([]),
 });
 export type PersonaSourcePreview = z.infer<typeof PersonaSourcePreviewSchema>;
+
+export const ChatRetrievalPlanSchema = z.object({
+  knowledge_layer: z.enum(['self', 'project', 'relation', 'background', 'hybrid']).default('self'),
+  use_memory: z.boolean().default(true),
+  use_network: z.boolean().default(false),
+  use_project_facts: z.boolean().default(false),
+  use_relation_fallback: z.boolean().default(false),
+  use_community_summary: z.boolean().default(false),
+  use_attachments: z.boolean().default(false),
+  grounding_required: z.boolean().default(true),
+  rationale: z.string().optional(),
+});
+export type ChatRetrievalPlan = z.infer<typeof ChatRetrievalPlanSchema>;
+
+export const NetworkAnswerPackSchema = z.object({
+  retrieval_plan: ChatRetrievalPlanSchema,
+  network_summary: z.object({
+    entity_count: z.number().int().min(0),
+    relation_count: z.number().int().min(0),
+    context_pack_count: z.number().int().min(0),
+    pending_candidate_count: z.number().int().min(0),
+    dominant_domains: z.array(z.string()).default([]),
+    arc_count: z.number().int().min(0),
+  }),
+  project_hits: z.array(z.object({
+    label: z.string(),
+    snippet: z.string(),
+    source_type: z.string(),
+    source_url: z.string().optional(),
+    published_at: z.string().datetime().optional(),
+    score: z.number(),
+  })).default([]),
+  relation_fallbacks: z.array(z.string()).default([]),
+  evidence_map_hits: z.array(z.string()).default([]),
+  community_summary: z.string().optional(),
+  grounding_status: z.enum(['grounded', 'partial', 'fallback']).default('grounded'),
+  grounding_summary: z.string(),
+  missing_signals: z.array(z.string()).default([]),
+});
+export type NetworkAnswerPack = z.infer<typeof NetworkAnswerPackSchema>;
 
 export const ConversationOrchestrationSchema = z.object({
   mode: z.enum(['answer', 'clarify', 'refuse_internal']).default('answer'),
@@ -109,6 +214,7 @@ export const ConversationOrchestrationSchema = z.object({
   answer_style: z.enum(['concise', 'normal']).default('normal'),
   followup_question: z.string().optional(),
   disclosure_protected: z.boolean().default(false),
+  retrieval_plan: ChatRetrievalPlanSchema.optional(),
 });
 export type ConversationOrchestration = z.infer<typeof ConversationOrchestrationSchema>;
 
@@ -124,6 +230,7 @@ export const ConversationMessageSchema = z.object({
   writeback_candidate_ids: z.array(z.string()).default([]),
   attachments: z.array(AttachmentRefSchema).default([]),
   orchestration: ConversationOrchestrationSchema.optional(),
+  network_answer_pack: NetworkAnswerPackSchema.optional(),
 });
 export type ConversationMessage = z.infer<typeof ConversationMessageSchema>;
 
@@ -188,6 +295,9 @@ export const WorkbenchEvidenceImportSchema = z.object({
   summary: z.string(),
   stats: EvidenceStatsSchema,
   artifacts: WorkbenchEvidenceImportArtifactsSchema,
+  health: PersonaSourceHealthSchema.optional(),
+  latest_outcome: SourceIngestOutcomeSchema.optional(),
+  quality_assessment: ExtractionQualityAssessmentSchema.optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
 });
@@ -299,8 +409,64 @@ export const PersonaSourceSchema = z.object({
   last_seen_published_at: z.string().datetime().optional(),
   status: z.enum(['idle', 'syncing', 'ready', 'error']).default('idle'),
   summary: z.string().optional(),
+  health: PersonaSourceHealthSchema.optional(),
+  latest_outcome: SourceIngestOutcomeSchema.optional(),
+  quality_assessment: ExtractionQualityAssessmentSchema.optional(),
 });
 export type PersonaSource = z.infer<typeof PersonaSourceSchema>;
+
+export const SourceProgressItemSchema = z.object({
+  source_id: z.string().optional(),
+  source_label: z.string().optional(),
+  window_start: z.string().datetime().optional(),
+  window_end: z.string().datetime().optional(),
+  provider: z.string().optional(),
+  filter_mode: z.string().optional(),
+  status: z.enum(['running', 'completed', 'empty', 'timeout', 'failed', 'skipped']).optional(),
+  attempt: z.number().int().min(0).optional(),
+  started_at: z.string().datetime().optional(),
+  finished_at: z.string().datetime().optional(),
+  updated_at: z.string().datetime().optional(),
+  duration_ms: z.number().int().min(0).optional(),
+  result_count: z.number().int().min(0).optional(),
+  new_count: z.number().int().min(0).optional(),
+  matched_count: z.number().int().min(0).optional(),
+  rejected_count: z.number().int().min(0).optional(),
+  quarantined_count: z.number().int().min(0).optional(),
+  error: z.string().optional(),
+});
+export type SourceProgressItem = z.infer<typeof SourceProgressItemSchema>;
+
+export const SourceSyncCheckpointSchema = z.object({
+  schema_version: z.literal(1).default(1),
+  handle: z.string().optional(),
+  out: z.string().optional(),
+  phase: z.string().optional(),
+  source_label: z.string().optional(),
+  until: z.string().datetime().optional(),
+  window_days: z.number().int().min(0).optional(),
+  query_count: z.number().int().min(0).optional(),
+  count: z.number().int().min(0).optional(),
+  completed_windows: z.number().int().min(0).optional(),
+  estimated_total_windows: z.number().int().min(0).optional(),
+  zero_streak: z.number().int().min(0).optional(),
+  empty_days_past_oldest: z.number().int().min(0).optional(),
+  history_exhausted: z.boolean().optional(),
+  provider_exhausted: z.boolean().optional(),
+  collection_stop_reason: z.string().optional(),
+  last_heartbeat_at: z.string().datetime().optional(),
+  updated_at: z.string().datetime().optional(),
+  current_window: SourceProgressItemSchema.optional(),
+  last_success_window: SourceProgressItemSchema.optional(),
+  last_failure_window: SourceProgressItemSchema.optional(),
+  recent_windows: z.array(SourceProgressItemSchema).default([]),
+  health: PersonaSourceHealthSchema.optional(),
+  latest_outcome: SourceIngestOutcomeSchema.optional(),
+  settle_summary: z.string().optional(),
+  provider_stats: z.record(z.string(), z.unknown()).optional(),
+  consecutive_primary_provider_failures: z.number().int().min(0).optional(),
+});
+export type SourceSyncCheckpoint = z.infer<typeof SourceSyncCheckpointSchema>;
 
 export const CultivationSummarySchema = z.object({
   status: z.string(),
@@ -540,46 +706,9 @@ export interface CultivationDetail {
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;
-  current_window?: {
-    source_id?: string;
-    source_label?: string;
-    window_start?: string;
-    window_end?: string;
-    provider?: string;
-    filter_mode?: string;
-    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
-    attempt?: number;
-    started_at?: string;
-    finished_at?: string;
-    updated_at?: string;
-    duration_ms?: number;
-    result_count?: number;
-    new_count?: number;
-    matched_count?: number;
-    rejected_count?: number;
-    quarantined_count?: number;
-    error?: string;
-  };
-  active_windows?: Array<{
-    source_id?: string;
-    source_label?: string;
-    window_start?: string;
-    window_end?: string;
-    provider?: string;
-    filter_mode?: string;
-    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
-    attempt?: number;
-    started_at?: string;
-    finished_at?: string;
-    updated_at?: string;
-    duration_ms?: number;
-    result_count?: number;
-    new_count?: number;
-    matched_count?: number;
-    rejected_count?: number;
-    quarantined_count?: number;
-    error?: string;
-  }>;
+  current_window?: SourceProgressItem;
+  active_windows?: SourceProgressItem[];
+  checkpoint?: SourceSyncCheckpoint;
   source_items?: Array<{
     source_id: string;
     label: string;
@@ -596,30 +725,17 @@ export interface CultivationDetail {
     cache_reused?: boolean;
     cache_document_count?: number;
     cache_summary?: string;
+    health?: PersonaSourceHealth;
+    latest_outcome?: SourceIngestOutcome;
+    quality_assessment?: ExtractionQualityAssessment;
     validation_summary?: {
       accepted_count: number;
       rejected_count: number;
       quarantined_count: number;
       latest_summary?: string;
     };
-    active_window?: {
-      window_start?: string;
-      window_end?: string;
-      provider?: string;
-      filter_mode?: string;
-      status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
-      attempt?: number;
-      started_at?: string;
-      finished_at?: string;
-      updated_at?: string;
-      duration_ms?: number;
-      result_count?: number;
-      new_count?: number;
-      matched_count?: number;
-      rejected_count?: number;
-      quarantined_count?: number;
-      error?: string;
-    };
+    active_window?: SourceProgressItem;
+    checkpoint?: SourceSyncCheckpoint;
   }>;
   rounds?: Array<{
     round: number;
@@ -634,6 +750,21 @@ export interface CultivationDetail {
     rejected_count: number;
     quarantined_count: number;
     latest_summary?: string;
+  };
+  ingest_summary?: {
+    status: SourceIngestOutcome['status'];
+    failure_class: SourceFailureClass;
+    summary: string;
+    raw_document_count: number;
+    clean_document_count: number;
+    accepted_count: number;
+    rejected_count: number;
+    quarantined_count: number;
+  };
+  source_health_summary?: {
+    unhealthy_sources: number;
+    cooling_down_sources: number;
+    blocked_sources: number;
   };
   cache_reuse?: {
     active: boolean;

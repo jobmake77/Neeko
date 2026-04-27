@@ -51,6 +51,57 @@ export interface PersonaNetworkSummary {
   arc_count: number;
 }
 
+export interface SourceProgressItem {
+  source_id?: string;
+  source_label?: string;
+  window_start?: string;
+  window_end?: string;
+  provider?: string;
+  filter_mode?: string;
+  status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
+  attempt?: number;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  duration_ms?: number;
+  result_count?: number;
+  new_count?: number;
+  matched_count?: number;
+  rejected_count?: number;
+  quarantined_count?: number;
+  error?: string;
+}
+
+export interface SourceSyncCheckpoint {
+  schema_version: 1;
+  handle?: string;
+  out?: string;
+  phase?: string;
+  source_label?: string;
+  until?: string;
+  window_days?: number;
+  query_count?: number;
+  count?: number;
+  completed_windows?: number;
+  estimated_total_windows?: number;
+  zero_streak?: number;
+  empty_days_past_oldest?: number;
+  history_exhausted?: boolean;
+  provider_exhausted?: boolean;
+  collection_stop_reason?: string;
+  last_heartbeat_at?: string;
+  updated_at?: string;
+  current_window?: SourceProgressItem;
+  last_success_window?: SourceProgressItem;
+  last_failure_window?: SourceProgressItem;
+  recent_windows?: SourceProgressItem[];
+  health?: PersonaSourceHealth;
+  latest_outcome?: SourceIngestOutcome;
+  settle_summary?: string;
+  provider_stats?: Record<string, unknown>;
+  consecutive_primary_provider_failures?: number;
+}
+
 export interface CultivationDetail {
   persona: PersonaSummary;
   phase?: 'queued' | 'deep_fetching' | 'incremental_syncing' | 'normalizing' | 'building_evidence' | 'building_network' | 'training' | 'continuing_collection' | 'soft_closed' | 'ready' | 'error';
@@ -92,46 +143,9 @@ export interface CultivationDetail {
   latest_activity?: string;
   last_success_at?: string;
   last_heartbeat_at?: string;
-  current_window?: {
-    source_id?: string;
-    source_label?: string;
-    window_start?: string;
-    window_end?: string;
-    provider?: string;
-    filter_mode?: string;
-    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
-    attempt?: number;
-    started_at?: string;
-    finished_at?: string;
-    updated_at?: string;
-    duration_ms?: number;
-    result_count?: number;
-    new_count?: number;
-    matched_count?: number;
-    rejected_count?: number;
-    quarantined_count?: number;
-    error?: string;
-  };
-  active_windows?: Array<{
-    source_id?: string;
-    source_label?: string;
-    window_start?: string;
-    window_end?: string;
-    provider?: string;
-    filter_mode?: string;
-    status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
-    attempt?: number;
-    started_at?: string;
-    finished_at?: string;
-    updated_at?: string;
-    duration_ms?: number;
-    result_count?: number;
-    new_count?: number;
-    matched_count?: number;
-    rejected_count?: number;
-    quarantined_count?: number;
-    error?: string;
-  }>;
+  current_window?: SourceProgressItem;
+  active_windows?: SourceProgressItem[];
+  checkpoint?: SourceSyncCheckpoint;
   source_items?: Array<{
     source_id: string;
     label: string;
@@ -148,30 +162,17 @@ export interface CultivationDetail {
     cache_reused?: boolean;
     cache_document_count?: number;
     cache_summary?: string;
+    health?: PersonaSourceHealth;
+    latest_outcome?: SourceIngestOutcome;
+    quality_assessment?: ExtractionQualityAssessment;
     validation_summary?: {
       accepted_count: number;
       rejected_count: number;
       quarantined_count: number;
       latest_summary?: string;
     };
-    active_window?: {
-      window_start?: string;
-      window_end?: string;
-      provider?: string;
-      filter_mode?: string;
-      status?: 'running' | 'completed' | 'empty' | 'timeout' | 'failed' | 'skipped';
-      attempt?: number;
-      started_at?: string;
-      finished_at?: string;
-      updated_at?: string;
-      duration_ms?: number;
-      result_count?: number;
-      new_count?: number;
-      matched_count?: number;
-      rejected_count?: number;
-      quarantined_count?: number;
-      error?: string;
-    };
+    active_window?: SourceProgressItem;
+    checkpoint?: SourceSyncCheckpoint;
   }>;
   rounds?: Array<{
     round: number;
@@ -186,6 +187,21 @@ export interface CultivationDetail {
     rejected_count: number;
     quarantined_count: number;
     latest_summary?: string;
+  };
+  ingest_summary?: {
+    status: SourceIngestOutcome['status'];
+    failure_class: SourceFailureClass;
+    summary: string;
+    raw_document_count: number;
+    clean_document_count: number;
+    accepted_count: number;
+    rejected_count: number;
+    quarantined_count: number;
+  };
+  source_health_summary?: {
+    unhealthy_sources: number;
+    cooling_down_sources: number;
+    blocked_sources: number;
   };
   cache_reuse?: {
     active: boolean;
@@ -220,6 +236,9 @@ export interface PersonaSource {
   last_seen_published_at?: string;
   status: 'idle' | 'syncing' | 'ready' | 'error';
   summary?: string;
+  health?: PersonaSourceHealth;
+  latest_outcome?: SourceIngestOutcome;
+  quality_assessment?: ExtractionQualityAssessment;
 }
 
 export interface DiscoveredSourceCandidate {
@@ -297,6 +316,42 @@ export interface AttachmentRef {
   validation_summary?: string;
 }
 
+export type SourceFailureClass =
+  | 'none'
+  | 'network_unreachable'
+  | 'timeout'
+  | 'rate_limited'
+  | 'provider_unhealthy'
+  | 'identity_mismatch'
+  | 'content_quality'
+  | 'content_empty'
+  | 'access_denied'
+  | 'not_found'
+  | 'unsupported'
+  | 'unknown';
+
+export interface ExtractionQualityAssessment {
+  status: 'accepted' | 'weak' | 'rejected';
+  summary: string;
+  score: number;
+  content_length: number;
+  excerpt_count: number;
+  signal_count: number;
+  issue_codes: string[];
+}
+
+export interface PersonaSourceHealth {
+  status: 'healthy' | 'degraded' | 'cooldown' | 'blocked';
+  failure_class: SourceFailureClass;
+  summary: string;
+  checked_at?: string;
+  retry_after?: string;
+  consecutive_failures?: number;
+  cooldown_minutes?: number;
+  last_success_at?: string;
+  provider?: string;
+}
+
 export interface SourceValidationResult {
   status: 'accepted' | 'rejected' | 'quarantined';
   reason_code: string;
@@ -305,6 +360,24 @@ export interface SourceValidationResult {
   identity_match: number;
   source_integrity: number;
   evidence: string[];
+}
+
+export interface SourceIngestOutcome {
+  status: 'accepted' | 'rejected' | 'quarantined' | 'error';
+  failure_class: SourceFailureClass;
+  summary: string;
+  raw_document_count: number;
+  clean_document_count: number;
+  accepted_count: number;
+  rejected_count: number;
+  quarantined_count: number;
+  confidence?: number;
+  identity_match?: number;
+  source_integrity?: number;
+  reason_code?: string;
+  evidence: string[];
+  quality_assessment?: ExtractionQualityAssessment;
+  health?: PersonaSourceHealth;
 }
 
 export interface SourcePreviewTarget {
@@ -322,6 +395,9 @@ export interface SourcePreviewTarget {
   reason_code?: string;
   evidence: string[];
   error?: string;
+  health?: PersonaSourceHealth;
+  latest_outcome?: SourceIngestOutcome;
+  quality_assessment?: ExtractionQualityAssessment;
 }
 
 export interface PersonaSourcePreview {
@@ -335,7 +411,41 @@ export interface PersonaSourcePreview {
   };
   status: 'accepted' | 'rejected' | 'quarantined' | 'error';
   summary: string;
+  health?: PersonaSourceHealth;
+  latest_outcome?: SourceIngestOutcome;
+  quality_assessment?: ExtractionQualityAssessment;
   target_results: SourcePreviewTarget[];
+}
+
+export interface ChatRetrievalPlan {
+  knowledge_layer: 'self' | 'project' | 'relation' | 'background' | 'hybrid';
+  use_memory: boolean;
+  use_network: boolean;
+  use_project_facts: boolean;
+  use_relation_fallback: boolean;
+  use_community_summary: boolean;
+  use_attachments: boolean;
+  grounding_required: boolean;
+  rationale?: string;
+}
+
+export interface NetworkAnswerPack {
+  retrieval_plan: ChatRetrievalPlan;
+  network_summary: PersonaNetworkSummary;
+  project_hits: Array<{
+    label: string;
+    snippet: string;
+    source_type: string;
+    source_url?: string;
+    published_at?: string;
+    score: number;
+  }>;
+  relation_fallbacks: string[];
+  evidence_map_hits: string[];
+  community_summary?: string;
+  grounding_status: 'grounded' | 'partial' | 'fallback';
+  grounding_summary: string;
+  missing_signals: string[];
 }
 
 export interface ConversationOrchestration {
@@ -346,6 +456,7 @@ export interface ConversationOrchestration {
   answer_style: 'concise' | 'normal';
   followup_question?: string;
   disclosure_protected: boolean;
+  retrieval_plan?: ChatRetrievalPlan;
 }
 
 export interface ConversationMessage {
@@ -356,6 +467,7 @@ export interface ConversationMessage {
   created_at: string;
   attachments?: AttachmentRef[];
   orchestration?: ConversationOrchestration;
+  network_answer_pack?: NetworkAnswerPack;
 }
 
 export interface ConversationBundle {

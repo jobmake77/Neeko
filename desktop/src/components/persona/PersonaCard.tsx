@@ -25,6 +25,19 @@ function isChatReady(status?: string, isReady?: boolean): boolean {
   return ['ready', 'available', 'converged', 'exported'].includes(String(status ?? '').toLowerCase());
 }
 
+function formatPersonaStatus(status?: string): string {
+  const normalized = String(status ?? 'created').toLowerCase();
+  if (normalized === 'available' || normalized === 'ready' || normalized === 'converged' || normalized === 'exported') {
+    return '可对话';
+  }
+  if (normalized === 'creating' || normalized === 'created' || normalized === 'pending') return '待培养';
+  if (normalized === 'ingesting' || normalized === 'refining' || normalized === 'training' || normalized === 'building') {
+    return '培养中';
+  }
+  if (normalized === 'error') return '异常';
+  return t(`status_${normalized}`);
+}
+
 interface Props {
   persona: PersonaSummary;
   onEdit: () => void;
@@ -137,7 +150,7 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <div style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
             <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
-              {t(`status_${persona.status ?? 'created'}`)}
+              {formatPersonaStatus(persona.status)}
             </span>
           </div>
         </div>

@@ -1,7 +1,7 @@
 # Client Minimal V2 Implementation Note
 
-Updated: 2026-04-25  
-Owner: PM-Orchestrator agent  
+Updated: 2026-04-25
+Owner: PM-Orchestrator agent
 Audience: Main agent, Desktop agent, Service agent, QA agent
 
 ## Goal

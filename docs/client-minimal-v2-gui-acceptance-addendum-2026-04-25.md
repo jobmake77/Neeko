@@ -1,7 +1,7 @@
 # Client Minimal V2 GUI Acceptance Addendum
 
-Updated: 2026-04-25  
-Owner: PM-Orchestrator agent  
+Updated: 2026-04-25
+Owner: PM-Orchestrator agent
 Audience: Main agent, Desktop agent, QA agent
 
 ## Scope

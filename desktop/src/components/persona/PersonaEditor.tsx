@@ -5,6 +5,7 @@ import { t } from '@/lib/i18n';
 import type { DiscoveredSourceCandidate, PersonaConfig, PersonaDetail, PersonaSource, PersonaSourcePreview, PersonaSummary } from '@/lib/types';
 import * as api from '@/lib/api';
 import { usePersonaStore } from '@/stores/persona';
+import { useCultivationStore } from '@/stores/cultivation';
 import { pickFiles } from '@/lib/tauri';
 import { PersonaGenesisAscii } from './PersonaGenesisAscii';
 
@@ -13,6 +14,7 @@ type Props = {
   persona?: PersonaSummary;
   open: boolean;
   onClose: () => void;
+  onSaved?: (persona: PersonaSummary) => void;
 };
 
 type SourceCategory = 'text' | 'video' | 'audio';
@@ -930,8 +932,9 @@ function PolicySection({
   );
 }
 
-export function PersonaEditor({ mode, persona, open, onClose }: Props) {
-  const { reload } = usePersonaStore();
+export function PersonaEditor({ mode, persona, open, onClose, onSaved }: Props) {
+  const { reload, upsert: upsertPersona } = usePersonaStore();
+  const { reload: reloadCultivation, upsert: upsertCultivation, remove: removeCultivation } = useCultivationStore();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1071,22 +1074,31 @@ export function PersonaEditor({ mode, persona, open, onClose }: Props) {
     setError('');
     const payloadSources = mode === 'create' ? [normalizeSource(sources[0])] : sources.map(normalizeSource);
     try {
+      let result: { persona: PersonaSummary } | null = null;
       if (mode === 'create') {
-        await api.createPersona({
+        result = await api.createPersona({
           name: name.trim(),
           persona_slug: slugifyPersonaName(name),
           sources: payloadSources,
           update_policy: policy,
         });
-        await new Promise((resolve) => window.setTimeout(resolve, 2200));
       } else if (persona) {
-        await api.updatePersonaSources(persona.slug, {
+        result = await api.updatePersonaSources(persona.slug, {
           name: name.trim(),
           sources: payloadSources,
           update_policy: policy,
         });
       }
-      await reload();
+      if (result?.persona) {
+        upsertPersona(result.persona);
+        if (['converged', 'available', 'ready', 'exported'].includes(String(result.persona.status ?? '').toLowerCase())) {
+          removeCultivation(result.persona.slug);
+        } else {
+          upsertCultivation(result.persona);
+        }
+        onSaved?.(result.persona);
+      }
+      await Promise.all([reload(), reloadCultivation()]);
       onClose();
     } catch (nextError) {
       setError((nextError as Error).message);

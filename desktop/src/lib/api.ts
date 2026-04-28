@@ -28,6 +28,7 @@ import {
 
 let _baseUrl = localStorage.getItem('neeko.apiBaseUrl') || 'http://127.0.0.1:4310';
 let bootstrapInFlight: Promise<boolean> | null = null;
+const LOCAL_REQUEST_TIMEOUT_MS = 8_000;
 
 export function getBaseUrl(): string {
   return _baseUrl;
@@ -49,36 +50,50 @@ function isLocalWorkbenchBaseUrl(): boolean {
 _baseUrl = normalizeLocalBaseUrl(_baseUrl);
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${_baseUrl}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API ${res.status}: ${text}`);
+  const controller = isLocalWorkbenchBaseUrlShared(_baseUrl) ? new AbortController() : null;
+  const timer = controller ? window.setTimeout(() => controller.abort(), LOCAL_REQUEST_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(`${_baseUrl}${path}`, {
+      ...init,
+      signal: init?.signal ?? controller?.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`API ${res.status}: ${text}`);
+    }
+    // 204 No Content
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  } finally {
+    if (timer) window.clearTimeout(timer);
   }
-  // 204 No Content
-  if (res.status === 204) return undefined as T;
-  return res.json();
 }
 
 async function fetchJsonFromBase<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API ${res.status}: ${text}`);
+  const controller = isLocalWorkbenchBaseUrlShared(baseUrl) ? new AbortController() : null;
+  const timer = controller ? window.setTimeout(() => controller.abort(), LOCAL_REQUEST_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      signal: init?.signal ?? controller?.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`API ${res.status}: ${text}`);
+    }
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  } finally {
+    if (timer) window.clearTimeout(timer);
   }
-  if (res.status === 204) return undefined as T;
-  return res.json();
 }
 
 async function probeWorkbenchBaseUrl(baseUrl: string, timeoutMs = 2500): Promise<boolean> {

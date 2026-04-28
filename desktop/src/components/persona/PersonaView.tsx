@@ -64,6 +64,12 @@ export function PersonaView() {
     setEditorOpen(true);
   }
 
+  function handleSaved(persona: PersonaSummary) {
+    if (!isReadyPersona(persona.status, persona.is_ready)) {
+      setActiveTab('cultivation');
+    }
+  }
+
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleteError('');
@@ -134,7 +140,13 @@ export function PersonaView() {
       </div>
 
       {/* 编辑器 */}
-      <PersonaEditor mode={editorMode} persona={editTarget} open={editorOpen} onClose={() => setEditorOpen(false)} />
+      <PersonaEditor
+        mode={editorMode}
+        persona={editTarget}
+        open={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        onSaved={handleSaved}
+      />
 
       {/* 删除确认 */}
       {deleteTarget && (

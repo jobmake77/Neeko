@@ -8,7 +8,7 @@ const {
   recoverLocalWorkbenchBaseUrl,
 } = __desktopApiTestables;
 
-test('probeWorkbenchBaseUrl rejects health-only responders when personas endpoint is unavailable', async () => {
+test('probeWorkbenchBaseUrl accepts healthy responders without probing personas endpoint', async () => {
   const calls = [];
   let timerCleared = false;
 
@@ -18,9 +18,6 @@ test('probeWorkbenchBaseUrl rejects health-only responders when personas endpoin
       calls.push({ baseUrl, path, hasSignal: Boolean(init?.signal) });
       if (path === '/health') {
         return { ok: true, build_id: 'local-dev', server_version: '1.2.3' };
-      }
-      if (path === '/api/personas') {
-        throw new Error('connection reset');
       }
       throw new Error(`unexpected path: ${path}`);
     },
@@ -34,9 +31,9 @@ test('probeWorkbenchBaseUrl rejects health-only responders when personas endpoin
     },
   });
 
-  assert.equal(ok, false);
+  assert.equal(ok, true);
   assert.equal(timerCleared, true);
-  assert.deepEqual(calls.map((item) => item.path), ['/health', '/api/personas']);
+  assert.deepEqual(calls.map((item) => item.path), ['/health']);
   assert.equal(calls.every((item) => item.hasSignal), true);
 });
 

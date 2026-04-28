@@ -79,11 +79,7 @@ export async function probeWorkbenchBaseUrl(
     const health = await options.fetchJsonFromBase<WorkbenchHealthStatus>(baseUrl, '/health', {
       signal: controller.signal,
     });
-    if (!health.ok || !health.build_id || !health.server_version) return false;
-    await options.fetchJsonFromBase<unknown[]>(baseUrl, '/api/personas', {
-      signal: controller.signal,
-    });
-    return true;
+    return Boolean(health.ok && health.build_id && health.server_version);
   } catch {
     return false;
   } finally {

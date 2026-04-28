@@ -11,6 +11,7 @@ interface PersonaState {
   load: () => Promise<void>;
   select: (slug: string) => Promise<void>;
   clearSelected: () => void;
+  upsert: (persona: PersonaSummary) => void;
   remove: (slug: string) => Promise<void>;
   reload: () => Promise<void>;
 }
@@ -41,6 +42,20 @@ export const usePersonaStore = create<PersonaState>((set, get) => ({
   },
 
   clearSelected: () => set({ selected: null }),
+
+  upsert: (persona) => {
+    set((state) => {
+      const next = [...state.personas];
+      const index = next.findIndex((item) => item.slug === persona.slug);
+      if (index >= 0) {
+        next[index] = persona;
+      } else {
+        next.unshift(persona);
+      }
+      next.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      return { personas: next };
+    });
+  },
 
   remove: async (slug) => {
     await api.deletePersona(slug);

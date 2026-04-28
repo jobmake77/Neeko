@@ -10,6 +10,7 @@ interface CultivationState {
 
   load: () => Promise<void>;
   loadDetail: (slug: string) => Promise<void>;
+  upsert: (persona: PersonaSummary) => void;
   remove: (slug: string) => void;
   reload: () => Promise<void>;
 }
@@ -44,6 +45,21 @@ export const useCultivationStore = create<CultivationState>((set, get) => ({
     } catch (e: unknown) {
       console.error('Failed to load cultivation detail:', e);
     }
+  },
+
+  upsert: (persona) => {
+    set((state) => {
+      const ready = ['converged', 'available', 'ready', 'exported'].includes(String(persona.status ?? '').toLowerCase());
+      const filtered = state.cultivating.filter((item) => item.slug !== persona.slug);
+      if (ready) {
+        return {
+          cultivating: filtered,
+          details: Object.fromEntries(Object.entries(state.details).filter(([slug]) => slug !== persona.slug)),
+        };
+      }
+      const next = [persona, ...filtered].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      return { cultivating: next };
+    });
   },
 
   remove: (slug) => {

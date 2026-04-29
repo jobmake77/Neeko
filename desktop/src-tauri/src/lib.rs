@@ -363,6 +363,15 @@ fn ensure_dist_ready(repo_root: &Path) -> Result<(), String> {
 }
 
 fn cleanup_stale_workbench_server(runtime_root: &Path, port: u16) {
+    let listener_output = list_listener_pids(port);
+    let runtime_marker = runtime_root.display().to_string();
+    let stale_pids = collect_stale_workbench_listener_pids(&runtime_marker, &listener_output, read_process_command);
+    for pid in stale_pids {
+        terminate_pid(pid);
+    }
+}
+
+fn list_listener_pids(port: u16) -> String {
     let Some(output) = Command::new("lsof")
         .arg("-tiTCP")
         .arg(port.to_string())
@@ -375,25 +384,39 @@ fn cleanup_stale_workbench_server(runtime_root: &Path, port: u16) {
         .output()
         .ok()
     else {
-        return;
+        return String::new();
     };
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
 
-    let runtime_marker = runtime_root.display().to_string();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+fn collect_stale_workbench_listener_pids<F>(
+    runtime_marker: &str,
+    listener_output: &str,
+    mut command_lookup: F,
+) -> Vec<i32>
+where
+    F: FnMut(i32) -> Option<String>,
+{
+    let mut stale_pids = Vec::new();
+    for line in listener_output.lines() {
         let Ok(pid) = line.trim().parse::<i32>() else {
             continue;
         };
         if pid <= 0 {
             continue;
         }
-        let Some(command) = read_process_command(pid) else {
+        let Some(command) = command_lookup(pid) else {
             continue;
         };
-        if !command.contains(&runtime_marker) || !command.contains("workbench-server") {
-            continue;
+        if should_cleanup_stale_workbench_command(runtime_marker, &command) {
+            stale_pids.push(pid);
         }
-        terminate_pid(pid);
     }
+    stale_pids
+}
+
+fn should_cleanup_stale_workbench_command(runtime_marker: &str, command: &str) -> bool {
+    command.contains(runtime_marker) && command.contains("workbench-server")
 }
 
 fn read_process_command(pid: i32) -> Option<String> {
@@ -453,4 +476,58 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        collect_stale_workbench_listener_pids,
+        should_cleanup_stale_workbench_command,
+    };
+    use std::collections::HashMap;
+
+    #[test]
+    fn stale_listener_cleanup_matches_same_runtime_workbench_server() {
+        let runtime_marker = "/tmp/neeko/runtime-a";
+        let listener_output = "101\n202\n303\n";
+        let commands = HashMap::from([
+            (101, format!("{runtime_marker}/bin/node {runtime_marker}/dist/cli/index.js workbench-server --port 4310")),
+            (202, String::from("/tmp/neeko/runtime-b/bin/node /tmp/neeko/runtime-b/dist/cli/index.js workbench-server --port 4310")),
+            (303, format!("{runtime_marker}/bin/node {runtime_marker}/dist/cli/index.js some-other-command")),
+        ]);
+
+        let stale = collect_stale_workbench_listener_pids(runtime_marker, listener_output, |pid| {
+            commands.get(&pid).cloned()
+        });
+
+        assert_eq!(stale, vec![101]);
+    }
+
+    #[test]
+    fn stale_listener_cleanup_ignores_invalid_and_unknown_entries() {
+        let runtime_marker = "/tmp/neeko/runtime-a";
+        let listener_output = "abc\n0\n404\n";
+
+        let stale = collect_stale_workbench_listener_pids(runtime_marker, listener_output, |_pid| None);
+
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn stale_listener_command_requires_runtime_marker_and_workbench_server() {
+        let runtime_marker = "/tmp/neeko/runtime-a";
+
+        assert!(should_cleanup_stale_workbench_command(
+            runtime_marker,
+            "/tmp/neeko/runtime-a/bin/node /tmp/neeko/runtime-a/dist/cli/index.js workbench-server --port 4310",
+        ));
+        assert!(!should_cleanup_stale_workbench_command(
+            runtime_marker,
+            "/tmp/neeko/runtime-b/bin/node /tmp/neeko/runtime-b/dist/cli/index.js workbench-server --port 4310",
+        ));
+        assert!(!should_cleanup_stale_workbench_command(
+            runtime_marker,
+            "/tmp/neeko/runtime-a/bin/node /tmp/neeko/runtime-a/dist/cli/index.js workbench-source-sync demo",
+        ));
+    }
 }

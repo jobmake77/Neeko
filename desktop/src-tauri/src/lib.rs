@@ -1,5 +1,7 @@
 use serde::Serialize;
 use serde::Deserialize;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::{
     env,
     path::{Path, PathBuf},
@@ -32,6 +34,7 @@ impl WorkbenchServiceState {
     fn shutdown(&self) {
         if let Ok(mut slot) = self.child.lock() {
             if let Some(child) = slot.as_mut() {
+                terminate_process_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -113,7 +116,10 @@ fn bootstrap_workbench_service(
         ));
     }
 
-    let child = Command::new(node_binary)
+    cleanup_stale_workbench_server(&runtime_root, port);
+
+    let mut command = Command::new(node_binary);
+    command
         .arg(cli_entry)
         .arg("workbench-server")
         .arg("--port")
@@ -121,7 +127,17 @@ fn bootstrap_workbench_service(
         .current_dir(&runtime_root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command
         .spawn()
         .map_err(|_| String::from("The local service could not be started right now."))?;
 
@@ -343,6 +359,79 @@ fn ensure_dist_ready(repo_root: &Path) -> Result<(), String> {
         Err(String::from(
             "The local workbench core is still preparing. Please try again shortly.",
         ))
+    }
+}
+
+fn cleanup_stale_workbench_server(runtime_root: &Path, port: u16) {
+    let Some(output) = Command::new("lsof")
+        .arg("-tiTCP")
+        .arg(port.to_string())
+        .arg("-sTCP:LISTEN")
+        .arg("-n")
+        .arg("-P")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+    else {
+        return;
+    };
+
+    let runtime_marker = runtime_root.display().to_string();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(pid) = line.trim().parse::<i32>() else {
+            continue;
+        };
+        if pid <= 0 {
+            continue;
+        }
+        let Some(command) = read_process_command(pid) else {
+            continue;
+        };
+        if !command.contains(&runtime_marker) || !command.contains("workbench-server") {
+            continue;
+        }
+        terminate_pid(pid);
+    }
+}
+
+fn read_process_command(pid: i32) -> Option<String> {
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("command=")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if command.is_empty() { None } else { Some(command) }
+}
+
+fn terminate_pid(pid: i32) {
+    #[cfg(unix)]
+    unsafe {
+        let _ = libc::kill(pid, libc::SIGTERM);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    #[cfg(unix)]
+    unsafe {
+        let _ = libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+fn terminate_process_group(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        if pid > 0 {
+            let group_id = -(pid as i32);
+            let _ = libc::kill(group_id, libc::SIGTERM);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _ = libc::kill(group_id, libc::SIGKILL);
+        }
     }
 }
 

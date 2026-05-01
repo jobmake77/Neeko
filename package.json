@@ -20,6 +20,7 @@
     "verify": "npm test",
     "test:core": "npm run -s build && npm run -s test:node:only && npm run -s test:api-contract:only",
     "test:desktop": "npm run -s desktop:build",
+    "test:desktop:release-smoke": "node scripts/smoke-desktop-release-fallback.mjs",
     "test:node": "npm run -s build && npm run -s test:node:only",
     "test:node:only": "node --test --test-concurrency=1 test/*.mjs",
     "test:skills": "npm run -s build && node --test test/skills-library.test.mjs",

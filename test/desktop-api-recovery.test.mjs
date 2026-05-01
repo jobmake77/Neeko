@@ -99,3 +99,34 @@ test('recoverLocalWorkbenchBaseUrl bootstraps and adopts the resolved fallback p
   assert.equal(resolvedBaseUrls.at(-1), 'http://127.0.0.1:4311');
   assert.equal(probes.includes('http://127.0.0.1:4311'), true);
 });
+
+test('recoverLocalWorkbenchBaseUrl recovers from an occupied primary port by adopting a later healthy fallback', async () => {
+  const probes = [];
+  const bootstraps = [];
+  const resolvedBaseUrls = [];
+  const successfulProbeUrls = new Set();
+
+  const recovered = await recoverLocalWorkbenchBaseUrl({
+    currentBaseUrl: 'http://127.0.0.1:4310',
+    forceBootstrap: true,
+    setBaseUrl: (baseUrl) => resolvedBaseUrls.push(baseUrl),
+    probe: async (baseUrl) => {
+      probes.push(baseUrl);
+      return successfulProbeUrls.has(baseUrl);
+    },
+    bootstrap: async (port) => {
+      bootstraps.push(port);
+      if (port === 4310) {
+        successfulProbeUrls.add('http://127.0.0.1:4312');
+        return { status: 'started', port: 4312 };
+      }
+      return { status: 'error', port };
+    },
+    sleep: async () => undefined,
+  });
+
+  assert.equal(recovered, true);
+  assert.deepEqual(bootstraps, [4310]);
+  assert.equal(resolvedBaseUrls.at(-1), 'http://127.0.0.1:4312');
+  assert.equal(probes.includes('http://127.0.0.1:4312'), true);
+});

@@ -11,7 +11,7 @@ import {
   updateRuntimeModelConfig,
   updateRuntimeSettings,
 } from '@/lib/api';
-import { pickFiles } from '@/lib/tauri';
+import { getWorkbenchStatus, pickFiles } from '@/lib/tauri';
 import type { Theme } from '@/stores/app';
 import type { Locale } from '@/lib/i18n';
 import type { RuntimeModelConfig, RuntimeSettingsPayload } from '@/lib/types';
@@ -437,6 +437,7 @@ export function SettingsView() {
   const [runtimeSaved, setRuntimeSaved] = useState(false);
   const [runtimeSettings, setRuntimeSettingsState] = useState<RuntimeSettingsPayload>({});
   const [healthInfo, setHealthInfo] = useState<Awaited<ReturnType<typeof checkHealth>> | null>(null);
+  const [workbenchStatus, setWorkbenchStatus] = useState<Awaited<ReturnType<typeof getWorkbenchStatus>> | null>(null);
 
   useEffect(() => {
     void checkStatus();
@@ -447,9 +448,13 @@ export function SettingsView() {
 
   async function checkStatus() {
     setStatus('checking');
-    const result = await checkHealth();
+    const [result, runtimeStatus] = await Promise.all([
+      checkHealth(),
+      getWorkbenchStatus(),
+    ]);
     setApiUrlState(getBaseUrl());
     setHealthInfo(result);
+    setWorkbenchStatus(runtimeStatus);
     if (!result.ok) {
       setStatus('disconnected');
       return;
@@ -556,6 +561,45 @@ export function SettingsView() {
               {healthInfo?.ok ? (
                 <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
                   v{healthInfo.server_version ?? healthInfo.version ?? 'unknown'} · build {healthInfo.build_id ?? 'missing'}
+                </div>
+              ) : null}
+            </div>
+          </Row>
+
+          <Row label="本地服务诊断" desc="只读展示当前客户端实际连接的本地服务与运行时状态。">
+            <div style={{ width: 360, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, fontSize: 11.5 }}>
+              <div className="card" style={{ padding: '10px 12px' }}>
+                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>当前地址</div>
+                <div style={{ color: 'rgb(var(--text-primary))', wordBreak: 'break-all' }}>{apiUrl || '未设置'}</div>
+              </div>
+              <div className="card" style={{ padding: '10px 12px' }}>
+                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>健康端口</div>
+                <div style={{ color: 'rgb(var(--text-primary))' }}>{healthInfo?.port ?? '未连接'}</div>
+              </div>
+              <div className="card" style={{ padding: '10px 12px' }}>
+                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>运行模式</div>
+                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.mode ?? 'unknown'}</div>
+              </div>
+              <div className="card" style={{ padding: '10px 12px' }}>
+                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>Node 来源</div>
+                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.node_source ?? 'unknown'}</div>
+              </div>
+              <div className="card" style={{ padding: '10px 12px' }}>
+                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>Dist 就绪</div>
+                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.dist_ready ? 'yes' : 'no'}</div>
+              </div>
+              <div className="card" style={{ padding: '10px 12px' }}>
+                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>App 管理</div>
+                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.service_managed ? 'yes' : 'no'}</div>
+              </div>
+              <div className="card" style={{ padding: '10px 12px', gridColumn: '1 / -1' }}>
+                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>Runtime Root</div>
+                <div style={{ color: 'rgb(var(--text-primary))', wordBreak: 'break-all' }}>{workbenchStatus?.resolved_runtime_root ?? '未解析'}</div>
+              </div>
+              {workbenchStatus?.message ? (
+                <div className="card" style={{ padding: '10px 12px', gridColumn: '1 / -1' }}>
+                  <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>诊断说明</div>
+                  <div style={{ color: 'rgb(var(--text-primary))', lineHeight: 1.6 }}>{workbenchStatus.message}</div>
                 </div>
               ) : null}
             </div>

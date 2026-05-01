@@ -5,6 +5,16 @@ export interface BootstrapResult {
   port?: number;
 }
 
+export interface WorkbenchBootstrapStatus {
+  mode?: string;
+  resolved_runtime_root?: string | null;
+  node_available: boolean;
+  node_source?: string;
+  dist_ready: boolean;
+  service_managed?: boolean;
+  message?: string;
+}
+
 export async function bootstrapWorkbench(port = 4310, repoRoot?: string): Promise<BootstrapResult> {
   const candidatePorts = Array.from(new Set([port, 4310, 4311, 4312, 4313]));
   for (const candidatePort of candidatePorts) {
@@ -24,7 +34,7 @@ export async function bootstrapWorkbench(port = 4310, repoRoot?: string): Promis
   return { status: 'error' };
 }
 
-export async function getWorkbenchStatus(): Promise<{ node_available: boolean; dist_ready: boolean }> {
+export async function getWorkbenchStatus(): Promise<WorkbenchBootstrapStatus> {
   try {
     return await invoke('get_workbench_bootstrap_status');
   } catch {

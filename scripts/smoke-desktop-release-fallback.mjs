@@ -52,6 +52,23 @@ async function killExistingReleaseApp() {
   await sleep(1500);
 }
 
+async function collectDiagnostics() {
+  const [releaseProcesses, primaryListener, fallbackListener, primaryHealth, fallbackHealth] = await Promise.all([
+    tryRunCommand(`pgrep -fal '${APP_MATCHER}|${RELEASE_SERVER_MATCHER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' || true`),
+    tryRunCommand(`lsof -iTCP:${PRIMARY_PORT} -sTCP:LISTEN -n -P || true`),
+    tryRunCommand(`lsof -iTCP:${FALLBACK_PORT} -sTCP:LISTEN -n -P || true`),
+    fetchHealth(PRIMARY_PORT),
+    fetchHealth(FALLBACK_PORT),
+  ]);
+  return {
+    releaseProcesses: releaseProcesses || null,
+    primaryListener: primaryListener || null,
+    fallbackListener: fallbackListener || null,
+    primaryHealth,
+    fallbackHealth,
+  };
+}
+
 async function fetchHealth(port) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
@@ -119,7 +136,14 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
+  const diagnostics = await collectDiagnostics().catch(() => null);
   console.error(error instanceof Error ? error.message : String(error));
+  if (diagnostics) {
+    console.error(JSON.stringify({
+      smoke: 'desktop-release-fallback',
+      diagnostics,
+    }, null, 2));
+  }
   process.exitCode = 1;
 });

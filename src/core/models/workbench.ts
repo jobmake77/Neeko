@@ -489,6 +489,42 @@ export const ChatAgentTraceSchema = z.object({
 });
 export type ChatAgentTrace = z.infer<typeof ChatAgentTraceSchema>;
 
+export const ChatAgentTraceReplayStepSchema = z.object({
+  id: z.string().uuid(),
+  type: ChatAgentTraceEventTypeSchema,
+  at: z.string().datetime(),
+  summary: z.string(),
+  status: z.enum(['completed', 'failed']),
+  duration_ms: z.number().int().min(0).optional(),
+  model: z.object({
+    provider: z.string().optional(),
+    model: z.string().optional(),
+  }).optional(),
+  counts: z.record(z.string(), z.number().int().min(0)).optional(),
+  orchestration_mode: z.string().optional(),
+  failure_summary: z.string().optional(),
+});
+export type ChatAgentTraceReplayStep = z.infer<typeof ChatAgentTraceReplayStepSchema>;
+
+export const ChatAgentTraceReplaySchema = z.object({
+  trace_id: z.string().uuid(),
+  conversation_id: z.string().uuid(),
+  persona_slug: z.string(),
+  user_message_id: z.string().uuid(),
+  assistant_message_id: z.string().uuid().optional(),
+  status: ChatAgentTraceStatusSchema,
+  started_at: z.string().datetime(),
+  finished_at: z.string().datetime().optional(),
+  duration_ms: z.number().int().min(0).optional(),
+  model: z.object({
+    provider: z.string().optional(),
+    model: z.string().optional(),
+  }).optional(),
+  failure_summary: z.string().optional(),
+  steps: z.array(ChatAgentTraceReplayStepSchema),
+});
+export type ChatAgentTraceReplay = z.infer<typeof ChatAgentTraceReplaySchema>;
+
 export const WorkbenchRunSchema = z.object({
   id: z.string().uuid(),
   type: z.enum(['create', 'train', 'experiment', 'export', 'source_sync']),

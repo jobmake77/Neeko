@@ -378,11 +378,14 @@ export class SkillRegistry {
 
 ### Phase 2: Trace / Replay
 
+状态：Phase 2 trace 基线已落地；当前增量增加最小 replay / diagnostic 派生层。
+
 目标：
 
 - 新增 trace schema 和 store 方法。
 - 每轮聊天写入 trace。
 - trace 能记录成功和失败路径。
+- 从 `ChatAgentTrace` 安全派生 replay timeline，供工程诊断和回归测试使用。
 
 实现策略：
 
@@ -397,6 +400,7 @@ export class SkillRegistry {
 - 模型 fallback 记录 llm stage。
 - 附件处理失败或候选生成跳过时 trace 可读。
 - trace 不改变 conversation bundle 的既有字段要求。
+- replay 输出 stage timeline、status、duration、model、persona_slug、conversation_id 和失败摘要，不包含完整 user / assistant message content。
 
 ### Phase 3: SkillRegistry V1
 

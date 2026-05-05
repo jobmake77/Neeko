@@ -9,6 +9,8 @@ import {
   ChatAgentTrace,
   ChatAgentTraceEvent,
   ChatAgentTraceEventType,
+  ChatAgentTraceReplay,
+  ChatAgentTraceReplayStep,
   CitationItem,
   Conversation,
   ConversationMessage,
@@ -57,6 +59,51 @@ export interface ChatAgentPersistenceResult {
   assistantMessage: ConversationMessage;
   memoryCandidates: MemoryCandidate[];
   sessionSummary: SessionSummary;
+}
+
+export interface ChatAgentTraceDiagnosticStage {
+  id: string;
+  type: ChatAgentTraceEventType;
+  at: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ChatAgentTraceDiagnosticMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content_length: number;
+  content_preview?: string;
+}
+
+export interface ChatAgentTraceDiagnostic {
+  trace_id: string;
+  conversation_id: string;
+  persona_slug: string;
+  status: ChatAgentTrace['status'];
+  started_at: string;
+  finished_at?: string;
+  model?: ChatAgentTrace['model'];
+  error?: string;
+  stage_timeline: ChatAgentTraceDiagnosticStage[];
+  messages?: {
+    user?: ChatAgentTraceDiagnosticMessage;
+    assistant?: ChatAgentTraceDiagnosticMessage;
+  };
+}
+
+export interface ChatAgentTraceReplayDiagnostic {
+  trace_id: string;
+  conversation_id: string;
+  persona_slug: string;
+  status: ChatAgentTrace['status'];
+  started_at: string;
+  finished_at?: string;
+  duration_ms?: number;
+  model?: ChatAgentTrace['model'];
+  failure_summary?: string;
+  stage_timeline: ChatAgentTraceReplayStep[];
+  message_summaries: ChatAgentTraceDiagnosticMessage[];
 }
 
 export interface ChatAgentContext {
@@ -127,6 +174,81 @@ export function failChatAgentTrace(trace: ChatAgentTrace, error: unknown, at = n
   };
 }
 
+export function buildChatAgentTraceReplay(trace: ChatAgentTrace): ChatAgentTraceReplay {
+  return {
+    trace_id: trace.id,
+    conversation_id: trace.conversation_id,
+    persona_slug: trace.persona_slug,
+    user_message_id: trace.user_message_id,
+    assistant_message_id: trace.assistant_message_id,
+    status: trace.status,
+    started_at: trace.started_at,
+    finished_at: trace.finished_at,
+    duration_ms: calculateDurationMs(trace.started_at, trace.finished_at),
+    model: trace.model,
+    failure_summary: trace.error,
+    steps: trace.stages.map((stage, index) => buildChatAgentTraceReplayStep(trace, stage, index)),
+  };
+}
+
+export function toChatAgentTraceDiagnostic(
+  trace: ChatAgentTrace,
+  context: {
+    userMessage?: ConversationMessage;
+    assistantMessage?: ConversationMessage;
+  } = {},
+): ChatAgentTraceDiagnostic {
+  return {
+    trace_id: trace.id,
+    conversation_id: trace.conversation_id,
+    persona_slug: trace.persona_slug,
+    status: trace.status,
+    started_at: trace.started_at,
+    finished_at: trace.finished_at,
+    model: trace.model,
+    error: trace.error,
+    stage_timeline: trace.stages.map((stage) => ({
+      id: stage.id,
+      type: stage.type,
+      at: stage.at,
+      summary: stage.summary,
+      metadata: sanitizeDiagnosticMetadata(stage.metadata),
+    })),
+    messages: {
+      user: context.userMessage ? summarizeDiagnosticMessage(context.userMessage) : undefined,
+      assistant: context.assistantMessage ? summarizeDiagnosticMessage(context.assistantMessage) : undefined,
+    },
+  };
+}
+
+export function replayChatAgentTrace(
+  trace: ChatAgentTrace,
+  context: {
+    messages?: ConversationMessage[];
+  } = {},
+): ChatAgentTraceReplayDiagnostic {
+  const replay = buildChatAgentTraceReplay(trace);
+  return {
+    trace_id: replay.trace_id,
+    conversation_id: replay.conversation_id,
+    persona_slug: replay.persona_slug,
+    status: replay.status,
+    started_at: replay.started_at,
+    finished_at: replay.finished_at,
+    duration_ms: replay.duration_ms,
+    model: replay.model,
+    failure_summary: replay.failure_summary,
+    stage_timeline: replay.steps,
+    message_summaries: (context.messages ?? [])
+      .filter((message) => message.id === trace.user_message_id || message.id === trace.assistant_message_id)
+      .map((message) => summarizeDiagnosticMessage(message)),
+  };
+}
+
+export function selectExecutableSkillSelections(selections: SkillSelection[]): SkillSelection[] {
+  return selections.filter((selection) => selection.skill.enabled && selection.skill.permission === 'read');
+}
+
 export class SkillRegistry {
   selectForTurn(input: {
     userMessage: string;
@@ -136,7 +258,7 @@ export class SkillRegistry {
     const library = loadSkillLibrary(settings.getPersonaDir(input.personaSlug), input.personaSlug);
     const selected = selectTriggeredSkillsForQuery(library, input.userMessage, input.maxSkills ?? 2);
     const byId = new Map(library.distilled_skills.map((skill) => [skill.id, skill]));
-    return selected.triggered
+    const selectedSkills = selected.triggered
       .map((match): SkillSelection | null => {
         const skill = byId.get(match.id);
         if (!skill) return null;
@@ -153,6 +275,7 @@ export class SkillRegistry {
         };
       })
       .filter((item): item is SkillSelection => Boolean(item));
+    return selectExecutableSkillSelections(selectedSkills);
   }
 }
 
@@ -239,10 +362,11 @@ export class PersonaChatAgentRuntime {
 
   async run(input: ChatAgentRuntimeInput): Promise<ChatAgentRuntimeResult> {
     const startedAt = input.now ?? new Date().toISOString();
+    const conversation = this.store.getConversation(input.conversationId);
     let trace: ChatAgentTrace = {
       id: input.traceId ?? crypto.randomUUID(),
       conversation_id: input.conversationId,
-      persona_slug: '',
+      persona_slug: conversation?.persona_slug ?? '',
       user_message_id: input.userMessage.id,
       started_at: startedAt,
       model: input.modelOverride
@@ -327,5 +451,124 @@ export class PersonaChatAgentRuntime {
 
 function sanitizeTraceError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/\s+/g, ' ').trim().slice(0, 500) || 'Unknown chat agent runtime error.';
+  const compressed = raw.replace(/\s+/g, ' ').trim();
+  const withoutSecrets = compressed
+    .replace(/\b(sk|ghp|github_pat|glpat|xox[baprs])-[-_A-Za-z0-9]+\b/g, '[redacted-token]')
+    .replace(/\b(password|token|api key|secret)\s*(?:is|=|:)?\s*[-_A-Za-z0-9]+\b/gi, '$1 [redacted]');
+  return withoutSecrets.slice(0, 240) || 'Unknown chat agent runtime error.';
+}
+
+function buildChatAgentTraceReplayStep(
+  trace: ChatAgentTrace,
+  stage: ChatAgentTraceEvent,
+  index: number,
+): ChatAgentTraceReplayStep {
+  const nextStage = trace.stages[index + 1];
+  return {
+    id: stage.id,
+    type: stage.type,
+    at: stage.at,
+    summary: stage.summary,
+    status: stage.type === 'failed' ? 'failed' : 'completed',
+    duration_ms: calculateDurationMs(stage.at, nextStage?.at ?? trace.finished_at),
+    model: extractStageModel(stage, trace.model),
+    counts: extractStageCounts(stage),
+    orchestration_mode: readStringMetadata(stage, 'orchestration_mode'),
+    failure_summary: stage.type === 'failed'
+      ? readStringMetadata(stage, 'error') ?? trace.error
+      : undefined,
+  };
+}
+
+function extractStageModel(
+  stage: ChatAgentTraceEvent,
+  fallback: ChatAgentTrace['model'],
+): ChatAgentTraceReplayStep['model'] {
+  if (stage.type !== 'llm_called') return undefined;
+  const provider = readStringMetadata(stage, 'provider') ?? fallback?.provider;
+  const model = readStringMetadata(stage, 'model') ?? fallback?.model;
+  if (!provider && !model) return undefined;
+  return { provider, model };
+}
+
+function extractStageCounts(stage: ChatAgentTraceEvent): Record<string, number> | undefined {
+  const metadata = stage.metadata ?? {};
+  const allowedCountKeys = [
+    'attachment_count',
+    'candidate_count',
+    'history_count',
+    'memory_count',
+    'message_count',
+    'persona_dimension_count',
+    'skill_count',
+    'triggered_skill_count',
+  ];
+  const counts = Object.fromEntries(
+    allowedCountKeys
+      .map((key) => [key, readNonNegativeIntegerMetadata(metadata, key)] as const)
+      .filter((item): item is readonly [string, number] => typeof item[1] === 'number'),
+  );
+  return Object.keys(counts).length > 0 ? counts : undefined;
+}
+
+function readStringMetadata(stage: ChatAgentTraceEvent, key: string): string | undefined {
+  const value = stage.metadata?.[key];
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function readNonNegativeIntegerMetadata(metadata: Record<string, unknown>, key: string): number | undefined {
+  const value = metadata[key];
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function calculateDurationMs(start: string, end: string | undefined): number | undefined {
+  if (!end) return undefined;
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return undefined;
+  return Math.max(0, endMs - startMs);
+}
+
+function sanitizeDiagnosticMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!metadata) return {};
+  const safeKeys = new Set([
+    'attachment_count',
+    'candidate_count',
+    'has_session_summary',
+    'history_count',
+    'max_tool_steps',
+    'memory_count',
+    'message_count',
+    'model',
+    'orchestration_mode',
+    'persona_dimension_count',
+    'provider',
+    'safe_count',
+    'skill_count',
+    'skill_ids',
+    'triggered_skill_count',
+    'write_enabled',
+  ]);
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([key, value]) => safeKeys.has(key) && isDiagnosticMetadataValueSafe(value)),
+  );
+}
+
+function isDiagnosticMetadataValueSafe(value: unknown): boolean {
+  if (typeof value === 'string') return value.length <= 120;
+  if (typeof value === 'number' || typeof value === 'boolean') return true;
+  return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length <= 120);
+}
+
+function summarizeDiagnosticMessage(message: ConversationMessage): ChatAgentTraceDiagnosticMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    content_length: message.content.length,
+    content_preview: undefined,
+  };
 }

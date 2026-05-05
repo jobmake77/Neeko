@@ -316,6 +316,10 @@ export class WorkbenchStore {
       .sort((a, b) => b.started_at.localeCompare(a.started_at));
   }
 
+  getLatestChatAgentTrace(conversationId: string): ChatAgentTrace | null {
+    return this.listChatAgentTraces(conversationId)[0] ?? null;
+  }
+
   saveRun(run: WorkbenchRun): WorkbenchRun {
     const parsed = WorkbenchRunSchema.parse(run);
     writeJsonFile(this.getRunPath(parsed.id), parsed);

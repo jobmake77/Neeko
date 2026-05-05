@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   __trainTestables,
+  settings,
   WorkbenchService,
   WorkbenchStore,
 } from '../dist/testing/train-test-entry.js';
@@ -333,4 +334,314 @@ test('sendMessage keeps conversation bundle shape stable and writes a completed 
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test('trace diagnostic summary redacts message content and exposes stage timeline', serial, () => {
+  const toChatAgentTraceDiagnostic = requireRuntimeTestable('toChatAgentTraceDiagnostic');
+  const now = '2026-05-05T03:00:00.000Z';
+  const secretUserContent = 'Please remember my private deployment password is swordfish.';
+  const secretAssistantContent = 'I will not repeat swordfish in diagnostics.';
+  const trace = {
+    ...makeTrace({
+      conversationId: '12121212-1212-4212-8212-121212121212',
+      personaSlug: 'runtime-persona',
+      userMessageId: '34343434-3434-4434-8434-343434343434',
+      assistantMessageId: '56565656-5656-4565-8565-565656565656',
+      traceId: '78787878-7878-4787-8787-787878787878',
+      now,
+    }),
+    stages: [
+      {
+        id: 'abababab-abab-4bab-8bab-abababababab',
+        type: 'context_assembled',
+        at: now,
+        summary: 'Context assembled without raw content.',
+        metadata: {
+          user_message: secretUserContent,
+          assistant_message: secretAssistantContent,
+          history: [{ role: 'user', content: secretUserContent }],
+          safe_count: 1,
+        },
+      },
+      {
+        id: 'bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc',
+        type: 'llm_called',
+        at: now,
+        summary: 'Mock model call completed.',
+        metadata: {
+          provider: 'mock',
+          model: 'mock-chat',
+          prompt: secretUserContent,
+        },
+      },
+    ],
+  };
+
+  const diagnostic = toChatAgentTraceDiagnostic(trace, {
+    userMessage: makeMessage(trace.user_message_id, trace.conversation_id, 'user', secretUserContent, now),
+    assistantMessage: makeMessage(trace.assistant_message_id, trace.conversation_id, 'assistant', secretAssistantContent, now),
+  });
+  const serialized = JSON.stringify(diagnostic);
+
+  assert.equal(serialized.includes(secretUserContent), false);
+  assert.equal(serialized.includes(secretAssistantContent), false);
+  assert.equal(serialized.includes('swordfish'), false);
+  assert.equal(diagnostic.status, 'completed');
+  assert.deepEqual(
+    diagnostic.stage_timeline.map((stage) => stage.type),
+    ['context_assembled', 'llm_called'],
+  );
+  assert.deepEqual(
+    diagnostic.messages,
+    {
+      user: {
+        id: trace.user_message_id,
+        role: 'user',
+        content_length: secretUserContent.length,
+        content_preview: undefined,
+      },
+      assistant: {
+        id: trace.assistant_message_id,
+        role: 'assistant',
+        content_length: secretAssistantContent.length,
+        content_preview: undefined,
+      },
+    },
+  );
+  assert.equal(diagnostic.stage_timeline[0].metadata.safe_count, 1);
+  assert.equal('user_message' in diagnostic.stage_timeline[0].metadata, false);
+  assert.equal('history' in diagnostic.stage_timeline[0].metadata, false);
+  assert.equal('prompt' in diagnostic.stage_timeline[1].metadata, false);
+});
+
+test('runtime failure persists failed trace with failed stage and sanitized compressed error', serial, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'neeko-runtime-failed-trace-'));
+  const store = new WorkbenchStore(join(dataDir, 'workbench'));
+  const service = new WorkbenchService(store);
+  const now = '2026-05-05T04:00:00.000Z';
+  const conversationId = '89898989-8989-4989-8989-898989898989';
+  const sensitiveError = [
+    'Mock provider exploded with API key sk-live-secret',
+    'Full prompt: user said private password swordfish',
+    'Stack trace line '.repeat(80),
+  ].join('\n');
+
+  try {
+    store.saveConversation(makeConversation(conversationId, 'runtime-persona', now));
+    service.loadPersonaAssets = () => ({
+      persona: {
+        slug: 'runtime-persona',
+        name: 'Runtime Persona',
+        status: 'available',
+        doc_count: 0,
+        memory_node_count: 0,
+        training_rounds: 0,
+        updated_at: now,
+      },
+      soul: {
+        language_style: { frequent_phrases: [] },
+        values: { core_beliefs: [] },
+        knowledge_domains: { expert: [] },
+        coverage_score: 0,
+      },
+    });
+    service.generateReply = async () => {
+      throw new Error(sensitiveError);
+    };
+
+    await assert.rejects(
+      () => service.sendMessage(
+        conversationId,
+        'Please debug this without leaking private password swordfish.',
+        [],
+        { provider: 'openai', model: 'mock-chat' },
+      ),
+      /Mock provider exploded/,
+    );
+
+    const traces = store.listChatAgentTraces(conversationId);
+    assert.equal(traces.length, 1);
+    assert.equal(traces[0].status, 'failed');
+    assert.equal(traces[0].assistant_message_id, undefined);
+    assert.equal(typeof traces[0].finished_at, 'string');
+    assert.equal(traces[0].stages.at(-1).type, 'failed');
+    assert.equal(traces[0].stages.some((stage) => stage.type === 'llm_called'), true);
+    assert.equal(traces[0].error.includes('\n'), false);
+    assert.equal(traces[0].error.length <= 240, true);
+    assert.equal(traces[0].error.includes('swordfish'), false);
+    assert.equal(traces[0].error.includes('sk-live-secret'), false);
+    assert.equal(JSON.stringify(traces[0]).includes('private password swordfish'), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('chat agent replay uses trace timeline and summaries without full message content', serial, () => {
+  const buildChatAgentTraceReplay = requireRuntimeTestable('buildChatAgentTraceReplay');
+  const now = '2026-05-05T05:00:00.000Z';
+  const secretUserContent = 'The deployment token is ghp_private_token and should not be replayed.';
+  const secretAssistantContent = 'The private token ghp_private_token stays out of replay output.';
+  const trace = makeTrace({
+    conversationId: '91919191-9191-4919-8919-919191919191',
+    personaSlug: 'runtime-persona',
+    userMessageId: '92929292-9292-4929-8929-929292929292',
+    assistantMessageId: '93939393-9393-4939-8939-939393939393',
+    traceId: '94949494-9494-4949-8949-949494949494',
+    now,
+  });
+
+  const messages = [
+    makeMessage(trace.user_message_id, trace.conversation_id, 'user', secretUserContent, now),
+    makeMessage(trace.assistant_message_id, trace.conversation_id, 'assistant', secretAssistantContent, now),
+  ];
+  const replay = buildChatAgentTraceReplay(trace, { messages });
+  const serialized = JSON.stringify(replay);
+
+  assert.equal(serialized.includes(secretUserContent), false);
+  assert.equal(serialized.includes(secretAssistantContent), false);
+  assert.equal(serialized.includes('ghp_private_token'), false);
+  assert.equal(replay.trace_id, trace.id);
+  assert.equal(replay.status, 'completed');
+  assert.deepEqual(
+    replay.steps.map((stage) => stage.type),
+    ['context_assembled', 'llm_called', 'reply_finalized', 'summary_updated'],
+  );
+  assert.equal('message_summaries' in replay, false);
+  assert.equal(replay.steps.every((step) => typeof step.summary === 'string'), true);
+});
+
+test('SkillRegistry maps selected persona skills to read permission regression', serial, () => {
+  const SkillRegistry = requireRuntimeTestable('SkillRegistry');
+  const originalDataDir = settings.get('neekoDataDir');
+  const dataDir = mkdtempSync(join(tmpdir(), 'neeko-runtime-skill-registry-'));
+  const personaSlug = 'runtime-skill-persona';
+  const now = '2026-05-05T06:00:00.000Z';
+  const personaDir = join(dataDir, 'personas', personaSlug);
+
+  try {
+    settings.set('neekoDataDir', dataDir);
+    mkdirSync(personaDir, { recursive: true });
+    writeFileSync(
+      join(personaDir, 'skills.json'),
+      JSON.stringify({
+        schema_version: 2,
+        persona_slug: personaSlug,
+        version: 1,
+        updated_at: now,
+        source_trace: [],
+        origin_skills: [],
+        distilled_skills: [
+          {
+            id: 'slow-fast-read-context',
+            name: 'Slow Fast Runtime Design',
+            central_thesis: 'Use slow fast runtime design to keep the chat agent maintainable.',
+            why: 'The user asks for runtime design tradeoffs.',
+            how_steps: ['Map the stage boundary.', 'Keep writes explicit.'],
+            boundaries: ['Do not mutate formal persona assets.'],
+            trigger_signals: ['slow fast runtime design', 'maintainable runtime'],
+            anti_patterns: [],
+            evidence_refs: [],
+            confidence: 0.9,
+            contradiction_risk: 0,
+            method_completeness: 0.9,
+            coverage_tags: ['runtime'],
+            quality_score: 0.9,
+            source_origin_ids: [],
+            last_validated_at: null,
+          },
+        ],
+        candidate_skill_pool: [],
+        clusters: [],
+        expanded_skills: [],
+        pending_candidates: [],
+      }, null, 2),
+      'utf-8',
+    );
+
+    const selected = new SkillRegistry().selectForTurn({
+      userMessage: 'Can you apply slow fast runtime design here?',
+      personaSlug,
+      maxSkills: 3,
+    });
+
+    assert.equal(selected.length, 1);
+    assert.equal(selected[0].skill.id, 'slow-fast-read-context');
+    assert.equal(selected[0].skill.permission, 'read');
+    assert.equal(selected[0].skill.enabled, true);
+    assert.equal(selected.every((item) => item.skill.permission === 'read'), true);
+  } finally {
+    settings.set('neekoDataDir', originalDataDir);
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('SkillRegistry excludes disabled and high-permission skills from automatic execution selections', serial, () => {
+  const selectExecutableSkillSelections = requireRuntimeTestable('selectExecutableSkillSelections');
+  const selections = [
+    {
+      skill: {
+        id: 'read-context',
+        displayName: 'Read context',
+        description: 'Read-only prompt context.',
+        permission: 'read',
+        enabled: true,
+      },
+      confidence: 0.9,
+    },
+    {
+      skill: {
+        id: 'disabled-read-context',
+        displayName: 'Disabled read context',
+        description: 'Disabled read-only prompt context.',
+        permission: 'read',
+        enabled: false,
+      },
+      confidence: 0.95,
+    },
+    {
+      skill: {
+        id: 'write-context',
+        displayName: 'Write context',
+        description: 'Would write outside prompt context.',
+        permission: 'write',
+        enabled: true,
+      },
+      confidence: 0.91,
+    },
+    {
+      skill: {
+        id: 'network-context',
+        displayName: 'Network context',
+        description: 'Would use network access.',
+        permission: 'network',
+        enabled: true,
+      },
+      confidence: 0.92,
+    },
+    {
+      skill: {
+        id: 'filesystem-context',
+        displayName: 'Filesystem context',
+        description: 'Would use filesystem access.',
+        permission: 'filesystem',
+        enabled: true,
+      },
+      confidence: 0.93,
+    },
+    {
+      skill: {
+        id: 'dangerous-context',
+        displayName: 'Dangerous context',
+        description: 'Reserved for unsafe operations.',
+        permission: 'dangerous',
+        enabled: true,
+      },
+      confidence: 0.94,
+    },
+  ];
+
+  assert.deepEqual(
+    selectExecutableSkillSelections(selections).map((item) => item.skill.id),
+    ['read-context'],
+  );
 });

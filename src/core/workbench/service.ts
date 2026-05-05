@@ -7212,6 +7212,31 @@ export class WorkbenchService {
     ) ?? null;
   }
 
+  private shouldBlockSourceSyncForSettledCollection(
+    slug: string,
+    mode: 'incremental_sync' | 'deep_fetch',
+    config = this.getPersonaConfig(slug),
+  ): { blocked: boolean; summary?: string } {
+    if (mode !== 'deep_fetch' || this.isSoftClosedConfig(config)) return { blocked: false };
+    const state = this.summarizeCollectionState(slug, { preferCachedDocumentCount: true });
+    if (state.nextAction !== 'soft_close_candidate' && state.nextAction !== 'pause_until_updates') return { blocked: false };
+    if (!this.shouldSoftCloseCollection(
+      slug,
+      state,
+      config.update_policy.no_progress_deep_fetch_streak
+        ?? ((state.historyExhausted || state.stopReason === 'search_horizon_reached') && state.collectionCycle > 0 ? 1 : 0),
+    )) {
+      return { blocked: false };
+    }
+    const persona = this.promotePersonaToSoftClosed(slug);
+    return {
+      blocked: true,
+      summary: persona
+        ? this.buildSoftCloseSummary()
+        : 'No new source content was available for additional cultivation.',
+    };
+  }
+
   private hasFreshSourceSyncHeartbeat(source: PersonaSource): boolean {
     const progress = this.readSourceSyncProgress(source);
     const heartbeatAt = progress?.last_heartbeat_at ?? progress?.updated_at;
@@ -7267,6 +7292,10 @@ export class WorkbenchService {
     }
 
     const config = this.getPersonaConfig(slug);
+    const settledCollection = this.shouldBlockSourceSyncForSettledCollection(slug, mode, config);
+    if (settledCollection.blocked) {
+      return { imports: [], run: null, summary: settledCollection.summary ?? this.buildSoftCloseSummary() };
+    }
     if (mode === 'deep_fetch') {
       const conflict = this.getHandleLevelSourceSyncConflict(slug, config);
       if (conflict) {
@@ -8986,7 +9015,14 @@ export class WorkbenchService {
     const trainingReport = this.readTrainingReport(slug);
     const softClosed = this.isSoftClosedConfig(config);
     if (trainingContext?.state === 'interrupted' && this.isPersonaReady(base) && !softClosed) {
-      base = this.demoteInterruptedPersona(slug, base);
+      const settledCollection = config
+        ? this.shouldBlockSourceSyncForSettledCollection(slug, 'deep_fetch', config)
+        : { blocked: false };
+      if (settledCollection.blocked) {
+        base = this.readPersonaSummary(slug) ?? base;
+      } else {
+        base = this.demoteInterruptedPersona(slug, base);
+      }
     } else if (this.shouldPromotePersonaToReady(base, trainingContext, trainingReport)) {
       base = this.promotePersonaToReady(slug, base, trainingReport);
     }

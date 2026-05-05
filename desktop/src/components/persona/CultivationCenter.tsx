@@ -139,6 +139,18 @@ function formatWindowSentence(detail?: CultivationDetail) {
   return `${sourceLabel} · ${currentWindow.window_start.slice(0, 10)} ~ ${currentWindow.window_end.slice(0, 10)}`;
 }
 
+function shouldAutoContinueCultivation(detail?: CultivationDetail) {
+  const nextAction = detail?.next_action ?? detail?.source_summary?.next_action;
+  if (nextAction === 'pause_until_updates' || nextAction === 'soft_close_candidate') return false;
+  const stopReason = detail?.collection_stop_reason ?? detail?.source_summary?.collection_stop_reason;
+  if (stopReason === 'soft_closed_material_exhausted' || stopReason === 'unable_to_progress') return false;
+  return (
+    detail?.evaluation_passed === false
+    || detail?.source_summary?.evaluation_passed === false
+    || stopReason === 'evaluation_retry_pending'
+  );
+}
+
 function getLatestSourceWindow(detail?: CultivationDetail) {
   if (!detail?.source_items?.length) return undefined;
   return detail.source_items
@@ -904,12 +916,7 @@ export function CultivationCenter({
           void api.checkPersonaUpdates(persona.slug).catch(() => undefined);
           return;
         }
-        const shouldDeepFetch =
-          detail?.evaluation_passed === false
-          || detail?.source_summary?.evaluation_passed === false
-          || detail?.collection_stop_reason === 'evaluation_retry_pending'
-          || detail?.source_summary?.collection_stop_reason === 'evaluation_retry_pending';
-        if (shouldDeepFetch) {
+        if (shouldAutoContinueCultivation(detail)) {
           void api.continueCultivation(persona.slug).catch(() => undefined);
           return;
         }

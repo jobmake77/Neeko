@@ -109,193 +109,201 @@ export function ChatInput() {
       style={{
         flexShrink: 0,
         background: 'rgb(var(--bg-card))',
-        borderTop: '1px solid rgb(var(--border))',
-        boxShadow: '0 -2px 8px 0 rgb(0 0 0 / 0.04)',
-        padding: '12px 16px',
+        borderTop: '1px solid rgb(var(--border-light))',
+        padding: '12px 14px 14px',
       }}
     >
-      {/* Attachment chips */}
-      {composerAttachments.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-          {composerAttachments.map((file) => (
-            <div key={file.id} style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '7px 10px',
-              borderRadius: 14,
-              background: 'rgb(var(--bg-hover))',
-              border: '1px solid rgb(var(--border))',
-              fontSize: 12,
-              color: 'rgb(var(--text-primary))',
-              minWidth: 0,
-            }}>
-              <span
-                style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: 8,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: 'rgb(var(--bg-card))',
-                  border: '1px solid rgb(var(--border-light))',
-                  color: 'rgb(var(--text-secondary))',
-                  flexShrink: 0,
-                }}
-              >
-                {renderAttachmentIcon(file.type)}
-              </span>
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <span style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{file.name}</span>
-                <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', lineHeight: 1.3 }}>
-                  {formatAttachmentType(file.type)} · {t('attachmentWaiting')}
-                </span>
-              </div>
-              <button
-                onClick={() => removeAttachment(file.id)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'rgb(var(--text-tertiary))', flexShrink: 0 }}
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div
-        onClick={() => textareaRef.current?.focus()}
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
-          background: 'rgb(var(--bg-card))',
-          border: focused ? '1px solid rgb(var(--accent))' : '1px solid rgb(var(--border))',
-          borderRadius: 18,
-          padding: '12px 14px',
-          minHeight: 96,
-          boxShadow: focused ? '0 0 0 3px rgb(var(--accent) / 0.12)' : '0 1px 2px rgb(0 0 0 / 0.04)',
-          cursor: 'text',
-          transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
-        }}
+        style={{ width: '100%' }}
       >
-        <textarea
-          ref={textareaRef}
-          disabled={sending}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          placeholder={t('typeMessage')}
-          rows={1}
-          style={{
-            flex: 1,
-            width: '100%',
-            resize: 'none',
-            border: 'none',
-            outline: 'none',
-            background: 'transparent',
-            color: 'rgb(var(--text-primary))',
-            fontSize: 14.5,
-            lineHeight: '22px',
-            fontFamily: 'inherit',
-            padding: 0,
-            minHeight: 52,
-            maxHeight: 132,
-            overflowY: 'auto',
-            textAlign: 'left',
-            marginTop: 0,
-          }}
-        />
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 10,
-            borderTop: '1px solid rgb(var(--border-light))',
-            paddingTop: 10,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            <button
-              className="btn btn-icon"
-              onClick={() => void handlePickFiles()}
-              disabled={sending}
-              title="添加附件"
-              style={{
-                width: 30,
-                height: 30,
-                flexShrink: 0,
-                color: 'rgb(var(--text-tertiary))',
-                borderRadius: 999,
-              }}
-            >
-              <Paperclip size={15} />
-            </button>
-            {availableProviders.length > 0 && chatModel ? (
-              <>
-                <div style={{ position: 'relative' }}>
-                  <select
-                    value={chatModel.model}
-                    onChange={(e) => setChatModel(e.target.value)}
-                    style={compactSelectStyle(156)}
-                  >
-                    {(CHAT_MODEL_OPTIONS[chatModel.provider] ?? []).map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown size={12} style={compactChevronStyle} />
-                </div>
-                <div style={{ position: 'relative' }}>
-                  <select
-                    value={chatModel.provider}
-                    onChange={(e) => setChatProvider(e.target.value as RuntimeModelConfig['provider'])}
-                    style={compactSelectStyle(92)}
-                  >
-                    {availableProviders.map((provider) => (
-                      <option key={provider} value={provider}>
-                        {PROVIDER_SHORT_LABELS[provider]}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown size={12} style={compactChevronStyle} />
-                </div>
-              </>
-            ) : (
-              <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{t('noChatModel')}</span>
-            )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-            <div
-              style={{
-                textAlign: 'right',
-                fontSize: 11,
-                color: 'rgb(var(--text-tertiary))',
-              }}
-            >
-              {t('sendHint')}
-            </div>
-            <button
-              className="btn btn-primary"
-              disabled={sending}
-              onClick={submit}
-              title={t('sendHint')}
-              style={{
-                width: 34,
-                height: 34,
-                padding: 0,
-                flexShrink: 0,
+        {composerAttachments.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+            {composerAttachments.map((file) => (
+              <div key={file.id} style={{
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 999,
-              }}
-            >
-              <Send size={15} />
-            </button>
+                gap: 8,
+                padding: '7px 10px',
+                borderRadius: 12,
+                background: 'rgb(var(--bg-card))',
+                border: '1px solid rgb(var(--border-light))',
+                fontSize: 12,
+                color: 'rgb(var(--text-primary))',
+                minWidth: 0,
+                boxShadow: '0 1px 2px rgb(0 0 0 / 0.03)',
+              }}>
+                <span
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 7,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'rgb(var(--bg-hover))',
+                    border: '1px solid rgb(var(--border-light))',
+                    color: 'rgb(var(--text-secondary))',
+                    flexShrink: 0,
+                  }}
+                >
+                  {renderAttachmentIcon(file.type)}
+                </span>
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                  <span style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{file.name}</span>
+                  <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', lineHeight: 1.3 }}>
+                    {formatAttachmentType(file.type)} · {t('attachmentWaiting')}
+                  </span>
+                </div>
+                <button
+                  onClick={() => removeAttachment(file.id)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'rgb(var(--text-tertiary))', flexShrink: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div
+          className="window-shell"
+          onClick={() => textareaRef.current?.focus()}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            background: 'rgb(var(--bg-card))',
+            border: focused ? '1px solid rgb(var(--text-primary) / 0.28)' : '1px solid rgb(var(--border))',
+            borderRadius: 8,
+            padding: '9px 11px 9px',
+            minHeight: 76,
+            boxShadow: focused
+              ? '0 0 0 3px rgb(var(--accent) / 0.10)'
+              : 'none',
+            cursor: 'text',
+            transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
+          }}
+        >
+          <textarea
+            ref={textareaRef}
+            disabled={sending}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            placeholder={t('typeMessage')}
+            rows={1}
+            style={{
+              flex: 1,
+              width: '100%',
+              resize: 'none',
+              border: 'none',
+              outline: 'none',
+              background: 'transparent',
+              color: 'rgb(var(--text-primary))',
+              fontSize: 13.5,
+              lineHeight: '21px',
+              fontFamily: 'inherit',
+              padding: '2px 2px 0',
+              minHeight: 32,
+              maxHeight: 126,
+              overflowY: 'auto',
+              textAlign: 'left',
+              marginTop: 0,
+            }}
+          />
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              paddingTop: 4,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+              <button
+                className="btn btn-icon"
+                onClick={() => void handlePickFiles()}
+                disabled={sending}
+                title="添加附件"
+                style={{
+                  width: 28,
+                  height: 28,
+                  flexShrink: 0,
+                  color: 'rgb(var(--text-tertiary))',
+                  borderRadius: 999,
+                }}
+              >
+                <Paperclip size={15} />
+              </button>
+              {availableProviders.length > 0 && chatModel ? (
+                <>
+                  <div style={{ position: 'relative' }}>
+                    <select
+                      value={chatModel.model}
+                      onChange={(e) => setChatModel(e.target.value)}
+                      style={compactSelectStyle(152)}
+                    >
+                      {(CHAT_MODEL_OPTIONS[chatModel.provider] ?? []).map((model) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={12} style={compactChevronStyle} />
+                  </div>
+                  <div style={{ position: 'relative' }}>
+                    <select
+                      value={chatModel.provider}
+                      onChange={(e) => setChatProvider(e.target.value as RuntimeModelConfig['provider'])}
+                      style={compactSelectStyle(88)}
+                    >
+                      {availableProviders.map((provider) => (
+                        <option key={provider} value={provider}>
+                          {PROVIDER_SHORT_LABELS[provider]}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={12} style={compactChevronStyle} />
+                  </div>
+                </>
+              ) : (
+                <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>{t('noChatModel')}</span>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexShrink: 0 }}>
+              <div
+                style={{
+                  textAlign: 'right',
+                  fontSize: 11,
+                  color: 'rgb(var(--text-tertiary))',
+                }}
+              >
+                {t('sendHint')}
+              </div>
+              <button
+                className="btn btn-primary"
+                disabled={sending}
+                onClick={submit}
+                title={t('sendHint')}
+                style={{
+                  width: 34,
+                  height: 34,
+                  padding: 0,
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 999,
+                  background: 'rgb(var(--accent))',
+                  color: 'rgb(var(--bg-card))',
+                  boxShadow: '0 8px 18px rgb(var(--accent) / 0.24)',
+                }}
+              >
+                <Send size={15} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -315,10 +323,10 @@ const compactChevronStyle: React.CSSProperties = {
 function compactSelectStyle(width: number): React.CSSProperties {
   return {
     width,
-    height: 28,
-    padding: '0 28px 0 11px',
+    height: 27,
+    padding: '0 27px 0 10px',
     border: '1px solid rgb(var(--border-light))',
-    borderRadius: 10,
+    borderRadius: 999,
     background: 'rgb(var(--bg-hover))',
     color: 'rgb(var(--text-secondary))',
     fontSize: 11.5,

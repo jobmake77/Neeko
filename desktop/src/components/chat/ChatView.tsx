@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo } from 'react';
-import { ChevronDown, Users } from 'lucide-react';
+import { useAppStore } from '@/stores/app';
 import { useChatStore } from '@/stores/chat';
 import { usePersonaStore } from '@/stores/persona';
-import { useAppStore } from '@/stores/app';
 import { t } from '@/lib/i18n';
-import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
+import { MessageList } from './MessageList';
 
 function isChatReady(status?: string, isReady?: boolean): boolean {
   if (isReady) return true;
@@ -31,94 +30,21 @@ function EmptyState() {
   };
 
   return (
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 16,
-        padding: 32,
-        color: 'rgb(var(--text-secondary))',
-      }}
-    >
-      <Users size={48} style={{ color: 'rgb(var(--text-tertiary))' }} />
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: 16, fontWeight: 500, color: 'rgb(var(--text-primary))', marginBottom: 6 }}>
+    <div className="chat-workbench surface-panel" style={{ alignItems: 'center', justifyContent: 'center', padding: 32 }}>
+      <div style={{ textAlign: 'center', maxWidth: 360 }}>
+        <div className="persona-avatar" style={{ width: 64, height: 64, fontSize: 22, marginBottom: 16 }}>
+          <span>N</span>
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 750, color: 'rgb(var(--text-primary))', marginBottom: 7 }}>
           {t('selectPersona')}
         </div>
-        <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}>
-          {readyPersonas.length > 0 ? `${readyPersonas.length} 个可聊天人格` : t('noPersonasHint')}
+        <div className="muted-copy">
+          {readyPersonas.length > 0 ? `${readyPersonas.length} 个可对话人格` : t('noPersonasHint')}
         </div>
+        <button className="btn btn-primary" onClick={handleQuickStart} style={{ marginTop: 18 }}>
+          {readyPersonas.length > 0 ? t('startChat') : t('newPersona')}
+        </button>
       </div>
-      <button className="btn btn-primary" onClick={handleQuickStart}>
-        {readyPersonas.length > 0 ? t('startChat') : t('newPersona')}
-      </button>
-    </div>
-  );
-}
-
-function PersonaTopBar() {
-  const { personaSlug, threads } = useChatStore();
-  const { personas } = usePersonaStore();
-  const { setPersona } = useChatStore();
-  const readyPersonas = useMemo(() => personas.filter((item) => isChatReady(item.status, item.is_ready)), [personas]);
-
-  return (
-    <div
-      style={{
-        height: 44,
-        flexShrink: 0,
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 16px',
-        borderBottom: '1px solid rgb(var(--border))',
-        background: 'rgb(var(--bg-card))',
-        gap: 8,
-      }}
-    >
-      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-        <select
-          value={personaSlug && readyPersonas.some((item) => item.slug === personaSlug) ? personaSlug : ''}
-          onChange={(e) => e.target.value && void setPersona(e.target.value)}
-          style={{
-            appearance: 'none',
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            color: 'rgb(var(--text-primary))',
-            fontSize: 14,
-            fontWeight: 600,
-            fontFamily: 'inherit',
-            cursor: 'pointer',
-            paddingRight: 22,
-          }}
-        >
-          <option value="" disabled>
-            {readyPersonas.length > 0 ? t('selectPersona') : '暂无可聊天人格'}
-          </option>
-          {readyPersonas.map((persona) => (
-            <option key={persona.slug} value={persona.slug}>
-              {persona.name}
-            </option>
-          ))}
-        </select>
-        <ChevronDown
-          size={14}
-          style={{
-            position: 'absolute',
-            right: 0,
-            pointerEvents: 'none',
-            color: 'rgb(var(--text-tertiary))',
-          }}
-        />
-      </div>
-      {personaSlug && threads.length > 0 ? (
-        <span style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginLeft: 2 }}>
-          {threads.length} 个对话
-        </span>
-      ) : null}
     </div>
   );
 }
@@ -126,6 +52,8 @@ function PersonaTopBar() {
 export function ChatView() {
   const { personaSlug, loadingMessages } = useChatStore();
   const { personas, load } = usePersonaStore();
+  const readyPersonas = useMemo(() => personas.filter((item) => isChatReady(item.status, item.is_ready)), [personas]);
+  const currentPersona = readyPersonas.find((item) => item.slug === personaSlug);
 
   useEffect(() => {
     if (personas.length === 0) {
@@ -134,38 +62,25 @@ export function ChatView() {
   }, [load, personas.length]);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        overflow: 'hidden',
-        background: 'rgb(var(--bg-app))',
-      }}
-    >
-      <PersonaTopBar />
-
-      {!personaSlug ? (
-        <EmptyState />
-      ) : loadingMessages ? (
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'rgb(var(--text-tertiary))',
-            fontSize: 13,
-          }}
-        >
-          {t('loading')}
+    <div className="workspace-view">
+      <div className="workspace-body chat-body">
+        <div className="view-container chat-container">
+          {!personaSlug ? (
+            <EmptyState />
+          ) : (
+            <main className="chat-workbench surface-panel">
+              {loadingMessages ? (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgb(var(--text-tertiary))', fontSize: 13 }}>
+                  {t('loading')}
+                </div>
+              ) : (
+                <MessageList personaName={currentPersona?.name} />
+              )}
+              <ChatInput />
+            </main>
+          )}
         </div>
-      ) : (
-        <>
-          <MessageList />
-          <ChatInput />
-        </>
-      )}
+      </div>
     </div>
   );
 }

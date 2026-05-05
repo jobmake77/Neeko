@@ -8,6 +8,8 @@ import {
   ConversationMessage,
   ConversationMessageSchema,
   ConversationSchema,
+  ChatAgentTrace,
+  ChatAgentTraceSchema,
   DiscoveredSourceCandidate,
   DiscoveredSourceCandidateSchema,
   MemoryCandidate,
@@ -137,6 +139,14 @@ export class WorkbenchStore {
 
   private getSummaryPath(id: string): string {
     return join(this.getConversationDir(id), 'session-summary.json');
+  }
+
+  private getAgentTracesDir(conversationId: string): string {
+    return join(this.getConversationDir(conversationId), 'agent-traces');
+  }
+
+  private getAgentTracePath(conversationId: string, traceId: string): string {
+    return join(this.getAgentTracesDir(conversationId), `${traceId}.json`);
   }
 
   private getRunPath(id: string): string {
@@ -282,6 +292,28 @@ export class WorkbenchStore {
       messages: this.listMessages(conversationId),
       session_summary: this.getSessionSummary(conversationId),
     };
+  }
+
+  saveChatAgentTrace(trace: ChatAgentTrace): ChatAgentTrace {
+    const parsed = ChatAgentTraceSchema.parse(trace);
+    writeJsonFile(this.getAgentTracePath(parsed.conversation_id, parsed.id), parsed);
+    return parsed;
+  }
+
+  getChatAgentTrace(conversationId: string, traceId: string): ChatAgentTrace | null {
+    const raw = readJsonFile<ChatAgentTrace | null>(this.getAgentTracePath(conversationId, traceId), null);
+    if (!raw) return null;
+    return ChatAgentTraceSchema.parse(raw);
+  }
+
+  listChatAgentTraces(conversationId: string): ChatAgentTrace[] {
+    const dir = this.getAgentTracesDir(conversationId);
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => this.getChatAgentTrace(conversationId, entry.name.replace(/\.json$/, '')))
+      .filter((item): item is ChatAgentTrace => Boolean(item))
+      .sort((a, b) => b.started_at.localeCompare(a.started_at));
   }
 
   saveRun(run: WorkbenchRun): WorkbenchRun {

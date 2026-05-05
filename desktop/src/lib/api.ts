@@ -23,6 +23,7 @@ import {
   probeWorkbenchBaseUrl as probeWorkbenchBaseUrlShared,
   recoverLocalWorkbenchBaseUrl,
   isLocalWorkbenchBaseUrl as isLocalWorkbenchBaseUrlShared,
+  inspectLocalWorkbenchDiagnostics,
   waitForWorkbenchHealth as waitForWorkbenchHealthShared,
 } from '../../../src/shared/workbench-recovery.js';
 
@@ -151,7 +152,18 @@ export async function checkHealth(): Promise<HealthStatus> {
     if (isLocalWorkbenchBaseUrl()) {
       await ensureWorkbenchReachable(false);
     }
-    return await fetchJson<HealthStatus>('/health');
+    const health = await fetchJson<HealthStatus>('/health');
+    if (isLocalWorkbenchBaseUrl()) {
+      health.local_diagnostics = await inspectLocalWorkbenchDiagnostics({
+        currentBaseUrl: getBaseUrl(),
+        fetchJsonFromBase,
+        probeTimeoutMs: 1200,
+        createAbortController: () => new AbortController(),
+        setTimeoutFn: (handler, delay) => window.setTimeout(handler, delay),
+        clearTimeoutFn: (handle) => window.clearTimeout(handle as number),
+      });
+    }
+    return health;
   } catch {
     return { ok: false };
   }
@@ -164,6 +176,10 @@ export async function listPersonas(): Promise<PersonaSummary[]> {
 
 export async function getPersona(slug: string): Promise<PersonaDetail> {
   return request<PersonaDetail>(`/api/personas/${slug}/detail`);
+}
+
+export async function getPersonaConfig(slug: string): Promise<PersonaConfig> {
+  return request<PersonaConfig>(`/api/personas/${slug}/config`);
 }
 
 /**

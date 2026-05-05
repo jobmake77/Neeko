@@ -44,6 +44,14 @@ Frontend bootstrap flow:
    - `4312`
    - `4313`
 5. If none is healthy, invoke the Tauri bootstrap command.
+
+The desktop settings diagnostics now also surface a read-only stale-debug signal:
+
+- if `4310` does not answer `/health`
+- and a fallback port such as `4311-4313` is healthy
+- the app should mark this as `stale debug listener on 4310` and continue using the healthy fallback port
+
+This is intentionally diagnostic-only. The client should detect, isolate, and route around the stale listener rather than attempting stronger user-space process cleanup.
 6. After bootstrap, re-probe the resolved port and persist the recovered base URL.
 
 Current health probe contract:

@@ -92,6 +92,7 @@ export function assessArticleExtractionQuality(contentOrDoc: string | RawDocumen
       excerpt_count: 0,
       signal_count: 0,
       issue_codes: ['empty_content'],
+      relevance_bucket: undefined,
     };
   }
 
@@ -140,6 +141,7 @@ export function assessArticleExtractionQuality(contentOrDoc: string | RawDocumen
     excerpt_count: paragraphs.length,
     signal_count: signalCount,
     issue_codes: issueCodes,
+    relevance_bucket: undefined,
   };
 }
 

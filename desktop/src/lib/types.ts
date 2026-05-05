@@ -101,6 +101,7 @@ export interface SourceSyncCheckpoint {
   settle_summary?: string;
   provider_stats?: Record<string, unknown>;
   consecutive_primary_provider_failures?: number;
+  next_action?: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
 }
 
 export interface CultivationDetail {
@@ -135,6 +136,7 @@ export interface CultivationDetail {
   retrain_progress_ratio?: number;
   retrain_ready?: boolean;
   collection_cycle?: number;
+  next_action?: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
   collection_stop_reason?: string;
   history_exhausted?: boolean;
   provider_exhausted?: boolean;
@@ -275,6 +277,7 @@ export interface PersonaConfig {
     latest_result?: string;
     evaluation_passed?: boolean;
     collection_cycle?: number;
+    next_action?: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
     collection_stop_reason?: string;
     history_exhausted?: boolean;
     provider_exhausted?: boolean;
@@ -346,6 +349,7 @@ export interface ExtractionQualityAssessment {
   excerpt_count: number;
   signal_count: number;
   issue_codes: string[];
+  relevance_bucket?: 'direct_owner' | 'strong_related' | 'weak_related' | 'mismatch';
 }
 
 export interface PersonaSourceHealth {
@@ -363,10 +367,12 @@ export interface PersonaSourceHealth {
 export interface SourceValidationResult {
   status: 'accepted' | 'rejected' | 'quarantined';
   reason_code: string;
+  reason_codes: string[];
   summary: string;
   confidence: number;
   identity_match: number;
   source_integrity: number;
+  relevance_bucket?: 'direct_owner' | 'strong_related' | 'weak_related' | 'mismatch';
   evidence: string[];
 }
 
@@ -383,6 +389,8 @@ export interface SourceIngestOutcome {
   identity_match?: number;
   source_integrity?: number;
   reason_code?: string;
+  reason_codes: string[];
+  relevance_bucket?: 'direct_owner' | 'strong_related' | 'weak_related' | 'mismatch';
   evidence: string[];
   quality_assessment?: ExtractionQualityAssessment;
   health?: PersonaSourceHealth;
@@ -404,6 +412,8 @@ export interface SourcePreviewTarget {
   identity_match?: number;
   source_integrity?: number;
   reason_code?: string;
+  reason_codes: string[];
+  relevance_bucket?: 'direct_owner' | 'strong_related' | 'weak_related' | 'mismatch';
   evidence: string[];
   error?: string;
   health?: PersonaSourceHealth;
@@ -451,7 +461,11 @@ export interface ClaimCandidate {
   ownership: ClaimOwnership;
   first_person_allowed: boolean;
   provenance_scope: 'public' | 'private' | 'mixed' | 'unknown';
+  stable_key?: string;
+  semantic_type?: string;
   support_score: number;
+  ownership_score: number;
+  support_source_count: number;
   evidence_refs: string[];
   support_summary?: string;
   background_summary?: string;
@@ -459,7 +473,11 @@ export interface ClaimCandidate {
 
 export interface AnswerPlan {
   primary_claims: ClaimCandidate[];
+  confirmed_self_claims: ClaimCandidate[];
+  related_context_claims: ClaimCandidate[];
+  background_only_claims: ClaimCandidate[];
   secondary_context: string[];
+  blocked_claims: ClaimCandidate[];
   disallowed_claims: ClaimCandidate[];
   recommended_voice: 'first_person' | 'mixed' | 'third_person_explanatory';
   grounding_snippets: string[];
@@ -548,6 +566,13 @@ export interface HealthStatus {
   server_version?: string;
   started_at?: string;
   git_sha?: string;
+  local_diagnostics?: {
+    current_port?: number;
+    healthy_port?: number;
+    fallback_active: boolean;
+    stale_debug_port_4310: boolean;
+    stale_debug_summary?: string;
+  };
 }
 
 export interface CultivationSummary {
@@ -624,6 +649,7 @@ export interface CultivationSummary {
     retrain_progress_ratio?: number;
     retrain_ready?: boolean;
     collection_cycle?: number;
+    next_action?: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
     collection_stop_reason?: string;
     history_exhausted?: boolean;
     provider_exhausted?: boolean;

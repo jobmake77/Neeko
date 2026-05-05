@@ -17,7 +17,8 @@ function ThinkingDots() {
     <div style={{
       display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
       background: 'rgb(var(--bg-card))', border: '1px solid rgb(var(--border))',
-      borderRadius: '16px 16px 16px 4px', alignSelf: 'flex-start',
+      borderRadius: 14, alignSelf: 'flex-start',
+      boxShadow: '0 1px 2px rgb(0 0 0 / 0.03)',
     }}>
       <span style={{ fontFamily: 'monospace', fontSize: 14, color: 'rgb(var(--text-tertiary))' }}>
         {HELIX_FRAMES[frame]}
@@ -27,7 +28,7 @@ function ThinkingDots() {
   );
 }
 
-export function MessageList() {
+export function MessageList({ personaName = 'Neeko' }: { personaName?: string }) {
   const { messages, sending, replyPhase } = useChatStore();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -37,121 +38,87 @@ export function MessageList() {
 
   if (messages.length === 0 && !sending) {
     return (
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: 'rgb(var(--text-tertiary))',
-          fontSize: 14,
-          overflowY: 'auto',
-          padding: '24px 20px',
-        }}
-      >
-        {t('noChats')}
+      <div className="message-stream" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center', maxWidth: 320 }}>
+          <div className="persona-avatar" style={{ width: 54, height: 54, fontSize: 20, marginBottom: 14 }}>
+            <span>N</span>
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 750, color: 'rgb(var(--text-primary))' }}>{t('noChats')}</div>
+          <div className="muted-copy" style={{ marginTop: 6 }}>发送第一条消息后，对话会保留在当前线程里。</div>
+        </div>
       </div>
     );
   }
 
   return (
     <div
+      className="message-stream"
       style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '16px 20px',
         display: 'flex',
         flexDirection: 'column',
-        gap: 12,
       }}
     >
-      {messages.map((msg) => {
-        const isUser = msg.role === 'user';
-        const time = new Date(msg.created_at).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        });
+        {messages.map((msg) => {
+          const isUser = msg.role === 'user';
+          const time = new Date(msg.created_at).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
 
-        return (
-          <div
-            key={msg.id}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: isUser ? 'flex-end' : 'flex-start',
-              gap: 2,
-            }}
-          >
-            <div className="group" style={{ position: 'relative', maxWidth: isUser ? '70%' : '80%' }}>
-              <div
-                style={
-                  isUser
-                    ? {
-                        background: 'rgb(var(--accent))',
-                        color: 'rgb(var(--accent-fg))',
-                        borderRadius: '16px 16px 4px 16px',
-                        padding: '10px 14px',
-                        fontSize: 14,
-                        lineHeight: 1.6,
-                        wordBreak: 'break-word',
-                        whiteSpace: 'pre-wrap',
-                      }
-                    : {
-                        background: 'rgb(var(--bg-card))',
-                        border: '1px solid rgb(var(--border))',
-                        borderRadius: '16px 16px 16px 4px',
-                        padding: '10px 14px',
-                        fontSize: 14,
-                        lineHeight: 1.6,
-                        color: 'rgb(var(--text-primary))',
-                        wordBreak: 'break-word',
-                        whiteSpace: 'pre-wrap',
-                      }
-                }
-              >
-                {msg.content}
-              </div>
-              {!isUser && msg.orchestration ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, marginLeft: 2, flexWrap: 'wrap' }}>
-                  <ReplyModeBadge message={msg} />
+          return (
+            <div
+              key={msg.id}
+              className={`message-bubble-row${isUser ? ' user' : ''}`}
+            >
+              {!isUser ? (
+                <div className="mini-brand" style={{ width: 32, height: 32, borderRadius: 999, flexShrink: 0 }}>
+                  N
                 </div>
               ) : null}
-              {msg.attachments && msg.attachments.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-                  {msg.attachments.map((attachment) => (
-                    <AttachmentBadge key={attachment.id} attachment={attachment} />
-                  ))}
+              <div className="message-bubble">
+                <div className="message-meta">
+                  <span style={{ fontWeight: 700 }}>{isUser ? 'You' : personaName}</span>
+                  <span>{time}</span>
+                  {!isUser && msg.orchestration ? <ReplyModeBadge message={msg} /> : null}
                 </div>
-              )}
-              <div
-                style={{
-                  fontSize: 11,
-                  color: 'rgb(var(--text-tertiary))',
-                  marginTop: 3,
-                  textAlign: isUser ? 'right' : 'left',
-                  opacity: 0,
-                  transition: 'opacity 0.15s',
-                }}
-                className="msg-timestamp"
-              >
-                {time}
+                <div
+                  style={{
+                    fontSize: 13.5,
+                    lineHeight: 1.68,
+                    wordBreak: 'break-word',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {msg.content}
+                </div>
+                {msg.attachments && msg.attachments.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                    {msg.attachments.map((attachment) => (
+                      <AttachmentBadge key={attachment.id} attachment={attachment} />
+                    ))}
+                  </div>
+                )}
               </div>
-              <style>{`
-                .group:hover .msg-timestamp { opacity: 1 !important; }
-              `}</style>
+              {isUser ? (
+                <div className="mini-brand" style={{ width: 32, height: 32, borderRadius: 999, background: 'rgb(var(--bg-hover))', color: 'rgb(var(--text-primary))', flexShrink: 0 }}>
+                {isUser ? 'U' : 'N'}
+              </div>
+              ) : null}
+            </div>
+          );
+        })}
+
+        {sending && (
+          <div className="message-bubble-row">
+            <div className="mini-brand" style={{ width: 32, height: 32, borderRadius: 999, flexShrink: 0 }}>N</div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+            <ThinkingDots />
+            <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginLeft: 4 }}>
+              {formatReplyPhase(replyPhase)}
             </div>
           </div>
-        );
-      })}
-
-      {sending && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
-          <ThinkingDots />
-          <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))', marginLeft: 4 }}>
-            {formatReplyPhase(replyPhase)}
           </div>
-        </div>
-      )}
+        )}
 
       <div ref={bottomRef} />
     </div>

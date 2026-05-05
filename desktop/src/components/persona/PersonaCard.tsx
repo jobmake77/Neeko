@@ -3,7 +3,7 @@ import { t } from '@/lib/i18n';
 import type { PersonaSummary } from '@/lib/types';
 import { useChatStore } from '@/stores/chat';
 import { useAppStore } from '@/stores/app';
-import { Edit2, Trash2 } from 'lucide-react';
+import { Edit2, MessageCircle, Network, Trash2 } from 'lucide-react';
 
 const STATUS_COLORS: Record<string, string> = {
   creating:   '#f59e0b',
@@ -42,18 +42,18 @@ interface Props {
   persona: PersonaSummary;
   onEdit: () => void;
   onDelete: () => void;
+  selected?: boolean;
+  onSelect?: () => void;
 }
 
-export function PersonaCard({ persona, onEdit, onDelete }: Props) {
+export function PersonaCard({ persona, onEdit, onDelete, selected = false, onSelect }: Props) {
   const { setPersona } = useChatStore();
   const { setView } = useAppStore();
   const [hovered, setHovered] = useState(false);
   const chatReady = isChatReady(persona.status, persona.is_ready);
 
   function handleCardClick() {
-    if (!chatReady) return;
-    setPersona(persona.slug);
-    setView('chat');
+    onSelect?.();
   }
 
   function handleEdit(e: React.MouseEvent) {
@@ -78,27 +78,30 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
 
   return (
     <div
-      className="card card-hover"
+      className="surface-panel"
       onClick={handleCardClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        padding: 18,
-        display: 'flex',
-        flexDirection: 'column',
+        padding: 12,
+        display: 'grid',
+        gridTemplateColumns: '54px minmax(0, 1fr)',
         gap: 12,
         position: 'relative',
-        cursor: chatReady ? 'pointer' : 'default',
-        minHeight: 152,
+        cursor: 'pointer',
+        minHeight: 112,
         opacity: chatReady ? 1 : 0.9,
+        borderColor: selected ? 'rgb(var(--text-primary) / 0.32)' : 'rgb(var(--border))',
+        background: selected ? 'rgb(var(--bg-hover))' : 'rgb(var(--bg-card))',
+        boxShadow: selected ? 'inset 3px 0 0 rgb(var(--accent))' : 'none',
       }}
     >
       {/* 操作按钮 */}
       <div
-        style={{
-          position: 'absolute',
-          top: 12,
-          right: 12,
+          style={{
+            position: 'absolute',
+          top: 10,
+          right: 10,
           display: 'flex',
           gap: 4,
           opacity: hovered ? 1 : 0,
@@ -124,58 +127,56 @@ export function PersonaCard({ persona, onEdit, onDelete }: Props) {
         </button>
       </div>
 
-      {/* 头像 + 名称 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div
-          style={{
-            width: 42,
-            height: 42,
-            borderRadius: 12,
-            background: 'rgb(var(--accent))',
-            color: 'rgb(var(--accent-fg))',
-            fontSize: 18,
-            fontWeight: 700,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-          }}
-        >
-          {initial}
-        </div>
-        <div style={{ minWidth: 0, paddingRight: 40 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: 'rgb(var(--text-primary))', marginBottom: 2, lineHeight: 1.3 }}>
+      <div className="persona-avatar" style={{ width: 54, height: 54, fontSize: 20, borderWidth: 3, alignSelf: 'start' }}>
+        <span>{initial}</span>
+        <i className="avatar-status" style={{ background: statusColor }} />
+      </div>
+      <div style={{ minWidth: 0, paddingRight: hovered ? 60 : 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, marginBottom: 5 }}>
+          <div style={{ fontSize: 15, fontWeight: 750, color: 'rgb(var(--text-primary))', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {persona.name}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <div style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
-            <span style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
-              {formatPersonaStatus(persona.status)}
-            </span>
-          </div>
+          <span className="status-pill" style={{ minHeight: 22, padding: '0 8px', flexShrink: 0 }}>
+            <span style={{ width: 6, height: 6, borderRadius: 999, background: statusColor }} />
+            {formatPersonaStatus(persona.status)}
+          </span>
         </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: 12, fontSize: 11.5, color: 'rgb(var(--text-tertiary))', marginTop: 'auto' }}>
-        <span>{persona.doc_count} 条素材</span>
-        <span>{persona.training_rounds} 轮</span>
-      </div>
-      {chatReady ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <div style={{ fontSize: 11.5, color: '#16a34a', fontWeight: 600 }}>
-            {persona.source_type_count && persona.source_count
-              ? `已基于 ${persona.source_type_count} 类来源、${persona.doc_count} 条素材完成培养`
-              : '已完成培养，可开始对话'}
-          </div>
-          <button className="btn btn-primary" onClick={handleStartChat} style={{ minHeight: 30, padding: '0 12px', fontSize: 12 }}>
-            {t('startChat')}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 7, marginBottom: 9 }}>
+          <MiniStat label="素材" value={persona.doc_count.toLocaleString()} />
+          <MiniStat label="来源" value={persona.source_count ?? 0} />
+          <MiniStat label="关系" value={persona.memory_node_count.toLocaleString()} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'rgb(var(--text-tertiary))', fontSize: 11.5 }}>
+          <Network size={13} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {persona.source_type_count ?? 0} 类来源 · 更新于 {new Date(persona.updated_at).toLocaleDateString()}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          {chatReady ? (
+            <button className="btn btn-secondary" onClick={handleStartChat} style={{ minHeight: 30, padding: '0 10px', fontSize: 12 }}>
+              <MessageCircle size={13} />
+              {t('startChat')}
+            </button>
+          ) : (
+            <span className="muted-copy">后台更新完成后可对话</span>
+          )}
+          <button className="btn btn-ghost" onClick={handleEdit} style={{ minHeight: 30, padding: '0 8px', fontSize: 12 }}>
+            {t('editPersona')}
           </button>
-        </div>
-      ) : (
-        <div style={{ fontSize: 11.5, color: 'rgb(var(--text-secondary))' }}>
-          培养完成后可聊天
-        </div>
-      )}
+          </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 10.5, color: 'rgb(var(--text-tertiary))', lineHeight: 1.3 }}>{label}</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'rgb(var(--text-primary))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {value}
+      </div>
     </div>
   );
 }

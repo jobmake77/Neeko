@@ -88,6 +88,7 @@ export const ExtractionQualityAssessmentSchema = z.object({
   excerpt_count: z.number().int().min(0).default(0),
   signal_count: z.number().int().min(0).default(0),
   issue_codes: z.array(z.string()).default([]),
+  relevance_bucket: z.enum(['direct_owner', 'strong_related', 'weak_related', 'mismatch']).optional(),
 });
 export type ExtractionQualityAssessment = z.infer<typeof ExtractionQualityAssessmentSchema>;
 
@@ -107,10 +108,12 @@ export type PersonaSourceHealth = z.infer<typeof PersonaSourceHealthSchema>;
 export const SourceValidationResultSchema = z.object({
   status: z.enum(['accepted', 'rejected', 'quarantined']),
   reason_code: z.string(),
+  reason_codes: z.array(z.string()).default([]),
   summary: z.string(),
   confidence: z.number().min(0).max(1).default(0),
   identity_match: z.number().min(0).max(1).default(0),
   source_integrity: z.number().min(0).max(1).default(0),
+  relevance_bucket: z.enum(['direct_owner', 'strong_related', 'weak_related', 'mismatch']).optional(),
   evidence: z.array(z.string()).default([]),
 });
 export type SourceValidationResult = z.infer<typeof SourceValidationResultSchema>;
@@ -128,6 +131,8 @@ export const SourceIngestOutcomeSchema = z.object({
   identity_match: z.number().min(0).max(1).optional(),
   source_integrity: z.number().min(0).max(1).optional(),
   reason_code: z.string().optional(),
+  reason_codes: z.array(z.string()).default([]),
+  relevance_bucket: z.enum(['direct_owner', 'strong_related', 'weak_related', 'mismatch']).optional(),
   evidence: z.array(z.string()).default([]),
   quality_assessment: ExtractionQualityAssessmentSchema.optional(),
   health: PersonaSourceHealthSchema.optional(),
@@ -150,6 +155,8 @@ export const SourcePreviewTargetSchema = z.object({
   identity_match: z.number().min(0).max(1).optional(),
   source_integrity: z.number().min(0).max(1).optional(),
   reason_code: z.string().optional(),
+  reason_codes: z.array(z.string()).default([]),
+  relevance_bucket: z.enum(['direct_owner', 'strong_related', 'weak_related', 'mismatch']).optional(),
   evidence: z.array(z.string()).default([]),
   error: z.string().optional(),
   health: PersonaSourceHealthSchema.optional(),
@@ -209,16 +216,28 @@ export const ClaimCandidateSchema = z.object({
   ownership: ClaimOwnershipSchema.default('unknown'),
   first_person_allowed: z.boolean().default(false),
   provenance_scope: z.enum(['public', 'private', 'mixed', 'unknown']).default('unknown'),
+  stable_key: z.string().optional(),
+  semantic_type: z.string().optional(),
   support_score: z.number().min(0).max(1).default(0),
+  ownership_score: z.number().min(0).max(1).default(0),
+  support_source_count: z.number().int().min(0).default(0),
   evidence_refs: z.array(z.string()).default([]),
   support_summary: z.string().optional(),
   background_summary: z.string().optional(),
+  last_seen_published_at: z.string().datetime().optional(),
 });
 export type ClaimCandidate = z.infer<typeof ClaimCandidateSchema>;
 
 export const AnswerPlanSchema = z.object({
   primary_claims: z.array(ClaimCandidateSchema).default([]),
+  owned_self_claims: z.array(ClaimCandidateSchema).default([]),
+  participated_self_claims: z.array(ClaimCandidateSchema).default([]),
+  confirmed_self_claims: z.array(ClaimCandidateSchema).default([]),
+  related_context_claims: z.array(ClaimCandidateSchema).default([]),
+  mentioned_only_claims: z.array(ClaimCandidateSchema).default([]),
+  background_only_claims: z.array(ClaimCandidateSchema).default([]),
   secondary_context: z.array(z.string()).default([]),
+  blocked_claims: z.array(ClaimCandidateSchema).default([]),
   disallowed_claims: z.array(ClaimCandidateSchema).default([]),
   recommended_voice: z.enum(['first_person', 'mixed', 'third_person_explanatory']).default('mixed'),
   grounding_snippets: z.array(z.string()).default([]),
@@ -280,6 +299,7 @@ export const ConversationOrchestrationSchema = z.object({
   followup_question: z.string().optional(),
   disclosure_protected: z.boolean().default(false),
   retrieval_plan: ChatRetrievalPlanSchema.optional(),
+  agent_trace_id: z.string().uuid().optional(),
 });
 export type ConversationOrchestration = z.infer<typeof ConversationOrchestrationSchema>;
 
@@ -399,6 +419,75 @@ export const SessionSummarySchema = z.object({
   candidate_count: z.number().int().min(0),
 });
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
+
+export const SkillPermissionSchema = z.enum(['read', 'write', 'network', 'filesystem', 'dangerous']);
+export type SkillPermission = z.infer<typeof SkillPermissionSchema>;
+
+export const SkillDefinitionSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  description: z.string(),
+  inputSchema: z.unknown().optional(),
+  permission: SkillPermissionSchema,
+  enabled: z.boolean(),
+});
+export type SkillDefinition = z.infer<typeof SkillDefinitionSchema>;
+
+export const SkillSelectionSchema = z.object({
+  skill: SkillDefinitionSchema,
+  confidence: z.number().min(0).max(1).optional(),
+  reason: z.string().optional(),
+});
+export type SkillSelection = z.infer<typeof SkillSelectionSchema>;
+
+export const ChatAgentSafetyPolicySchema = z.object({
+  writeTargets: z.array(z.enum(['conversation_log', 'session_summary', 'memory_candidates', 'trace'])),
+  forbiddenTargets: z.array(z.enum(['formal_persona', 'formal_soul', 'formal_memory', 'training_asset'])),
+  maxToolSteps: z.number().int().min(0).max(2),
+});
+export type ChatAgentSafetyPolicy = z.infer<typeof ChatAgentSafetyPolicySchema>;
+
+export const ChatAgentTraceStatusSchema = z.enum(['running', 'completed', 'failed']);
+export type ChatAgentTraceStatus = z.infer<typeof ChatAgentTraceStatusSchema>;
+
+export const ChatAgentTraceEventTypeSchema = z.enum([
+  'context_assembled',
+  'memory_retrieved',
+  'skill_selected',
+  'llm_called',
+  'reply_finalized',
+  'candidate_generated',
+  'summary_updated',
+  'failed',
+]);
+export type ChatAgentTraceEventType = z.infer<typeof ChatAgentTraceEventTypeSchema>;
+
+export const ChatAgentTraceEventSchema = z.object({
+  id: z.string().uuid(),
+  type: ChatAgentTraceEventTypeSchema,
+  at: z.string().datetime(),
+  summary: z.string(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type ChatAgentTraceEvent = z.infer<typeof ChatAgentTraceEventSchema>;
+
+export const ChatAgentTraceSchema = z.object({
+  id: z.string().uuid(),
+  conversation_id: z.string().uuid(),
+  persona_slug: z.string(),
+  user_message_id: z.string().uuid(),
+  assistant_message_id: z.string().uuid().optional(),
+  started_at: z.string().datetime(),
+  finished_at: z.string().datetime().optional(),
+  model: z.object({
+    provider: z.string().optional(),
+    model: z.string().optional(),
+  }).optional(),
+  stages: z.array(ChatAgentTraceEventSchema).default([]),
+  status: ChatAgentTraceStatusSchema,
+  error: z.string().optional(),
+});
+export type ChatAgentTrace = z.infer<typeof ChatAgentTraceSchema>;
 
 export const WorkbenchRunSchema = z.object({
   id: z.string().uuid(),
@@ -530,6 +619,7 @@ export const SourceSyncCheckpointSchema = z.object({
   settle_summary: z.string().optional(),
   provider_stats: z.record(z.string(), z.unknown()).optional(),
   consecutive_primary_provider_failures: z.number().int().min(0).optional(),
+  next_action: z.enum(['retry_same_source', 'switch_source', 'wait_for_cooldown', 'pause_until_updates', 'ready_for_retrain', 'soft_close_candidate']).optional(),
 });
 export type SourceSyncCheckpoint = z.infer<typeof SourceSyncCheckpointSchema>;
 
@@ -607,6 +697,7 @@ export const CultivationSummarySchema = z.object({
     retrain_progress_ratio: z.number().min(0).optional(),
     retrain_ready: z.boolean().optional(),
     collection_cycle: z.number().int().min(0).optional(),
+    next_action: z.enum(['retry_same_source', 'switch_source', 'wait_for_cooldown', 'pause_until_updates', 'ready_for_retrain', 'soft_close_candidate']).optional(),
     collection_stop_reason: z.string().optional(),
     history_exhausted: z.boolean().optional(),
     provider_exhausted: z.boolean().optional(),
@@ -649,6 +740,7 @@ export const PersonaConfigSchema = z.object({
     latest_result: z.string().optional(),
     evaluation_passed: z.boolean().optional(),
     collection_cycle: z.number().int().min(0).optional(),
+    next_action: z.enum(['retry_same_source', 'switch_source', 'wait_for_cooldown', 'pause_until_updates', 'ready_for_retrain', 'soft_close_candidate']).optional(),
     collection_stop_reason: z.string().optional(),
     history_exhausted: z.boolean().optional(),
     provider_exhausted: z.boolean().optional(),
@@ -764,6 +856,7 @@ export interface CultivationDetail {
   retrain_progress_ratio?: number;
   retrain_ready?: boolean;
   collection_cycle?: number;
+  next_action?: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
   collection_stop_reason?: string;
   history_exhausted?: boolean;
   provider_exhausted?: boolean;

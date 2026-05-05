@@ -7,9 +7,9 @@ const ChatView = lazy(() => import('../chat/ChatView').then(m => ({ default: m.C
 const PersonaView = lazy(() => import('../persona/PersonaView').then(m => ({ default: m.PersonaView })));
 const SettingsView = lazy(() => import('../settings/SettingsView').then(m => ({ default: m.SettingsView })));
 
-const MIN_SIDEBAR_W = 208;
-const MAX_SIDEBAR_W = 360;
-const DEFAULT_SIDEBAR_W = 232;
+const MIN_SIDEBAR_W = 240;
+const MAX_SIDEBAR_W = 320;
+const DEFAULT_SIDEBAR_W = 260;
 
 function Fallback() {
   return (
@@ -47,7 +47,8 @@ export function AppShell() {
     <div
       style={{
         display: 'flex', height: '100vh', width: '100vw',
-        overflow: 'hidden', background: 'rgb(var(--bg-app))',
+        overflow: 'hidden',
+        background: 'rgb(232 232 230)',
         cursor: dragging ? 'col-resize' : 'auto',
         userSelect: dragging ? 'none' : 'auto',
       }}
@@ -71,9 +72,9 @@ export function AppShell() {
         />
       )}
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, background: 'rgb(var(--bg-app))' }}>
         <TopBar />
-        <main style={{ flex: 1, overflow: 'hidden' }}>
+        <main style={{ flex: 1, overflow: 'hidden', background: 'rgb(var(--bg-app))' }}>
           <Suspense fallback={<Fallback />}>
             {view === 'chat' && <ChatView />}
             {view === 'personas' && <PersonaView />}

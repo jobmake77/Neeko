@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FolderOpen, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { t } from '@/lib/i18n';
-import type { DiscoveredSourceCandidate, PersonaConfig, PersonaDetail, PersonaSource, PersonaSourcePreview, PersonaSummary } from '@/lib/types';
+import type { DiscoveredSourceCandidate, PersonaConfig, PersonaSource, PersonaSourcePreview, PersonaSummary } from '@/lib/types';
 import * as api from '@/lib/api';
 import { usePersonaStore } from '@/stores/persona';
 import { useCultivationStore } from '@/stores/cultivation';
@@ -587,7 +587,7 @@ function SourceCard({
 
         {template === 'chat_upload' ? (
           <>
-            <Field label="上传文件或 ZIP" hint="支持导出聊天文件或单个 ZIP。">
+            <Field label="上传文件或 ZIP" hint="支持聊天记录文件或单个 ZIP。">
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <input
                   className="input"
@@ -912,8 +912,8 @@ function PolicySection({
 
       <div className="card" style={{ padding: 16, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 220, flex: '1 1 320px' }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>自动进入训练门槛</div>
-          <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>达到这个素材量后系统才会自动进入训练。达到门槛后如果测评未通过，系统仍会继续补充素材再进入下一轮训练。</div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>自动更新门槛</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>达到这个素材量后系统会自动开始后台更新。达到门槛后如果测评未通过，系统仍会继续补充素材再进入下一轮更新。</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
@@ -927,6 +927,20 @@ function PolicySection({
           />
           <span style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>条</span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SourceCardSkeleton({ heading }: { heading: string }) {
+  return (
+    <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10, opacity: 0.78 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'rgb(var(--text-primary))' }}>{heading}</div>
+      <div style={{ height: 14, width: 180, borderRadius: 999, background: 'rgb(var(--bg-muted))' }} />
+      <div style={{ height: 38, width: '100%', borderRadius: 10, background: 'rgb(var(--bg-muted))' }} />
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ height: 38, flex: 1, borderRadius: 10, background: 'rgb(var(--bg-muted))' }} />
+        <div style={{ height: 38, flex: 1, borderRadius: 10, background: 'rgb(var(--bg-muted))' }} />
       </div>
     </div>
   );
@@ -971,19 +985,28 @@ export function PersonaEditor({ mode, persona, open, onClose, onSaved }: Props) 
       return;
     }
 
+    setName(persona.name ?? '');
+    setSources([]);
+    setPolicy(DEFAULT_POLICY);
+    setDiscovered([]);
+    setSourcePreviews({});
+    setPreviewing({});
     setLoading(true);
-    api.getPersona(persona.slug)
-      .then((detail: PersonaDetail) => {
-        const nextSources = detail.config.sources.map(normalizeSource);
-        setName(detail.config.name ?? detail.persona.name);
+    Promise.all([
+      api.getPersonaConfig(persona.slug),
+      api.getDiscoveredSources(persona.slug).catch(() => []),
+    ])
+      .then(([config, candidates]) => {
+        const nextSources = config.sources.map(normalizeSource);
+        setName(config.name ?? persona.name);
         setSources(nextSources);
-        setPolicy(normalizePolicy(detail.config.update_policy));
+        setPolicy(normalizePolicy(config.update_policy));
         if (nextSources[0]) {
           const firstTemplate = inferTemplateFromSource(nextSources[0]);
           setCreateTemplate(firstTemplate);
           setCreateCategory(TEMPLATE_META[firstTemplate].category);
         }
-        return api.getDiscoveredSources(persona.slug).then(setDiscovered).catch(() => setDiscovered([]));
+        setDiscovered(candidates);
       })
       .catch((nextError) => setError((nextError as Error).message))
       .finally(() => {
@@ -1153,6 +1176,7 @@ export function PersonaEditor({ mode, persona, open, onClose, onSaved }: Props) 
 
   const primarySource = sources[0] ?? buildSourceFromTemplate(createTemplate);
   const createTemplateMeta = TEMPLATE_META[createTemplate];
+  const showEditSkeleton = mode === 'edit' && loading && sources.length === 0;
 
   return (
     <AnimatePresence>
@@ -1273,10 +1297,15 @@ export function PersonaEditor({ mode, persona, open, onClose, onSaved }: Props) 
                               <div style={{ fontSize: 13, fontWeight: 700 }}>已有素材来源</div>
                               <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 4 }}>主要来源在最前，其余来源会作为补充来源继续参与培养。</div>
                             </div>
-                            <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>{sources.length} 个来源</div>
+                            <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>{showEditSkeleton ? '加载来源中…' : `${sources.length} 个来源`}</div>
                           </div>
 
-                          {sources.length === 0 ? (
+                          {showEditSkeleton ? (
+                            <>
+                              <SourceCardSkeleton heading="主要来源" />
+                              <SourceCardSkeleton heading="补充来源" />
+                            </>
+                          ) : sources.length === 0 ? (
                             <div className="card" style={{ padding: 16, fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>当前还没有素材来源，可以先在下方补充一个来源后再保存。</div>
                           ) : (
                             sources.map((source, index) => (
@@ -1383,7 +1412,7 @@ export function PersonaEditor({ mode, persona, open, onClose, onSaved }: Props) 
                       </>
                     ) : null}
 
-                    {loading ? <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}><RefreshCw size={14} style={{ verticalAlign: 'middle' }} /> 加载中…</div> : null}
+                    {loading && !showEditSkeleton ? <div style={{ fontSize: 13, color: 'rgb(var(--text-tertiary))' }}><RefreshCw size={14} style={{ verticalAlign: 'middle' }} /> 加载中…</div> : null}
                     {error ? <div style={{ fontSize: 12, color: '#ef4444', background: 'rgb(239 68 68 / 0.08)', borderRadius: 8, padding: '10px 12px' }}>{error}</div> : null}
                   </div>
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Eye, EyeOff, FolderOpen, RefreshCw, XCircle } from 'lucide-react';
+import { CheckCircle2, Eye, EyeOff, FolderOpen, RefreshCw, Settings2, XCircle } from 'lucide-react';
 import { useAppStore } from '@/stores/app';
 import { t } from '@/lib/i18n';
 import {
@@ -45,8 +45,8 @@ type CapabilityItem = {
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="card" style={{ padding: 20 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'rgb(var(--text-secondary))', marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+    <div className="surface-panel" style={{ padding: 18 }}>
+      <div className="section-heading" style={{ marginBottom: 16 }}>
         {title}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>{children}</div>
@@ -62,6 +62,15 @@ function Row({ label, desc, children }: { label: string; desc?: string; children
         {desc ? <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))', marginTop: 2 }}>{desc}</div> : null}
       </div>
       <div style={{ flexShrink: 0 }}>{children}</div>
+    </div>
+  );
+}
+
+function DetailMetric({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="detail-stat" style={{ minHeight: 74 }}>
+      <div className="detail-stat-label">{label}</div>
+      <div className="detail-stat-value" style={{ fontSize: 15 }}>{value}</div>
     </div>
   );
 }
@@ -198,29 +207,8 @@ function ModelConfigSection() {
   }, [apiKey, provider]);
 
   return (
-    <SectionCard title={t('modelConfig')}>
+    <SectionCard title="模型与凭据">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, opacity: loading ? 0.7 : 1 }}>
-        <Row label="模型作用域" desc="聊天与培养可以共用一套模型，也可以拆开配置。">
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button
-              className={`btn ${mode === 'shared' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setMode('shared')}
-              style={{ fontSize: 12, padding: '4px 10px' }}
-              disabled={loading}
-            >
-              统一
-            </button>
-            <button
-              className={`btn ${mode === 'split' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setMode('split')}
-              style={{ fontSize: 12, padding: '4px 10px' }}
-              disabled={loading}
-            >
-              分开
-            </button>
-          </div>
-        </Row>
-
         <Row label={t('provider')}>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end', maxWidth: 320 }}>
             {(Object.keys(PROVIDER_LABELS) as Provider[]).map((item) => (
@@ -237,7 +225,7 @@ function ModelConfigSection() {
           </div>
         </Row>
 
-        <Row label="API Key" desc="当前服务商的默认凭据；聊天与培养共用。">
+        <Row label="API Key" desc="当前服务商的默认凭据。">
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input
               type={showKey ? 'text' : 'password'}
@@ -267,85 +255,27 @@ function ModelConfigSection() {
           </select>
         </Row>
 
-        <RoleCard
-          title="聊天默认模型"
-          description="聊天页默认读取这套配置，用户仍可在输入框下临时切换。"
-          role={roles.chat_default}
-          disabled={loading}
-          onProviderChange={(nextProvider) => {
-            updateRole('chat_default', nextProvider);
-            setProvider(nextProvider);
-            setApiKey(keys[nextProvider] ?? '');
-            setModel(MODEL_OPTIONS[nextProvider][0]);
-          }}
-          onModelChange={(nextModel) => {
-            updateRole('chat_default', roles.chat_default.provider, nextModel);
-            setModel(nextModel);
-          }}
-        />
-
-        <RoleCard
-          title="培养默认模型"
-          description={mode === 'split' ? '培养链路读取这套配置，优先选择带多模态能力的模型。' : '当前与统一配置保持一致。'}
-          role={mode === 'split' ? roles.training_default : roles.shared_default}
-          disabled={loading || mode !== 'split'}
-          onProviderChange={(nextProvider) => updateRole('training_default', nextProvider)}
-          onModelChange={(nextModel) => updateRole('training_default', roles.training_default.provider, nextModel)}
-        />
-
-        <RoleCard
-          title="统一默认模型"
-          description="当作用域为“统一”时，聊天与培养都走这套配置。"
-          role={roles.shared_default}
-          disabled={loading || mode !== 'shared'}
-          onProviderChange={(nextProvider) => updateRole('shared_default', nextProvider)}
-          onModelChange={(nextModel) => updateRole('shared_default', roles.shared_default.provider, nextModel)}
-        />
-
-        <Row label={t('capabilityStatus')} desc={t('capabilityProviderHint')}>
-          <div style={{ width: 320, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {capabilityItems.map((item) => {
-              const tone = getCapabilityTone(item.status);
-              return (
-                <div
-                  key={item.key}
-                  style={{
-                    border: '1px solid rgb(var(--border))',
-                    borderRadius: 12,
-                    padding: '10px 12px',
-                    background: 'rgb(var(--bg-hover))',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 600, color: 'rgb(var(--text-primary))' }}>
-                      {t(item.key)}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 600,
-                        color: tone.color,
-                        background: tone.background,
-                        borderRadius: 999,
-                        padding: '2px 7px',
-                      }}
-                    >
-                      {tone.label}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11.5, lineHeight: 1.5, color: 'rgb(var(--text-secondary))', marginTop: 6 }}>
-                    {item.description}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Row>
-
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button className="btn btn-primary" onClick={() => void handleSave()} style={{ fontSize: 12 }} disabled={loading}>
             {saved ? t('saved') : t('save')}
           </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+          {capabilityItems.map((item) => {
+            const tone = getCapabilityTone(item.status);
+            return (
+              <div key={item.key} className="detail-stat" style={{ minHeight: 96 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div className="detail-stat-label" style={{ marginBottom: 0 }}>{t(item.key)}</div>
+                  <span className="status-pill" style={{ color: tone.color, background: tone.background, borderColor: tone.color }}>
+                    {tone.label}
+                  </span>
+                </div>
+                <div className="muted-copy" style={{ marginTop: 10 }}>{item.description}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </SectionCard>
@@ -528,140 +458,148 @@ export function SettingsView() {
   }, [status]);
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: 24, maxWidth: 720 }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 18, fontWeight: 700, color: 'rgb(var(--text-primary))', margin: 0 }}>{t('settings')}</h1>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <SectionCard title={t('connection')}>
-          <Row label={t('apiUrl')} desc={t('apiUrlDesc')}>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input
-                className="input"
-                value={apiUrl}
-                onChange={(e) => setApiUrlState(e.target.value)}
-                style={{ width: 260, fontSize: 12 }}
-                onKeyDown={(e) => e.key === 'Enter' && handleSaveUrl()}
-              />
-              <button className="btn btn-secondary" onClick={handleSaveUrl} style={{ fontSize: 12 }}>
-                {urlSaved ? t('saved') : t('save')}
-              </button>
+    <div style={{ height: '100%', overflow: 'auto', padding: '34px 42px' }}>
+      <div className="view-container">
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 18, marginBottom: 24, flexWrap: 'wrap' }}>
+          <div>
+            <h1 className="page-title" style={{ margin: 0 }}>Local Control Center</h1>
+            <div style={{ marginTop: 8, color: 'rgb(var(--text-secondary))', fontSize: 15 }}>
+              服务连接、模型凭据和客户端基础设置。
             </div>
-          </Row>
-
-          <Row label={t('serviceStatus')}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {statusNode}
-                <button className="btn btn-ghost" onClick={() => void checkStatus()} style={{ padding: '3px 8px', fontSize: 11 }}>
-                  {t('checkStatus')}
-                </button>
-              </div>
-              {healthInfo?.ok ? (
-                <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
-                  v{healthInfo.server_version ?? healthInfo.version ?? 'unknown'} · build {healthInfo.build_id ?? 'missing'}
-                </div>
-              ) : null}
-            </div>
-          </Row>
-
-          <Row label="本地服务诊断" desc="只读展示当前客户端实际连接的本地服务与运行时状态。">
-            <div style={{ width: 360, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, fontSize: 11.5 }}>
-              <div className="card" style={{ padding: '10px 12px' }}>
-                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>当前地址</div>
-                <div style={{ color: 'rgb(var(--text-primary))', wordBreak: 'break-all' }}>{apiUrl || '未设置'}</div>
-              </div>
-              <div className="card" style={{ padding: '10px 12px' }}>
-                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>健康端口</div>
-                <div style={{ color: 'rgb(var(--text-primary))' }}>{healthInfo?.port ?? '未连接'}</div>
-              </div>
-              <div className="card" style={{ padding: '10px 12px' }}>
-                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>运行模式</div>
-                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.mode ?? 'unknown'}</div>
-              </div>
-              <div className="card" style={{ padding: '10px 12px' }}>
-                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>Node 来源</div>
-                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.node_source ?? 'unknown'}</div>
-              </div>
-              <div className="card" style={{ padding: '10px 12px' }}>
-                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>Dist 就绪</div>
-                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.dist_ready ? 'yes' : 'no'}</div>
-              </div>
-              <div className="card" style={{ padding: '10px 12px' }}>
-                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>App 管理</div>
-                <div style={{ color: 'rgb(var(--text-primary))' }}>{workbenchStatus?.service_managed ? 'yes' : 'no'}</div>
-              </div>
-              <div className="card" style={{ padding: '10px 12px', gridColumn: '1 / -1' }}>
-                <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>Runtime Root</div>
-                <div style={{ color: 'rgb(var(--text-primary))', wordBreak: 'break-all' }}>{workbenchStatus?.resolved_runtime_root ?? '未解析'}</div>
-              </div>
-              {workbenchStatus?.message ? (
-                <div className="card" style={{ padding: '10px 12px', gridColumn: '1 / -1' }}>
-                  <div style={{ color: 'rgb(var(--text-tertiary))', marginBottom: 4 }}>诊断说明</div>
-                  <div style={{ color: 'rgb(var(--text-primary))', lineHeight: 1.6 }}>{workbenchStatus.message}</div>
-                </div>
-              ) : null}
-            </div>
-          </Row>
-
-          <Row label={t('dataDir')} desc="本地人格资产与运行数据目录。">
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input
-                className="input"
-                value={runtimeSettings.data_dir ?? ''}
-                onChange={(e) => setRuntimeSettingsState((current) => ({ ...current, data_dir: e.target.value }))}
-                style={{ width: 260, fontSize: 12 }}
-                placeholder="/Users/you/.neeko"
-                disabled={runtimeLoading}
-              />
-              <button className="btn btn-secondary" onClick={() => void handlePickDataDir()} disabled={runtimeLoading}>
-                <FolderOpen size={14} />
-                {t('browse')}
-              </button>
-            </div>
-          </Row>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button className="btn btn-primary" onClick={() => void handleSaveRuntimeSettings()} disabled={runtimeLoading}>
-              {runtimeSaved ? t('saved') : t('save')}
-            </button>
           </div>
-        </SectionCard>
+          <button className="btn btn-primary" onClick={() => void checkStatus()} style={{ height: 40, borderRadius: 8, gap: 8 }}>
+            <Settings2 size={15} />
+            {t('checkStatus')}
+          </button>
+        </div>
 
-        <SectionCard title={t('appearance')}>
-          <Row label={t('theme')}>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {THEMES.map((opt) => (
-                <button
-                  key={opt.value}
-                  className={`btn ${theme === opt.value ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => setTheme(opt.value)}
-                  style={{ fontSize: 12, padding: '4px 10px' }}
-                >
-                  {t(opt.labelKey)}
+        <div className="settings-control-grid">
+          <div className="settings-column">
+            <SectionCard title="服务连接">
+              <Row label={t('apiUrl')} desc={t('apiUrlDesc')}>
+                <div style={{ display: 'flex', gap: 6, width: 320, maxWidth: '100%' }}>
+                  <input
+                    className="input"
+                    value={apiUrl}
+                    onChange={(e) => setApiUrlState(e.target.value)}
+                    style={{ minWidth: 0, fontSize: 12, height: 38, borderRadius: 8 }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSaveUrl()}
+                  />
+                  <button className="btn btn-secondary" onClick={handleSaveUrl} style={{ fontSize: 12, height: 38, borderRadius: 8 }}>
+                    {urlSaved ? t('saved') : t('save')}
+                  </button>
+                </div>
+              </Row>
+
+              <Row label={t('serviceStatus')}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {statusNode}
+                    <button className="btn btn-ghost" onClick={() => void checkStatus()} style={{ padding: '3px 8px', fontSize: 11 }}>
+                      {t('checkStatus')}
+                    </button>
+                  </div>
+                  {healthInfo?.ok ? (
+                    <div style={{ fontSize: 11, color: 'rgb(var(--text-tertiary))' }}>
+                      v{healthInfo.server_version ?? healthInfo.version ?? 'unknown'} · build {healthInfo.build_id ?? 'missing'}
+                    </div>
+                  ) : null}
+                </div>
+              </Row>
+
+              <div className="detail-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))' }}>
+                <DetailMetric label="健康端口" value={healthInfo?.port ?? '--'} />
+                <DetailMetric label="连接恢复" value={healthInfo?.local_diagnostics?.fallback_active ? `已切换 ${healthInfo.local_diagnostics.healthy_port ?? ''}` : '未切换'} />
+                <DetailMetric label="运行模式" value={workbenchStatus?.mode ?? 'unknown'} />
+                <DetailMetric label="Node 来源" value={workbenchStatus?.node_source ?? 'unknown'} />
+                <DetailMetric label="资源就绪" value={workbenchStatus?.dist_ready ? 'yes' : 'no'} />
+                <DetailMetric label="App 管理" value={workbenchStatus?.service_managed ? 'yes' : 'no'} />
+              </div>
+
+              <Row label={t('dataDir')} desc="本地人格资产与运行数据目录。">
+                <div style={{ display: 'flex', gap: 6, width: 320, maxWidth: '100%' }}>
+                  <input
+                    className="input"
+                    value={runtimeSettings.data_dir ?? ''}
+                    onChange={(e) => setRuntimeSettingsState((current) => ({ ...current, data_dir: e.target.value }))}
+                    style={{ minWidth: 0, fontSize: 12 }}
+                    placeholder="/Users/you/.neeko"
+                    disabled={runtimeLoading}
+                  />
+                  <button className="btn btn-secondary" onClick={() => void handlePickDataDir()} disabled={runtimeLoading}>
+                    <FolderOpen size={14} />
+                    {t('browse')}
+                  </button>
+                </div>
+              </Row>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button className="btn btn-primary" onClick={() => void handleSaveRuntimeSettings()} disabled={runtimeLoading}>
+                  {runtimeSaved ? t('saved') : t('save')}
                 </button>
-              ))}
-            </div>
-          </Row>
+              </div>
+            </SectionCard>
 
-          <Row label={t('language')}>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {LOCALES.map((opt) => (
-                <button
-                  key={opt.value}
-                  className={`btn ${locale === opt.value ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => setLocale(opt.value)}
-                  style={{ fontSize: 12, padding: '4px 10px' }}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </Row>
-        </SectionCard>
+            <SectionCard title="通用设置与诊断">
+              <Row label={t('theme')}>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {THEMES.map((opt) => (
+                    <button
+                      key={opt.value}
+                      className={`btn ${theme === opt.value ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setTheme(opt.value)}
+                      style={{ fontSize: 12, padding: '4px 10px' }}
+                    >
+                      {t(opt.labelKey)}
+                    </button>
+                  ))}
+                </div>
+              </Row>
 
-        <ModelConfigSection />
+              <Row label={t('language')}>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {LOCALES.map((opt) => (
+                    <button
+                      key={opt.value}
+                      className={`btn ${locale === opt.value ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setLocale(opt.value)}
+                      style={{ fontSize: 12, padding: '4px 10px' }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </Row>
+
+              <div className="surface-panel" style={{ padding: 12, background: 'rgb(var(--bg-hover))' }}>
+                <div className="metric-label">运行资源目录</div>
+                <div style={{ color: 'rgb(var(--text-primary))', wordBreak: 'break-all', fontSize: 12 }}>
+                  {workbenchStatus?.resolved_runtime_root ?? '未解析'}
+                </div>
+              </div>
+
+              {workbenchStatus?.message ? (
+                <div className="surface-panel" style={{ padding: 12, background: 'rgb(var(--bg-hover))' }}>
+                  <div className="metric-label">诊断说明</div>
+                  <div style={{ color: 'rgb(var(--text-primary))', lineHeight: 1.6, fontSize: 12 }}>{workbenchStatus.message}</div>
+                </div>
+              ) : null}
+
+              {healthInfo?.local_diagnostics?.stale_debug_port_4310 ? (
+                <div className="surface-panel" style={{ padding: 12, borderColor: 'rgb(245 158 11 / 0.35)', background: 'rgb(var(--bg-hover))' }}>
+                  <div className="metric-label">4310 调试端口提示</div>
+                  <div style={{ color: 'rgb(var(--text-primary))', lineHeight: 1.6, fontSize: 12 }}>
+                    {healthInfo.local_diagnostics.stale_debug_summary ?? '4310 当前没有健康响应，客户端已切换 fallback。'}
+                  </div>
+                </div>
+              ) : null}
+            </SectionCard>
+          </div>
+
+          <div className="settings-column">
+            <ModelConfigSection />
+          </div>
+        </div>
       </div>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>

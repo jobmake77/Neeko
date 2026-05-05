@@ -34,6 +34,7 @@ import { enrichAttachment } from '../media/attachment-processing.js';
 import {
   AnswerPlan,
   AttachmentRef,
+  ChatAgentTrace,
   ChatRetrievalPlan,
   ClaimCandidate,
   CitationItem,
@@ -73,6 +74,11 @@ import {
 } from '../models/workbench.js';
 import { classifyFailure } from '../training/failure-loop.js';
 import { CheckpointStore } from '../training/checkpoint.js';
+import {
+  PersonaChatAgentRuntime,
+  createChatAgentTraceEvent,
+  failChatAgentTrace,
+} from './chat-agent-runtime.js';
 import { WorkbenchStore } from './store.js';
 import { getDefaultModelForProvider, resolveModelForOverride, type ProviderName } from '../../config/model.js';
 import { loadRawDocsCache, writeRawDocsCache } from '../pipeline/evidence-routing.js';
@@ -339,6 +345,7 @@ function buildExtractionQualityAssessment(docs: RawDocument[]): ExtractionQualit
     excerpt_count: excerptCount,
     signal_count: maxSignalCount,
     issue_codes: mergedIssueCodes,
+    relevance_bucket: undefined,
   };
 }
 
@@ -395,6 +402,8 @@ function buildSourceIngestOutcome(input: {
     identity_match: input.validation?.identity_match,
     source_integrity: input.validation?.source_integrity,
     reason_code: input.validation?.reason_code,
+    reason_codes: input.validation?.reason_codes ?? [],
+    relevance_bucket: input.validation?.relevance_bucket ?? input.qualityAssessment?.relevance_bucket,
     evidence: input.validation?.evidence ?? [],
     quality_assessment: input.qualityAssessment,
     health: input.health,
@@ -436,6 +445,7 @@ function normalizeSourceSyncCheckpoint(raw: Record<string, unknown> | null): Sou
     consecutive_primary_provider_failures: Number.isFinite(Number(raw.consecutive_primary_provider_failures ?? raw.consecutivePrimaryProviderFailures))
       ? Number(raw.consecutive_primary_provider_failures ?? raw.consecutivePrimaryProviderFailures)
       : undefined,
+    next_action: typeof raw.next_action === 'string' ? raw.next_action as SourceSyncCheckpoint['next_action'] : undefined,
   };
 }
 
@@ -1032,26 +1042,39 @@ function includesStrongIdentityToken(text: string, tokens: string[]): boolean {
 
 function buildSourceIdentityTokens(personaName: string, source: PersonaSource): string[] {
   const tokens = new Set<string>();
+  const blockedSuffixes = new Set(['test', 'demo', 'sample', 'tmp', 'temp', 'persona', 'profile', 'about']);
   const collect = (value: string | undefined) => {
-    String(value ?? '')
-      .toLowerCase()
+    const normalized = String(value ?? '').toLowerCase().trim();
+    if (!normalized) return;
+    normalized
       .split(/[^a-z0-9@._-]+/)
       .map((item) => item.trim())
-      .filter((item) => item.length >= 3 || item.startsWith('@'))
-      .forEach((item) => tokens.add(item));
+      .filter(Boolean)
+      .forEach((item) => {
+        if (item.length >= 3 || item.startsWith('@')) tokens.add(item);
+        item
+          .split(/[-_]+/)
+          .map((part) => part.trim())
+          .filter((part) => part.length >= 3 && !blockedSuffixes.has(part))
+          .forEach((part) => tokens.add(part));
+        if (item.startsWith('@')) {
+          const withoutAt = item.replace(/^@+/, '');
+          if (withoutAt.length >= 3 && !blockedSuffixes.has(withoutAt)) tokens.add(withoutAt);
+        }
+      });
   };
 
   collect(personaName);
   collect(source.target_label);
   for (const alias of source.target_aliases ?? []) collect(alias);
-  const remoteRefs = [
-    source.handle_or_url,
-    ...(source.links ?? []),
-  ].filter((item): item is string => Boolean(item));
-  for (const ref of remoteRefs) {
-    normalizeHostTokens(ref).forEach((item) => tokens.add(item));
-  }
   if (source.type === 'social') {
+    const remoteRefs = [
+      source.handle_or_url,
+      ...(source.links ?? []),
+    ].filter((item): item is string => Boolean(item));
+    for (const ref of remoteRefs) {
+      normalizeHostTokens(ref).forEach((item) => tokens.add(item));
+    }
     collect(source.handle_or_url);
     collect(normalizeHandle(source.handle_or_url ?? ''));
   }
@@ -1090,6 +1113,8 @@ function buildArticleRiskFlags(doc: RawDocument, quality?: ExtractionQualityAsse
   if (/(category|search|tag|archive|rss|feed)/i.test(url) || /\b(all posts|archives|categories|tags)\b/i.test(title)) {
     flags.add('像聚合页');
   }
+  if (quality?.relevance_bucket === 'mismatch') flags.add('人物相关度不足');
+  if (quality?.relevance_bucket === 'weak_related') flags.add('像弱相关背景页');
   if (quality?.status === 'weak') flags.add('正文过薄');
   if (quality?.issue_codes.includes('too_short')) flags.add('正文过薄');
   if (quality?.issue_codes.includes('weak_authorial_signal')) flags.add('人物相关度不足');
@@ -1097,8 +1122,9 @@ function buildArticleRiskFlags(doc: RawDocument, quality?: ExtractionQualityAsse
 }
 
 function describePreviewRelevance(status: SourceValidationResult['status'], result: SourceValidationResult): string {
-  if (status === 'accepted') return '来源内容和目标人物存在稳定归属关系，可继续入池。';
-  if (status === 'quarantined') return '抓到了内容，但它更像弱关联页面，建议先人工确认。';
+  if (result.relevance_bucket === 'direct_owner') return '来源内容与目标人物存在直接归属关系，可继续入池。';
+  if (result.relevance_bucket === 'strong_related') return '来源内容与目标人物强相关，可作为补充来源继续入池。';
+  if (result.relevance_bucket === 'weak_related' || status === 'quarantined') return '抓到了内容，但它更像弱关联页面，建议先人工确认。';
   return '当前页面与目标人物不够贴合，或更像目录/聚合页面。';
 }
 
@@ -1122,21 +1148,42 @@ function hintMatchesIdentity(hint: string, identityTokens: string[]): boolean {
 function createValidationResult(input: {
   status: SourceValidationResult['status'];
   reason_code: string;
+  reason_codes?: string[];
   summary: string;
   confidence: number;
   identity_match: number;
   source_integrity: number;
+  relevance_bucket?: SourceValidationResult['relevance_bucket'];
   evidence?: string[];
 }): SourceValidationResult {
   return {
     status: input.status,
     reason_code: input.reason_code,
+    reason_codes: input.reason_codes ?? [input.reason_code],
     summary: input.summary,
     confidence: Math.max(0, Math.min(1, input.confidence)),
     identity_match: Math.max(0, Math.min(1, input.identity_match)),
     source_integrity: Math.max(0, Math.min(1, input.source_integrity)),
+    relevance_bucket: input.relevance_bucket,
     evidence: input.evidence ?? [],
   };
+}
+
+function inferSourceRelevanceBucket(input: {
+  source: PersonaSource;
+  qualityAssessment?: ExtractionQualityAssessment;
+  identityScore: number;
+  likelyAggregator?: boolean;
+  conflictingOwnerHint?: boolean;
+  strongIdentitySignal?: boolean;
+  firstPartySignal?: boolean;
+}): 'direct_owner' | 'strong_related' | 'weak_related' | 'mismatch' {
+  if (input.likelyAggregator || input.conflictingOwnerHint) return 'mismatch';
+  if (input.source.type === 'social') return input.firstPartySignal ? 'direct_owner' : 'mismatch';
+  if (input.firstPartySignal) return 'direct_owner';
+  if ((input.strongIdentitySignal && input.identityScore >= 0.45) || input.identityScore >= 0.62) return 'strong_related';
+  if (input.identityScore >= 0.2 || input.qualityAssessment?.status === 'accepted') return 'weak_related';
+  return 'mismatch';
 }
 
 export function validateRemoteSourceDocumentsForPersona(
@@ -1170,20 +1217,24 @@ export function validateRemoteSourceDocumentsForPersona(
         return createValidationResult({
           status: 'accepted',
           reason_code: 'social_author_match',
+          reason_codes: ['social_author_match', 'direct_owner_match'],
           summary: '作者已通过账号一致性校验。',
           confidence: 0.96,
           identity_match: 0.98,
           source_integrity: 0.95,
+          relevance_bucket: 'direct_owner',
           evidence: genericEvidence,
         });
       }
       return createValidationResult({
         status: 'rejected',
         reason_code: 'social_author_mismatch',
+        reason_codes: ['social_author_mismatch', 'identity_mismatch'],
         summary: '抓取结果作者与目标账号不一致，已拦截。',
         confidence: 0.08,
         identity_match: 0.05,
         source_integrity: 0.25,
+        relevance_bucket: 'mismatch',
         evidence: genericEvidence,
       });
     }
@@ -1198,41 +1249,74 @@ export function validateRemoteSourceDocumentsForPersona(
         : 0;
       const likelyAggregator = /(category|search|tag|archive|rss|feed)/i.test(String(doc.source_url ?? ''))
         || /\b(all posts|archives|categories|tags)\b/i.test(title);
+      const conflictingOwnerHint = extractArticleOwnerHints(doc).find((hint) => !hintMatchesIdentity(hint, identityTokens));
+      const hasAuthorialSignal = !qualityAssessment.issue_codes.includes('weak_authorial_signal')
+        || Boolean(readMetadataString(doc, 'title').match(/\babout\b/i))
+        || Boolean(doc.author?.trim());
+      const relevanceBucket = inferSourceRelevanceBucket({
+        source,
+        qualityAssessment,
+        identityScore: articleIdentityScore,
+        likelyAggregator,
+        conflictingOwnerHint: Boolean(conflictingOwnerHint),
+        strongIdentitySignal: articleIdentityScore >= 0.45 && hasAuthorialSignal,
+        firstPartySignal: articleIdentityScore >= 0.72 && hasAuthorialSignal,
+      });
       if (likelyAggregator) {
         return createValidationResult({
           status: 'rejected',
           reason_code: 'article_aggregator_page',
+          reason_codes: ['article_aggregator_page', 'aggregator_or_directory_page'],
           summary: '聚合页或列表页不会直接进入正式培养。',
           confidence: 0.2,
           identity_match: articleIdentityScore,
           source_integrity: 0.25,
+          relevance_bucket: relevanceBucket,
           evidence: articleEvidence,
         });
       }
 
       if (qualityAssessment.status === 'rejected') {
+        const shouldQuarantineWeakRelated = relevanceBucket === 'weak_related'
+          && !likelyAggregator
+          && !conflictingOwnerHint;
         return createValidationResult({
-          status: 'rejected',
-          reason_code: qualityAssessment.issue_codes.includes('too_short') ? 'article_content_too_thin' : 'article_extraction_low_quality',
-          summary: qualityAssessment.issue_codes.includes('too_short')
-            ? '网页正文过薄，当前不建议作为稳定来源纳入培养。'
-            : '网页提取质量不足，当前不建议纳入正式培养。',
-          confidence: 0.18,
+          status: shouldQuarantineWeakRelated ? 'quarantined' : 'rejected',
+          reason_code: shouldQuarantineWeakRelated
+            ? 'article_identity_weak'
+            : qualityAssessment.issue_codes.includes('too_short')
+              ? 'article_content_too_thin'
+              : 'article_extraction_low_quality',
+          reason_codes: qualityAssessment.issue_codes.includes('too_short')
+            ? (shouldQuarantineWeakRelated
+              ? ['article_identity_weak', 'content_too_thin', 'weak_related_context']
+              : ['article_content_too_thin', 'content_too_thin'])
+            : (shouldQuarantineWeakRelated
+              ? ['article_identity_weak', 'extraction_low_quality', 'weak_related_context']
+              : ['article_extraction_low_quality', 'extraction_low_quality']),
+          summary: shouldQuarantineWeakRelated
+            ? '网页提取质量偏弱，但它与目标人物存在弱关联，已隔离等待人工确认。'
+            : qualityAssessment.issue_codes.includes('too_short')
+              ? '网页正文过薄，当前不建议作为稳定来源纳入培养。'
+              : '网页提取质量不足，当前不建议纳入正式培养。',
+          confidence: shouldQuarantineWeakRelated ? 0.28 : 0.18,
           identity_match: articleIdentityScore,
-          source_integrity: 0.2,
+          source_integrity: shouldQuarantineWeakRelated ? 0.34 : 0.2,
+          relevance_bucket: relevanceBucket,
           evidence: [...articleEvidence, qualityAssessment.summary].filter(Boolean),
         });
       }
 
-      const conflictingOwnerHint = extractArticleOwnerHints(doc).find((hint) => !hintMatchesIdentity(hint, identityTokens));
       if (conflictingOwnerHint) {
         return createValidationResult({
           status: 'rejected',
           reason_code: 'article_conflicting_owner',
+          reason_codes: ['article_conflicting_owner', 'identity_mismatch'],
           summary: `页面主体更像是 ${conflictingOwnerHint}，与当前目标不一致，已拦截。`,
           confidence: 0.1,
           identity_match: articleIdentityScore,
           source_integrity: 0.18,
+          relevance_bucket: relevanceBucket,
           evidence: [conflictingOwnerHint, ...articleEvidence].filter(Boolean),
         });
       }
@@ -1241,10 +1325,12 @@ export function validateRemoteSourceDocumentsForPersona(
         return createValidationResult({
           status: 'accepted',
           reason_code: 'article_identity_match',
+          reason_codes: [articleIdentityScore >= 0.72 ? 'article_direct_owner_match' : 'article_identity_match'],
           summary: '网页内容已通过来源归属校验。',
           confidence: qualityAssessment.status === 'accepted' ? 0.82 : 0.72,
           identity_match: articleIdentityScore,
           source_integrity: qualityAssessment.status === 'accepted' ? 0.82 : 0.68,
+          relevance_bucket: relevanceBucket,
           evidence: articleEvidence,
         });
       }
@@ -1252,10 +1338,12 @@ export function validateRemoteSourceDocumentsForPersona(
       return createValidationResult({
         status: 'quarantined',
         reason_code: 'article_identity_weak',
+        reason_codes: ['article_identity_weak', 'weak_related_context'],
         summary: '网页内容没有给出足够的目标归属信号，已隔离等待人工确认。',
         confidence: 0.34,
         identity_match: articleIdentityScore,
         source_integrity: 0.46,
+        relevance_bucket: relevanceBucket,
         evidence: articleEvidence,
       });
     }
@@ -1267,20 +1355,24 @@ export function validateRemoteSourceDocumentsForPersona(
         return createValidationResult({
           status: 'accepted',
           reason_code: firstParty ? 'video_first_party_match' : 'video_interview_match',
+          reason_codes: [firstParty ? 'video_first_party_match' : 'video_interview_match'],
           summary: firstParty ? '视频来源与目标频道匹配。' : '视频内容与目标身份存在稳定匹配。',
           confidence: firstParty ? 0.9 : 0.74,
           identity_match: firstParty ? 0.95 : genericIdentityScore,
           source_integrity: firstParty ? 0.92 : 0.72,
+          relevance_bucket: firstParty ? 'direct_owner' : 'strong_related',
           evidence: genericEvidence,
         });
       }
       return createValidationResult({
         status: 'quarantined',
         reason_code: 'video_identity_weak',
+        reason_codes: ['video_identity_weak', 'weak_related_context'],
         summary: '视频来源归属不足，已隔离，不进入正式训练。',
         confidence: 0.34,
         identity_match: genericIdentityScore,
         source_integrity: 0.48,
+        relevance_bucket: genericIdentityScore >= 0.2 ? 'weak_related' : 'mismatch',
         evidence: genericEvidence,
       });
     }
@@ -1291,20 +1383,24 @@ export function validateRemoteSourceDocumentsForPersona(
         return createValidationResult({
           status: 'accepted',
           reason_code: firstParty ? 'audio_first_party_match' : 'audio_identity_match',
+          reason_codes: [firstParty ? 'audio_first_party_match' : 'audio_identity_match'],
           summary: firstParty ? '音频来源与目标身份存在直接匹配。' : '音频内容与目标身份存在稳定匹配。',
           confidence: firstParty ? 0.88 : 0.72,
           identity_match: firstParty ? 0.92 : genericIdentityScore,
           source_integrity: firstParty ? 0.88 : 0.7,
+          relevance_bucket: firstParty ? 'direct_owner' : 'strong_related',
           evidence: genericEvidence,
         });
       }
       return createValidationResult({
         status: 'quarantined',
         reason_code: 'audio_identity_weak',
+        reason_codes: ['audio_identity_weak', 'weak_related_context'],
         summary: '音频来源归属不足，已隔离，不进入正式训练。',
         confidence: 0.32,
         identity_match: genericIdentityScore,
         source_integrity: 0.46,
+        relevance_bucket: genericIdentityScore >= 0.2 ? 'weak_related' : 'mismatch',
         evidence: genericEvidence,
       });
     }
@@ -1312,10 +1408,12 @@ export function validateRemoteSourceDocumentsForPersona(
     return createValidationResult({
       status: 'accepted',
       reason_code: 'default_remote_accept',
+      reason_codes: ['default_remote_accept'],
       summary: '远程来源已通过基础校验。',
       confidence: 0.7,
       identity_match: genericIdentityScore,
       source_integrity: 0.7,
+      relevance_bucket: genericIdentityScore >= 0.5 ? 'strong_related' : 'weak_related',
       evidence: genericEvidence,
     });
   });
@@ -1513,7 +1611,7 @@ function isProjectFactQuery(query: string): boolean {
 
 function detectChatKnowledgeLayer(query: string): ChatKnowledgeLayer {
   const lower = query.toLowerCase();
-  if (/(项目|作品|仓库|github|repo|repository|产品|product|app|tool|开源)/i.test(query)) return 'project';
+  if (/(项目|作品|仓库|github|repo|repository|产品|product|app|tool|开源|直接做过|参与过|提到过|讨论过)/i.test(query)) return 'project';
   if (/(谁|合作|关联|一起|团队|朋友|组织|公司|人物关系|collaborat|relation|with whom)/i.test(query)) return 'relation';
   if (/(技术|tech|stack|framework|架构|股票|ticker|行业|赛道|宏观|市场|company|business|finance|economy|经济)/i.test(query)) return 'background';
   if (/(为什么你会|长期|经历|一路|轨迹|变化|从.*到|story|journey|identity)/i.test(query)) return 'hybrid';
@@ -1521,7 +1619,11 @@ function detectChatKnowledgeLayer(query: string): ChatKnowledgeLayer {
 }
 
 function isSelfProjectQuery(query: string): boolean {
-  return /(你有什么开源|你的开源|你做过.*开源|你.*项目|你的项目|你的作品|你的仓库|your project|your repo|your github)/i.test(query);
+  return /(你有什么开源|你的开源|你做过.*开源|你.*项目|你的项目|你的作品|你的仓库|直接做过|参与过|只是提到过|strictly split|your project|your repo|your github)/i.test(query);
+}
+
+function isStrictOwnershipSplitQuery(query: string): boolean {
+  return /(严格分成|严格区分|不要混在一起|不要把.*算成|直接做过.*参与过.*提到过|参与过.*提到过.*直接做过)/i.test(query);
 }
 
 function isPersonaMetaDeflection(text: string): boolean {
@@ -1578,50 +1680,131 @@ function normalizeProjectSnippet(content: string): string {
     .slice(0, 180);
 }
 
+function scoreRecencySignal(date?: string): number {
+  if (!date) return 0;
+  const time = Date.parse(date);
+  if (!Number.isFinite(time)) return 0;
+  const ageDays = Math.max(0, (Date.now() - time) / 86_400_000);
+  if (ageDays <= 30) return 1;
+  if (ageDays <= 180) return 0.85;
+  if (ageDays <= 365) return 0.7;
+  if (ageDays <= 730) return 0.55;
+  if (ageDays <= 1460) return 0.35;
+  return 0.18;
+}
+
+function scoreClaimQueryAffinity(query: string | undefined, claim: Pick<ClaimCandidate, 'object_label' | 'support_summary' | 'claim_type' | 'semantic_type'>): number {
+  if (!query) return 0;
+  const haystack = `${claim.object_label} ${claim.support_summary ?? ''} ${claim.claim_type} ${claim.semantic_type ?? ''}`.toLowerCase();
+  const label = claim.object_label.toLowerCase();
+  const queryTerms = extractProjectQueryTerms(query);
+  if (queryTerms.length === 0) return 0;
+  let score = 0;
+  for (const term of queryTerms) {
+    const normalized = term.toLowerCase();
+    if (label === normalized) score += 1.25;
+    else if (label.includes(normalized)) score += 0.8;
+    else if (haystack.includes(normalized)) score += 0.45;
+  }
+  return score;
+}
+
+function scoreProjectLabelQuality(label: string): number {
+  const trimmed = label.trim();
+  if (!trimmed) return 0;
+  let score = 0.4;
+  if (/^[A-Za-z0-9][A-Za-z0-9+_.-]{1,31}$/.test(trimmed)) score += 0.5;
+  if (/^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff+_.\-\s]{1,31}$/.test(trimmed)) score += 0.2;
+  if (/「[^」]+」/.test(trimmed)) score += 0.08;
+  if (/\s/.test(trimmed)) score -= 0.08 * Math.max(0, trimmed.split(/\s+/).length - 1);
+  if (/(这个|那个|这个工具|这个项目| on| 在| 里| 的)$/iu.test(trimmed)) score -= 0.45;
+  if (/^(Discovered|看到|发现|工程师工具|开源工具|这个|那个)/iu.test(trimmed)) score -= 0.5;
+  if (trimmed.length > 20) score -= 0.15;
+  return Math.max(0, Math.min(1, score));
+}
+
+function rankProjectEvidenceHit(query: string, hit: ProjectEvidenceHit): number {
+  const pseudoClaim = {
+    object_label: hit.label,
+    support_summary: hit.snippet,
+    claim_type: 'project' as const,
+    semantic_type: 'project_evidence',
+  };
+  return (hit.score * 1.5)
+    + scoreClaimQueryAffinity(query, pseudoClaim)
+    + scoreRecencySignal(hit.publishedAt)
+    + (scoreProjectLabelQuality(hit.label) * 1.4);
+}
+
+function selectProjectEvidenceHits(query: string, hits: ProjectEvidenceHit[], limit = 5): ProjectEvidenceHit[] {
+  const ranked = [...hits].sort((a, b) => {
+    const diff = rankProjectEvidenceHit(query, b) - rankProjectEvidenceHit(query, a);
+    return diff || b.score - a.score || (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '') || a.label.localeCompare(b.label);
+  });
+  const selected: ProjectEvidenceHit[] = [];
+  const seenLabels = new Set<string>();
+  for (const hit of ranked) {
+    const key = hit.label.toLowerCase();
+    if (seenLabels.has(key)) continue;
+    selected.push(hit);
+    seenLabels.add(key);
+    if (selected.length >= limit) return selected;
+  }
+  for (const hit of ranked) {
+    if (selected.length >= limit) break;
+    if (selected.includes(hit)) continue;
+    selected.push(hit);
+  }
+  return selected;
+}
+
 function hasSpecificProjectSignal(text: string): boolean {
   return /(Pake|妙言|潮流周刊|微信读书的?\s*Mac\s*版本|独立设计开发|起了两个支线任务|代码开源|开源地址|Github\s+Rust\s+日榜首)/iu.test(text);
 }
 
 function hasSelfProjectSignal(text: string): boolean {
-  return /(我|自己|独立|业余时间|起了两个支线任务|代码开源|我开发|我写|我做|周刊之前想弄个网站|之前用 Rust 打包了|有幸到了 Github 日总榜)/u.test(text);
+  return /((^|[，。,\s])(我(?!们)|自己)(?=[，。,\s])|我开发|我写|我做|我的项目|我维护|我创建|我发起|独立设计开发|业余时间|起了两个支线任务|代码开源|周刊之前想弄个网站|之前用 Rust 打包了|有幸到了 Github 日总榜)/u.test(text);
 }
 
 function hasNonOwnerProjectSignal(text: string): boolean {
   return /(看到一个|发现一个|推荐过|推荐一个|这个工具|这个开源工具|有兴趣可以玩玩|可以简单自己部署|之前我们在内部也有一些类似的实践|不是我做的|别人的项目)/u.test(text);
 }
 
-function scoreProjectEvidenceDoc(query: string, doc: RawDocument): number {
+function scoreProjectEvidenceDoc(query: string, doc: RawDocument, rankingHint?: string): number {
+  const rankingQuery = [query, rankingHint].filter(Boolean).join(' ');
   const content = `${doc.content} ${doc.source_url ?? ''}`;
   let score = 0;
   if (PROJECT_EVIDENCE_PATTERN.test(content)) score += 3;
   if (/(开源地址|github|repo|repository|仓库)/i.test(content)) score += 2.5;
-  if (/(我|自己|独立|业余时间|代码开源|我开发|我写|我做|起了两个支线任务|可以 Fork 过去用)/u.test(content)) score += 1.6;
+  if (hasSelfProjectSignal(content) || /可以 Fork 过去用/u.test(content)) score += 1.6;
   if (/(swift|rust|editor|website|博客|周刊|mac|app|工具)/i.test(content)) score += 0.8;
   if (/^@[\w_]+/i.test(doc.content.trim())) score -= 1.2;
   const extractedLabel = extractProjectLabel(doc.content);
   if (extractedLabel && extractedLabel !== '公开提到的项目/作品') score += 0.8;
   if (isSelfProjectQuery(query) && !hasSelfProjectSignal(doc.content)) score -= 1.4;
-  score += computeProjectTermOverlap(query, content) * 1.5;
+  score += computeProjectTermOverlap(rankingQuery, content) * 1.5;
   return score;
 }
 
-function buildProjectEvidenceHits(query: string, docs: RawDocument[]): ProjectEvidenceHit[] {
+function buildProjectEvidenceHits(query: string, docs: RawDocument[], rankingHint?: string): ProjectEvidenceHit[] {
   if (!isProjectFactQuery(query) || docs.length === 0) return [];
   const selfProjectQuery = isSelfProjectQuery(query);
+  const strictOwnershipSplit = isStrictOwnershipSplitQuery(query);
 
   const deduped = new Map<string, ProjectEvidenceHit>();
   for (const doc of docs) {
-    const score = scoreProjectEvidenceDoc(query, doc);
+    const score = scoreProjectEvidenceDoc(query, doc, rankingHint);
     if (score < 3) continue;
     const snippet = normalizeProjectSnippet(doc.content);
     if (!snippet) continue;
     const label = extractProjectLabel(doc.content) ?? '公开提到的项目/作品';
     const anchoredSelfProjectFact = hasSelfProjectSignal(snippet)
       || hasSpecificProjectSignal(snippet)
-      || (label !== '公开提到的项目/作品' && /(开源|editor|编辑器|app|tool|项目|作品|website|博客|周刊|mac|swift|rust)/i.test(snippet));
+      || (label !== '公开提到的项目/作品' && /(开源|editor|编辑器|app|tool|工具|项目|作品|website|博客|周刊|mac|swift|rust)/i.test(snippet))
+      || (strictOwnershipSplit && label !== '公开提到的项目/作品' && hasNonOwnerProjectSignal(snippet));
     if (label === '公开提到的项目/作品' && score < 4.2) continue;
     if (label === '公开提到的项目/作品' && !hasSpecificProjectSignal(snippet)) continue;
-    if (selfProjectQuery && hasNonOwnerProjectSignal(snippet) && !hasSelfProjectSignal(snippet) && !hasSpecificProjectSignal(snippet)) continue;
+    if (selfProjectQuery && !strictOwnershipSplit && hasNonOwnerProjectSignal(snippet) && !hasSelfProjectSignal(snippet) && !hasSpecificProjectSignal(snippet)) continue;
     if (selfProjectQuery && !anchoredSelfProjectFact) continue;
     const key = `${label.toLowerCase()}::${snippet.slice(0, 72)}`;
     const existing = deduped.get(key);
@@ -1636,9 +1819,7 @@ function buildProjectEvidenceHits(query: string, docs: RawDocument[]): ProjectEv
     });
   }
 
-  return Array.from(deduped.values())
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
+  return selectProjectEvidenceHits([query, rankingHint].filter(Boolean).join(' '), Array.from(deduped.values()), 5);
 }
 
 function buildProjectEvidenceContext(hits: ProjectEvidenceHit[]): string {
@@ -1658,12 +1839,42 @@ function buildProjectEvidenceContext(hits: ProjectEvidenceHit[]): string {
   return lines.join('\n');
 }
 
-function buildProjectFactFallbackReply(hits: ProjectEvidenceHit[]): string {
+function buildRecentProjectRankingHint(messages: ConversationMessage[], currentMessage: string): string {
+  const historyWindow = messages
+    .slice(-4)
+    .map((item) => item.content?.trim())
+    .filter((value): value is string => Boolean(value) && value !== currentMessage)
+    .slice(-3);
+  return historyWindow.join('\n');
+}
+
+function buildProjectFactFallbackReply(hits: ProjectEvidenceHit[], plan?: AnswerPlan, userMessage?: string): string {
+  const planReply = buildClaimFallbackReply(plan);
+  if (planReply) return planReply;
   if (hits.length === 0) {
     return '基于我公开提到过的内容，我有一些项目和开源作品，但当前这条回答没有正确对齐到项目事实。你可以继续问具体项目，我按公开内容展开。';
   }
+  if (userMessage && isStrictOwnershipSplitQuery(userMessage)) {
+    const ownedHits = hits.filter((item) => hasSelfProjectSignal(item.snippet));
+    const mentionedHits = hits.filter((item) => hasNonOwnerProjectSignal(item.snippet) && !hasSelfProjectSignal(item.snippet));
+    const participatedHits = hits.filter((item) => !ownedHits.includes(item) && !mentionedHits.includes(item));
+    const lines = ['基于当前公开语料，我先按可确认程度分桶：'];
+    if (ownedHits.length > 0) {
+      lines.push('直接做过 / 主导过：');
+      lines.push(...ownedHits.slice(0, 4).map((item) => `- ${item.label}：${item.snippet}`));
+    }
+    if (participatedHits.length > 0) {
+      lines.push('参与过 / 明确相关：');
+      lines.push(...participatedHits.slice(0, 3).map((item) => `- ${item.label}：${item.snippet}`));
+    }
+    if (mentionedHits.length > 0) {
+      lines.push('只是提到过 / 讨论过：');
+      lines.push(...mentionedHits.slice(0, 3).map((item) => `- ${item.label}：${item.snippet}`));
+    }
+    return lines.join('\n');
+  }
   const lines = [
-    '基于我公开提到过的内容，我做过或明确提到过这些开源项目/作品：',
+    '基于我公开提到过的内容，我能确认和这些项目存在关联，但当前还缺少足够信号去稳定区分“直接做过”和“只是提到过”：',
     ...hits.slice(0, 4).map((item) => `- ${item.label}：${item.snippet}`),
   ];
   return lines.join('\n');
@@ -1800,6 +2011,64 @@ function inferClaimOwnership(semanticType: string): ClaimCandidate['ownership'] 
   return 'unknown';
 }
 
+function claimOwnershipRank(ownership: ClaimCandidate['ownership']): number {
+  switch (ownership) {
+    case 'self_owned': return 5;
+    case 'self_participated': return 4;
+    case 'self_related': return 3;
+    case 'self_mentioned': return 2;
+    case 'third_party_background': return 1;
+    default: return 0;
+  }
+}
+
+function buildClaimStableKey(claim: Pick<ClaimCandidate, 'claim_type' | 'predicate' | 'object_entity_id' | 'object_label'>): string {
+  return [
+    claim.claim_type,
+    claim.predicate,
+    claim.object_entity_id ?? claim.object_label.toLowerCase().replace(/\s+/g, ' ').trim(),
+  ].join(':');
+}
+
+function scoreClaimOwnership(input: {
+  semanticType: string;
+  ownership: ClaimCandidate['ownership'];
+  confidence: number;
+  supportScore: number;
+  directSelfEvidence: boolean;
+  multiSourceSupport: boolean;
+  ownershipSignals: Record<string, unknown>;
+}): { ownership: ClaimCandidate['ownership']; ownershipScore: number; firstPersonAllowed: boolean } {
+  let ownership = input.ownership;
+  let ownershipScore = Math.max(input.supportScore * 0.45, input.confidence * 0.35);
+  const firstPersonSignalCount = Number(input.ownershipSignals.first_person_count ?? 0);
+  const repeatedVerbCount = Number(input.ownershipSignals.action_verb_count ?? 0);
+  const multiSourceCount = Number(input.ownershipSignals.multi_source_count ?? 0);
+  const directOwnerSignal = input.semanticType === 'founded' || input.semanticType === 'built' || input.semanticType === 'owns_site';
+
+  if (input.directSelfEvidence) ownershipScore += 0.28;
+  if (input.multiSourceSupport) ownershipScore += 0.18;
+  if (firstPersonSignalCount > 0) ownershipScore += 0.14;
+  if (repeatedVerbCount >= 2) ownershipScore += 0.08;
+  if (multiSourceCount >= 2) ownershipScore += 0.1;
+  if (directOwnerSignal) ownershipScore += 0.08;
+
+  ownershipScore = Math.max(0, Math.min(1, ownershipScore));
+
+  if (ownership === 'unknown') {
+    if (ownershipScore >= 0.84 && directOwnerSignal) ownership = 'self_owned';
+    else if (ownershipScore >= 0.74) ownership = 'self_participated';
+    else if (ownershipScore >= 0.58) ownership = 'self_related';
+    else if (ownershipScore >= 0.36) ownership = 'self_mentioned';
+    else ownership = 'third_party_background';
+  }
+
+  const firstPersonAllowed = ['self_owned', 'self_participated', 'self_related'].includes(ownership)
+    && (input.directSelfEvidence || firstPersonSignalCount > 0 || input.multiSourceSupport)
+    && ownershipScore >= 0.62;
+  return { ownership, ownershipScore, firstPersonAllowed };
+}
+
 function inferClaimType(semanticType: string, objectType: string): ClaimCandidate['claim_type'] {
   if (objectType === 'project' || objectType === 'product' || semanticType === 'built' || semanticType === 'works_on') return 'project';
   if (objectType === 'organization' || semanticType === 'member_of') return 'organization';
@@ -1834,14 +2103,25 @@ function buildGraphClaimCandidates(
         confidence,
         Math.min(1, computeLexicalOverlap(query, `${String(relation.summary ?? '')} ${objectLabel}`) + (evidenceRefs.length * 0.08)),
       );
-      const ownership = inferClaimOwnership(semanticType);
+      const baseOwnership = inferClaimOwnership(semanticType);
       const claimType = inferClaimType(semanticType, String(target?.entity_type ?? 'unknown'));
-      const firstPersonAllowed = ['self_owned', 'self_participated', 'self_related'].includes(ownership)
-        && (
-          Number(ownershipSignals.first_person_count ?? 0) > 0
-          || Number(ownershipSignals.multi_source_count ?? 0) >= 2
-          || confidence >= 0.82
-        );
+      const directSelfEvidence = evidenceRefs.some((item) => item.speaker_role === 'self');
+      const multiSourceSupport = Number(ownershipSignals.multi_source_count ?? 0) >= 2 || evidenceRefs.length >= 2;
+      const ownershipScoring = scoreClaimOwnership({
+        semanticType,
+        ownership: baseOwnership,
+        confidence,
+        supportScore,
+        directSelfEvidence,
+        multiSourceSupport,
+        ownershipSignals,
+      });
+      const stableKey = buildClaimStableKey({
+        claim_type: claimType,
+        predicate: semanticType,
+        object_entity_id: String(relation.target_entity_id ?? ''),
+        object_label: objectLabel,
+      });
       return {
         id: String(relation.id ?? ''),
         subject_entity_id: String(relation.source_entity_id ?? ''),
@@ -1851,10 +2131,14 @@ function buildGraphClaimCandidates(
         claim_type: claimType,
         source_layer: 'graph',
         confidence,
-        ownership,
-        first_person_allowed: firstPersonAllowed,
+        ownership: ownershipScoring.ownership,
+        first_person_allowed: ownershipScoring.firstPersonAllowed,
         provenance_scope: evidenceRefs.some((item) => item.speaker_role === 'self') ? 'mixed' : 'public',
+        stable_key: stableKey,
+        semantic_type: semanticType,
         support_score: supportScore,
+        ownership_score: ownershipScoring.ownershipScore,
+        support_source_count: new Set(evidenceRefs.map((item) => String(item.source_url ?? item.raw_document_id ?? item.evidence_id ?? ''))).size,
         evidence_refs: evidenceRefs
           .map((item) => String(item.evidence_id ?? item.raw_document_id ?? item.source_url ?? ''))
           .filter(Boolean)
@@ -1880,21 +2164,51 @@ function buildGraphClaimCandidates(
 }
 
 function buildProjectHitClaimCandidates(hits: ProjectEvidenceHit[]): ClaimCandidate[] {
-  return hits.map((item, index) => ({
-    id: `project-hit:${index}:${item.label}`,
-    subject_entity_id: 'persona:self',
-    predicate: 'project_evidence',
-    object_label: item.label,
-    claim_type: 'project',
-    source_layer: 'project_hits',
-    confidence: Math.max(0.55, Math.min(1, item.score / 6)),
-    ownership: 'self_owned',
-    first_person_allowed: true,
-    provenance_scope: 'public',
-    support_score: Math.max(0.55, Math.min(1, item.score / 6)),
-    evidence_refs: [item.sourceUrl ?? item.label].filter(Boolean),
-    support_summary: item.snippet,
-  }));
+  return hits.map((item, index) => {
+    const supportScore = Math.max(0.55, Math.min(1, item.score / 6));
+    const selfSignal = hasSelfProjectSignal(item.snippet);
+    const nonOwnerSignal = hasNonOwnerProjectSignal(item.snippet);
+    const specificSignal = hasSpecificProjectSignal(item.snippet);
+    const ownership: ClaimCandidate['ownership'] = selfSignal
+      ? 'self_owned'
+      : nonOwnerSignal
+        ? 'self_mentioned'
+        : specificSignal
+          ? 'self_participated'
+          : 'self_related';
+    const ownershipScore = selfSignal
+      ? Math.max(0.72, supportScore)
+      : nonOwnerSignal
+        ? Math.min(0.34, supportScore * 0.45)
+        : specificSignal
+          ? Math.max(0.58, supportScore * 0.72)
+          : Math.max(0.42, supportScore * 0.58);
+    const firstPersonAllowed = ownership === 'self_owned' || ownership === 'self_participated';
+    return {
+      id: `project-hit:${index}:${item.label}`,
+      subject_entity_id: 'persona:self',
+      predicate: 'project_evidence',
+      object_label: item.label,
+      claim_type: 'project',
+      source_layer: 'project_hits',
+      confidence: supportScore,
+      ownership,
+      first_person_allowed: firstPersonAllowed,
+      provenance_scope: 'public',
+      stable_key: buildClaimStableKey({
+        claim_type: 'project',
+        predicate: 'project_evidence',
+        object_label: item.label,
+      }),
+      semantic_type: 'project_evidence',
+      support_score: supportScore,
+      ownership_score: ownershipScore,
+      support_source_count: 1,
+      evidence_refs: [item.sourceUrl ?? item.label].filter(Boolean),
+      support_summary: item.snippet,
+      last_seen_published_at: safeIso(item.publishedAt),
+    };
+  });
 }
 
 function buildCommunityClaimCandidates(summary?: string): ClaimCandidate[] {
@@ -1910,37 +2224,140 @@ function buildCommunityClaimCandidates(summary?: string): ClaimCandidate[] {
     ownership: 'third_party_background',
     first_person_allowed: false,
     provenance_scope: 'public',
+    stable_key: buildClaimStableKey({
+      claim_type: 'background_fact',
+      predicate: 'community_context',
+      object_label: 'community context',
+    }),
+    semantic_type: 'community_context',
     support_score: 0.42,
+    ownership_score: 0.12,
+    support_source_count: 1,
     evidence_refs: [],
     support_summary: summary,
   }];
 }
 
+function aggregateClaimCandidates(claims: ClaimCandidate[]): ClaimCandidate[] {
+  const aggregated = new Map<string, ClaimCandidate>();
+  for (const claim of claims) {
+    const key = claim.stable_key ?? buildClaimStableKey(claim);
+    const existing = aggregated.get(key);
+    if (!existing) {
+      aggregated.set(key, {
+        ...claim,
+        stable_key: key,
+      });
+      continue;
+    }
+    const mergedEvidence = dedupeStrings([...existing.evidence_refs, ...claim.evidence_refs]).slice(0, 8);
+    const supportSourceCount = new Set(mergedEvidence).size;
+    const strongerOwnership = claimOwnershipRank(claim.ownership) > claimOwnershipRank(existing.ownership)
+      ? claim.ownership
+      : existing.ownership;
+    const ownershipScore = Math.max(existing.ownership_score ?? 0, claim.ownership_score ?? 0);
+    const supportScore = Math.max(existing.support_score, claim.support_score, Math.min(1, ((existing.support_score + claim.support_score) / 2) + 0.06));
+    aggregated.set(key, {
+      ...existing,
+      id: existing.id,
+      object_label: existing.object_label.length >= claim.object_label.length ? existing.object_label : claim.object_label,
+      confidence: Math.max(existing.confidence, claim.confidence),
+      ownership: strongerOwnership,
+      first_person_allowed: existing.first_person_allowed || claim.first_person_allowed || (ownershipScore >= 0.68 && ['self_owned', 'self_participated', 'self_related'].includes(strongerOwnership)),
+      provenance_scope: existing.provenance_scope === claim.provenance_scope
+        ? existing.provenance_scope
+        : (existing.provenance_scope === 'public' && claim.provenance_scope === 'public' ? 'public' : 'mixed'),
+      source_layer: existing.source_layer === claim.source_layer ? existing.source_layer : 'graph',
+      support_score: supportScore,
+      ownership_score: ownershipScore,
+      support_source_count: Math.max(existing.support_source_count ?? 0, claim.support_source_count ?? 0, supportSourceCount),
+      evidence_refs: mergedEvidence,
+      support_summary: dedupeStrings([existing.support_summary, claim.support_summary].filter(Boolean)).join(' | ').slice(0, 480),
+      background_summary: existing.background_summary ?? claim.background_summary,
+      stable_key: key,
+      semantic_type: existing.semantic_type ?? claim.semantic_type,
+    });
+  }
+  return [...aggregated.values()]
+    .sort((a, b) => {
+      const aRank = (a.first_person_allowed ? 1 : 0) * 10 + claimOwnershipRank(a.ownership);
+      const bRank = (b.first_person_allowed ? 1 : 0) * 10 + claimOwnershipRank(b.ownership);
+      return bRank - aRank || (b.support_score + (b.ownership_score ?? 0)) - (a.support_score + (a.ownership_score ?? 0)) || b.confidence - a.confidence;
+    })
+    .slice(0, 16);
+}
+
 function compileAnswerPlan(
   claims: ClaimCandidate[],
   communitySummary?: string,
+  query?: string,
 ): AnswerPlan {
-  const primaryClaims = claims
-    .filter((item) => item.first_person_allowed || item.ownership === 'self_mentioned' || item.claim_type === 'background_fact')
-    .sort((a, b) => b.support_score - a.support_score || b.confidence - a.confidence)
+  const sortClaimsForAnswer = (a: ClaimCandidate, b: ClaimCandidate): number => {
+    const affinityDiff = scoreClaimQueryAffinity(query, b) - scoreClaimQueryAffinity(query, a);
+    if (affinityDiff !== 0) return affinityDiff;
+    const recencyDiff = scoreRecencySignal(b.last_seen_published_at) - scoreRecencySignal(a.last_seen_published_at);
+    if (recencyDiff !== 0) return recencyDiff;
+    return b.support_score - a.support_score || b.confidence - a.confidence;
+  };
+  const ownedSelfClaims = claims
+    .filter((item) => item.first_person_allowed && item.ownership === 'self_owned')
+    .sort((a, b) => (b.ownership_score ?? 0) - (a.ownership_score ?? 0) || b.support_score - a.support_score)
+    .slice(0, 4);
+  const participatedSelfClaims = claims
+    .filter((item) => item.first_person_allowed && item.ownership === 'self_participated')
+    .sort((a, b) => (b.ownership_score ?? 0) - (a.ownership_score ?? 0) || b.support_score - a.support_score)
+    .slice(0, 4);
+  const confirmedSelfClaims = [...ownedSelfClaims, ...participatedSelfClaims].slice(0, 5);
+  const relatedContextClaims = claims
+    .filter((item) => item.ownership === 'self_related')
+    .sort(sortClaimsForAnswer)
     .slice(0, 5);
+  const mentionedOnlyClaims = claims
+    .filter((item) => item.ownership === 'self_mentioned')
+    .sort(sortClaimsForAnswer)
+    .slice(0, 4);
+  const backgroundOnlyClaims = claims
+    .filter((item) => item.ownership === 'third_party_background' || item.claim_type === 'background_fact')
+    .sort(sortClaimsForAnswer)
+    .slice(0, 4);
+  const blockedClaims = claims
+    .filter((item) => !item.first_person_allowed && claimOwnershipRank(item.ownership) >= claimOwnershipRank('self_related'))
+    .slice(0, 4);
   const disallowedClaims = claims
-    .filter((item) => !item.first_person_allowed && item.ownership === 'third_party_background')
+    .filter((item) => !item.first_person_allowed && (item.ownership === 'third_party_background' || item.provenance_scope === 'private'))
     .slice(0, 5);
+  const primaryClaims = [
+    ...confirmedSelfClaims,
+    ...relatedContextClaims.filter((item) => !confirmedSelfClaims.some((existing) => existing.stable_key === item.stable_key)),
+    ...mentionedOnlyClaims.filter((item) => !confirmedSelfClaims.some((existing) => existing.stable_key === item.stable_key)),
+    ...backgroundOnlyClaims.filter((item) => !confirmedSelfClaims.some((existing) => existing.stable_key === item.stable_key)),
+  ].slice(0, 6);
   const secondaryContext = dedupeStrings([
     ...primaryClaims.map((item) => item.background_summary),
     communitySummary,
-    ...claims.filter((item) => item.ownership === 'self_mentioned').map((item) => item.support_summary),
+    ...relatedContextClaims.map((item) => item.support_summary),
+    ...mentionedOnlyClaims.map((item) => item.support_summary),
+    ...backgroundOnlyClaims.map((item) => item.support_summary),
   ]).slice(0, 4);
   const groundingSnippets = dedupeStrings(primaryClaims.map((item) => item.support_summary).filter(Boolean)).slice(0, 6);
-  const recommendedVoice = primaryClaims.every((item) => item.first_person_allowed)
+  const recommendedVoice = confirmedSelfClaims.length > 0
+    && relatedContextClaims.length === 0
+    && mentionedOnlyClaims.length === 0
+    && backgroundOnlyClaims.length === 0
     ? 'first_person'
-    : primaryClaims.some((item) => item.first_person_allowed)
+    : confirmedSelfClaims.length > 0
       ? 'mixed'
       : 'third_person_explanatory';
   return {
     primary_claims: primaryClaims,
+    owned_self_claims: ownedSelfClaims,
+    participated_self_claims: participatedSelfClaims,
+    confirmed_self_claims: confirmedSelfClaims,
+    related_context_claims: relatedContextClaims,
+    mentioned_only_claims: mentionedOnlyClaims,
+    background_only_claims: backgroundOnlyClaims,
     secondary_context: secondaryContext,
+    blocked_claims: blockedClaims,
     disallowed_claims: disallowedClaims,
     recommended_voice: recommendedVoice,
     grounding_snippets: groundingSnippets,
@@ -1951,32 +2368,43 @@ function buildAnswerPlanContext(plan?: AnswerPlan): string {
   if (!plan || plan.primary_claims.length === 0) return '';
   const lines = [
     `Claim plan voice: ${plan.recommended_voice}.`,
-    'Primary grounded claims:',
-    ...plan.primary_claims.map((item, index) => `${index + 1}. [${item.ownership}] ${item.object_label} :: ${item.support_summary ?? item.predicate}`),
+    'Direct self-owned claims:',
+    ...plan.owned_self_claims.map((item, index) => `${index + 1}. [owned] ${item.object_label} :: ${item.support_summary ?? item.predicate}`),
   ];
+  if (plan.participated_self_claims.length > 0) {
+    lines.push('Direct self-participated claims:');
+    lines.push(...plan.participated_self_claims.map((item) => `- [participated] ${item.object_label} :: ${item.support_summary ?? item.predicate}`));
+  }
+  if (plan.related_context_claims.length > 0) {
+    lines.push('Related context claims:');
+    lines.push(...plan.related_context_claims.map((item) => `- [related] ${item.object_label} :: ${item.support_summary ?? item.predicate}`));
+  }
+  if (plan.mentioned_only_claims.length > 0) {
+    lines.push('Mentioned-only claims:');
+    lines.push(...plan.mentioned_only_claims.map((item) => `- [mentioned] ${item.object_label} :: ${item.support_summary ?? item.predicate}`));
+  }
+  if (plan.background_only_claims.length > 0) {
+    lines.push('Background-only claims:');
+    lines.push(...plan.background_only_claims.map((item) => `- [background] ${item.object_label} :: ${item.support_summary ?? item.predicate}`));
+  }
   if (plan.secondary_context.length > 0) {
     lines.push('Secondary context:');
     lines.push(...plan.secondary_context.map((item) => `- ${item}`));
+  }
+  if (plan.blocked_claims.length > 0) {
+    lines.push('Do not overstate these claims as direct self facts:');
+    lines.push(...plan.blocked_claims.map((item) => `- ${item.object_label}: ${item.support_summary ?? item.predicate}`));
   }
   if (plan.disallowed_claims.length > 0) {
     lines.push('Do not convert these into first-person facts:');
     lines.push(...plan.disallowed_claims.map((item) => `- ${item.object_label}: ${item.support_summary ?? item.predicate}`));
   }
+  lines.push('When the user asks what projects I built, answer with owned claims first, then participated claims, and explicitly mark mentioned/background items as non-owned context.');
   return lines.join('\n');
 }
 
 function dedupeClaimCandidates(claims: ClaimCandidate[]): ClaimCandidate[] {
-  const deduped = new Map<string, ClaimCandidate>();
-  for (const claim of claims) {
-    const key = `${claim.claim_type}:${claim.predicate}:${claim.object_entity_id ?? claim.object_label.toLowerCase()}`;
-    const existing = deduped.get(key);
-    if (!existing || existing.support_score < claim.support_score) {
-      deduped.set(key, claim);
-    }
-  }
-  return [...deduped.values()]
-    .sort((a, b) => b.support_score - a.support_score || b.confidence - a.confidence)
-    .slice(0, 12);
+  return aggregateClaimCandidates(claims);
 }
 
 function buildRelationFallbackReply(pack: NetworkAnswerPack): string {
@@ -1993,16 +2421,66 @@ function buildRelationFallbackReply(pack: NetworkAnswerPack): string {
 function buildClaimFallbackReply(plan?: AnswerPlan): string | null {
   if (!plan || plan.primary_claims.length === 0) return null;
   const lines = ['基于当前语料，我能稳妥确认的是：'];
-  for (const claim of plan.primary_claims.slice(0, 4)) {
-    if (claim.ownership === 'self_owned' || claim.ownership === 'self_participated' || claim.ownership === 'self_related') {
-      lines.push(`- ${claim.object_label}：${claim.support_summary ?? '这是我公开语料里有锚点支持的关联事实。'}`);
-    } else if (claim.ownership === 'self_mentioned') {
-      lines.push(`- 我公开提到过 ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
-    } else {
-      lines.push(`- 背景上下文涉及 ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
+  if (plan.owned_self_claims.length > 0) {
+    lines.push('直接做过 / 主导过：');
+    for (const claim of plan.owned_self_claims.slice(0, 4)) {
+      lines.push(`- ${claim.object_label}：${claim.support_summary ?? '这是我公开语料里有锚点支持的直接项目事实。'}`);
+    }
+  }
+  if (plan.participated_self_claims.length > 0) {
+    lines.push('明确参与过：');
+    for (const claim of plan.participated_self_claims.slice(0, 3)) {
+      lines.push(`- ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
+    }
+  }
+  for (const claim of plan.related_context_claims.slice(0, 3)) {
+    lines.push(`- 和我有关的是 ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
+  }
+  if (plan.mentioned_only_claims.length > 0) {
+    lines.push('公开提到过 / 讨论过：');
+    for (const claim of plan.mentioned_only_claims.slice(0, 3)) {
+      lines.push(`- ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
+    }
+  }
+  if (plan.background_only_claims.length > 0) {
+    lines.push('只是背景信息：');
+    for (const claim of plan.background_only_claims.slice(0, 2)) {
+      lines.push(`- ${claim.object_label}：${claim.support_summary ?? ''}`.trim());
     }
   }
   return lines.join('\n');
+}
+
+function answerContainsAnyClaimLabel(text: string, claims: ClaimCandidate[]): boolean {
+  const normalized = text.toLowerCase();
+  return claims.some((item) => item.object_label && normalized.includes(item.object_label.toLowerCase()));
+}
+
+function shouldUseClaimPlanFallback(userMessage: string, answer: string, plan?: AnswerPlan): boolean {
+  if (!plan || !isSelfProjectQuery(userMessage)) return false;
+  if (isPersonaMetaDeflection(answer) && plan.primary_claims.length > 0) return true;
+  if (isStrictOwnershipSplitQuery(userMessage) && !/(直接做过|主导过|参与过|提到过|讨论过)/u.test(answer)) {
+    return true;
+  }
+
+  const distinctionNeeded = (
+    plan.owned_self_claims.length > 0
+    && (plan.participated_self_claims.length > 0 || plan.mentioned_only_claims.length > 0 || plan.background_only_claims.length > 0)
+  );
+  if (distinctionNeeded && !/(参与过|提到过|讨论过|背景信息|只是背景|和我有关)/u.test(answer)) {
+    return true;
+  }
+
+  const riskyClaims = [...plan.mentioned_only_claims, ...plan.background_only_claims];
+  if (
+    riskyClaims.length > 0
+    && answerContainsAnyClaimLabel(answer, riskyClaims)
+    && !/(提到过|讨论过|背景信息|只是背景|和我有关|关注过|聊过)/u.test(answer)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function buildNetworkAnswerPack(input: {
@@ -2066,7 +2544,12 @@ function finalizeNetworkAnswerPack(
   }
 
   if (pack.answer_plan?.primary_claims.length) {
-    const matchedPrimaryClaim = pack.answer_plan.primary_claims.some((item) => answer.toLowerCase().includes(item.object_label.toLowerCase()));
+    const expectedClaims = pack.retrieval_plan.knowledge_layer === 'background'
+      ? [...pack.answer_plan.background_only_claims, ...pack.answer_plan.related_context_claims]
+      : pack.retrieval_plan.knowledge_layer === 'relation'
+        ? [...pack.answer_plan.related_context_claims, ...pack.answer_plan.confirmed_self_claims]
+        : pack.answer_plan.primary_claims;
+    const matchedPrimaryClaim = expectedClaims.some((item) => answer.toLowerCase().includes(item.object_label.toLowerCase()));
     if (!matchedPrimaryClaim) {
       groundingStatus = groundingStatus === 'fallback' ? 'fallback' : 'partial';
       missingSignals.push('claim_anchor');
@@ -2186,9 +2669,21 @@ function buildNetworkAnswerContext(pack: NetworkAnswerPack): string {
   ];
   if (pack.answer_plan?.primary_claims.length) {
     lines.push(`Claim voice: ${pack.answer_plan.recommended_voice}.`);
-    lines.push('Planned grounded claims:');
-    for (const item of pack.answer_plan.primary_claims.slice(0, 5)) {
-      lines.push(`- [${item.ownership}] ${item.object_label}: ${item.support_summary ?? item.predicate}`);
+    lines.push('Owned claims:');
+    for (const item of pack.answer_plan.owned_self_claims.slice(0, 4)) {
+      lines.push(`- [owned] ${item.object_label}: ${item.support_summary ?? item.predicate}`);
+    }
+    if (pack.answer_plan.participated_self_claims.length > 0) {
+      lines.push('Participated claims:');
+      for (const item of pack.answer_plan.participated_self_claims.slice(0, 3)) {
+        lines.push(`- [participated] ${item.object_label}: ${item.support_summary ?? item.predicate}`);
+      }
+    }
+    if (pack.answer_plan.mentioned_only_claims.length > 0) {
+      lines.push('Mentioned-only claims:');
+      for (const item of pack.answer_plan.mentioned_only_claims.slice(0, 3)) {
+        lines.push(`- [mentioned] ${item.object_label}: ${item.support_summary ?? item.predicate}`);
+      }
     }
   }
   if (pack.project_hits.length > 0) {
@@ -2601,33 +3096,67 @@ function buildCollectionContinuationDecision(input: {
   providerExhausted: boolean;
   collectionCycle: number;
   hasActiveRun: boolean;
+  sourceHealthSummary?: {
+    enabledRemoteSources: number;
+    healthySources: number;
+    degradedSources: number;
+    cooldownSources: number;
+    blockedSources: number;
+  };
 }): {
   shouldContinue: boolean;
+  nextAction: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
   blockedReason?: string;
 } {
+  const sourceHealthSummary = input.sourceHealthSummary ?? {
+    enabledRemoteSources: 0,
+    healthySources: 0,
+    degradedSources: 0,
+    cooldownSources: 0,
+    blockedSources: 0,
+  };
+  const movableSources = sourceHealthSummary.healthySources + sourceHealthSummary.degradedSources;
+  const onlyCooldownSources = sourceHealthSummary.enabledRemoteSources > 0
+    && movableSources === 0
+    && sourceHealthSummary.cooldownSources > 0
+    && sourceHealthSummary.blockedSources === 0;
   if (input.hasActiveRun) {
-    return { shouldContinue: false, blockedReason: 'active_run' };
+    return { shouldContinue: false, nextAction: 'pause_until_updates', blockedReason: 'active_run' };
   }
   if (input.evaluationPassed === true) {
-    return { shouldContinue: false, blockedReason: 'evaluation_passed' };
+    return { shouldContinue: false, nextAction: 'pause_until_updates', blockedReason: 'evaluation_passed' };
   }
   const thresholdMet = input.cleanDocumentCount >= input.trainingThreshold;
   if (!thresholdMet) {
-    if ((input.historyExhausted || input.providerExhausted) && input.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT) {
-      return { shouldContinue: false, blockedReason: 'exhausted_retry_limit' };
+    if (onlyCooldownSources) {
+      return { shouldContinue: false, nextAction: 'wait_for_cooldown', blockedReason: 'cooldown_only' };
     }
-    return { shouldContinue: true };
+    if ((input.historyExhausted || input.providerExhausted) && input.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT) {
+      return { shouldContinue: false, nextAction: 'pause_until_updates', blockedReason: 'exhausted_retry_limit' };
+    }
+    return {
+      shouldContinue: true,
+      nextAction: movableSources > 1 ? 'switch_source' : 'retry_same_source',
+    };
   }
   if (input.evaluationPassed === false) {
     if (input.retrainReady) {
-      return { shouldContinue: false, blockedReason: 'retrain_ready' };
+      return { shouldContinue: false, nextAction: 'ready_for_retrain', blockedReason: 'retrain_ready' };
     }
-    if ((input.historyExhausted || input.providerExhausted) && input.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT) {
-      return { shouldContinue: false, blockedReason: 'exhausted_retry_limit' };
+    if (input.historyExhausted || input.providerExhausted) {
+      if (onlyCooldownSources) {
+        return { shouldContinue: false, nextAction: 'wait_for_cooldown', blockedReason: 'cooldown_only' };
+      }
+      if (input.collectionCycle >= COLLECTION_EXHAUSTED_RETRY_LIMIT) {
+        return { shouldContinue: false, nextAction: 'soft_close_candidate', blockedReason: 'exhausted_retry_limit' };
+      }
     }
-    return { shouldContinue: true };
+    return {
+      shouldContinue: true,
+      nextAction: movableSources > 1 ? 'switch_source' : 'retry_same_source',
+    };
   }
-  return { shouldContinue: false, blockedReason: 'awaiting_evaluation' };
+  return { shouldContinue: false, nextAction: 'pause_until_updates', blockedReason: 'awaiting_evaluation' };
 }
 
 async function buildAttachmentPriorityContext(attachments: AttachmentRef[]): Promise<string> {
@@ -2920,10 +3449,14 @@ export class WorkbenchService {
     threshold: ReturnType<typeof buildTrainingThresholdSummary>;
     evaluationPassed?: boolean;
     softClosed: boolean;
+    nextAction?: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
     stopReason?: string;
   }): boolean {
     if (state.evaluationPassed === true) return false;
     if (state.softClosed) return false;
+    if (state.nextAction) {
+      return state.nextAction === 'retry_same_source' || state.nextAction === 'switch_source';
+    }
     return (
       (state.evaluationPassed === false && state.cleanDocumentCount >= state.threshold.training_threshold)
       || (state.cleanDocumentCount > 0 && state.cleanDocumentCount < state.threshold.training_threshold)
@@ -3269,6 +3802,7 @@ export class WorkbenchService {
             status: 'error',
             summary: health.summary,
             relevance_reason: '抓取完成但没有拿到可判断归属的正文内容。',
+            reason_codes: ['content_empty'],
             risk_flags: [],
             related_entities: [],
             evidence: [],
@@ -3323,6 +3857,9 @@ export class WorkbenchService {
           checkedAt: previewCheckedAt,
           provider: readMetadataString(selectedDoc, 'fetched_via') || selectedDoc.source_platform,
         });
+        const effectiveQualityAssessment = qualityAssessment
+          ? { ...qualityAssessment, relevance_bucket: selectedValidation?.relevance_bucket ?? qualityAssessment.relevance_bucket }
+          : qualityAssessment;
         const latestOutcome = buildSourceIngestOutcome({
           status: selectedValidation?.status ?? 'error',
           summary: selectedValidation?.summary ?? '当前抓取内容无法完成归属判断。',
@@ -3332,7 +3869,7 @@ export class WorkbenchService {
           rejectedCount: validation.summary.rejected_count,
           quarantinedCount: validation.summary.quarantined_count,
           validation: selectedValidation,
-          qualityAssessment,
+          qualityAssessment: effectiveQualityAssessment,
           health,
           failureClass: selectedValidation?.status === 'accepted' ? 'none' : failureClass,
         });
@@ -3352,10 +3889,12 @@ export class WorkbenchService {
           identity_match: selectedValidation?.identity_match,
           source_integrity: selectedValidation?.source_integrity,
           reason_code: selectedValidation?.reason_code,
+          reason_codes: selectedValidation?.reason_codes ?? [],
+          relevance_bucket: selectedValidation?.relevance_bucket,
           evidence: selectedValidation?.evidence ?? [],
           health,
           latest_outcome: latestOutcome,
-          quality_assessment: qualityAssessment,
+          quality_assessment: effectiveQualityAssessment,
         });
       } catch (error) {
         const failureClass = classifySourceFailure(error);
@@ -3370,6 +3909,7 @@ export class WorkbenchService {
           status: 'error',
           summary: health.summary,
           relevance_reason: '当前来源暂时无法完成预览抓取，暂时无法判断与目标人物的相关性。',
+          reason_codes: [failureClass],
           risk_flags: [],
           related_entities: [],
           error: String(error instanceof Error ? error.message : error).slice(0, 180),
@@ -3753,7 +4293,7 @@ export class WorkbenchService {
     const conversation = this.store.getConversation(conversationId);
     if (!conversation) throw new Error(`Conversation "${conversationId}" not found.`);
 
-    const { persona, soul } = this.loadPersonaAssets(conversation.persona_slug);
+    const { persona } = this.loadPersonaAssets(conversation.persona_slug);
     const history = this.store.listMessages(conversationId);
     const processedAttachments = await Promise.all(attachments.map((item) => enrichAttachment(item)));
     const userMessage: ConversationMessage = {
@@ -3776,61 +4316,128 @@ export class WorkbenchService {
       conversation.title = inferConversationTitle(message);
     }
 
-    const response = await this.generateReply(persona, soul, nextHistory, modelOverride);
-    const citations = response.retrievedMemories.map((item) => this.toCitation(item));
-    const assistantMessageId = crypto.randomUUID();
-    const shouldWriteCandidates = response.orchestration?.mode === 'answer';
-    const candidates = shouldWriteCandidates
-      ? this.buildMemoryCandidates(
-          conversationId,
-          [userMessage.id, assistantMessageId],
-          response.text,
-          response.personaDimensions,
-          citations
-        )
-      : [];
-    const assistantMessage: ConversationMessage = {
-      id: assistantMessageId,
-      conversation_id: conversationId,
-      role: 'assistant',
-      content: response.text,
-      created_at: new Date().toISOString(),
-      retrieved_memory_ids: citations.map((item) => item.id),
-      persona_dimensions: response.personaDimensions,
-      citation_items: citations,
-      writeback_candidate_ids: candidates.map((item) => item.id),
-      attachments: [],
-      orchestration: response.orchestration,
-      network_answer_pack: sanitizeNetworkAnswerPack(response.networkAnswerPack),
-    };
+    let runtimeTrace: ChatAgentTrace | null = null;
+    try {
+      const runtime = new PersonaChatAgentRuntime({
+        store: this.store,
+        loadPersonaAssets: (slug) => this.loadPersonaAssets(slug),
+        replyGenerator: ({ persona, soul, messages, modelOverride }) => this.generateReply(persona, soul, messages, modelOverride),
+      });
+      const runtimeResult = await runtime.run({
+        conversationId,
+        userMessage,
+        history,
+        attachments: processedAttachments,
+        modelOverride,
+      });
+      runtimeTrace = runtimeResult.trace;
+      const response = runtimeResult.response;
+      if (!response.networkAnswerPack || isPersonaMetaDeflection(response.text)) {
+        response.networkAnswerPack = response.networkAnswerPack ?? this.buildGroundingFallbackPack(
+          conversation.persona_slug,
+          message,
+          processedAttachments,
+        );
+      }
+      const answerPlan = response.networkAnswerPack?.answer_plan;
+      const groundedFallback = isPersonaMetaDeflection(response.text)
+        ? (buildClaimFallbackReply(answerPlan) ?? response.text)
+        : response.text;
+      const responseText = groundedFallback;
+      if (response.networkAnswerPack && responseText !== response.text) {
+        response.networkAnswerPack = {
+          ...response.networkAnswerPack,
+          grounding_status: 'fallback',
+          grounding_summary: 'Grounded claims overrode a meta-deflecting draft reply.',
+          missing_signals: dedupeStrings([...(response.networkAnswerPack.missing_signals ?? []), 'meta_deflection']),
+        };
+      }
+      const citations = response.retrievedMemories.map((item) => this.toCitation(item));
+      const assistantMessageId = crypto.randomUUID();
+      const shouldWriteCandidates = response.orchestration?.mode === 'answer';
+      const candidates = shouldWriteCandidates
+        ? this.buildMemoryCandidates(
+            conversationId,
+            [userMessage.id, assistantMessageId],
+            responseText,
+            response.personaDimensions,
+            citations
+          )
+        : [];
+      const assistantMessage: ConversationMessage = {
+        id: assistantMessageId,
+        conversation_id: conversationId,
+        role: 'assistant',
+        content: responseText,
+        created_at: new Date().toISOString(),
+        retrieved_memory_ids: citations.map((item) => item.id),
+        persona_dimensions: response.personaDimensions,
+        citation_items: citations,
+        writeback_candidate_ids: candidates.map((item) => item.id),
+        attachments: [],
+        orchestration: response.orchestration
+          ? {
+              ...response.orchestration,
+              agent_trace_id: runtimeTrace.id,
+            }
+          : undefined,
+        network_answer_pack: sanitizeNetworkAnswerPack(response.networkAnswerPack),
+      };
 
-    this.store.appendMessage(assistantMessage);
-    if (candidates.length > 0) {
-      this.store.appendMemoryCandidates(conversationId, candidates);
+      this.store.appendMessage(assistantMessage);
+      if (candidates.length > 0) {
+        this.store.appendMemoryCandidates(conversationId, candidates);
+      }
+      const bundle = this.store.getConversationBundle(conversationId);
+      if (!bundle) throw new Error('Conversation bundle missing after message append.');
+
+      const updatedConversation: Conversation = {
+        ...conversation,
+        updated_at: assistantMessage.created_at,
+        message_count: bundle.messages.length,
+        status: 'active',
+        last_message_preview: toPreview(assistantMessage.content),
+      };
+      this.store.saveConversation(updatedConversation);
+
+      const candidateList = this.store.listMemoryCandidates(conversationId);
+      const summary: SessionSummary = {
+        conversation_id: conversationId,
+        summary: buildSessionSummary(bundle.messages, candidateList),
+        updated_at: assistantMessage.created_at,
+        message_count: bundle.messages.length,
+        candidate_count: candidateList.length,
+      };
+      this.store.saveSessionSummary(summary);
+      this.store.saveChatAgentTrace({
+        ...runtimeTrace,
+        assistant_message_id: assistantMessage.id,
+        finished_at: summary.updated_at,
+        status: 'completed',
+        stages: [
+          ...runtimeTrace.stages,
+          createChatAgentTraceEvent('candidate_generated', 'Memory candidates generated for review path.', {
+            candidate_count: candidates.length,
+            write_enabled: shouldWriteCandidates,
+          }, assistantMessage.created_at),
+          createChatAgentTraceEvent('summary_updated', 'Session summary updated after assistant message persisted.', {
+            message_count: summary.message_count,
+            candidate_count: summary.candidate_count,
+          }, summary.updated_at),
+        ],
+      });
+
+      return this.store.getConversationBundle(conversationId) as ConversationBundle;
+    } catch (error) {
+      if (runtimeTrace) {
+        try {
+          this.store.saveChatAgentTrace(failChatAgentTrace(runtimeTrace, error));
+        } catch {
+          // Keep the original send failure visible if trace persistence fails.
+        }
+      }
+      throw error;
     }
-    const bundle = this.store.getConversationBundle(conversationId);
-    if (!bundle) throw new Error('Conversation bundle missing after message append.');
-
-    const updatedConversation: Conversation = {
-      ...conversation,
-      updated_at: assistantMessage.created_at,
-      message_count: bundle.messages.length,
-      status: 'active',
-      last_message_preview: toPreview(assistantMessage.content),
-    };
-    this.store.saveConversation(updatedConversation);
-
-    const candidateList = this.store.listMemoryCandidates(conversationId);
-    const summary: SessionSummary = {
-      conversation_id: conversationId,
-      summary: buildSessionSummary(bundle.messages, candidateList),
-      updated_at: assistantMessage.created_at,
-      message_count: bundle.messages.length,
-      candidate_count: candidateList.length,
-    };
-    this.store.saveSessionSummary(summary);
-
-    return this.store.getConversationBundle(conversationId) as ConversationBundle;
   }
 
   listMemoryCandidates(conversationId: string): MemoryCandidate[] {
@@ -5609,6 +6216,9 @@ export class WorkbenchService {
       mirrorPersonaWebArtifactsToPersonaDir(slug, personaWeb?.artifacts);
 
       const acceptedValidation = validation.results.find((item) => item.status === 'accepted') ?? validation.results[0];
+      const effectiveQualityAssessment = qualityAssessment
+        ? { ...qualityAssessment, relevance_bucket: acceptedValidation?.relevance_bucket ?? qualityAssessment.relevance_bucket }
+        : qualityAssessment;
       const health = buildSourceHealth({
         status: 'healthy',
         failureClass: 'none',
@@ -5628,7 +6238,7 @@ export class WorkbenchService {
         rejectedCount: validation.summary.rejected_count,
         quarantinedCount: validation.summary.quarantined_count,
         validation: acceptedValidation,
-        qualityAssessment,
+        qualityAssessment: effectiveQualityAssessment,
         health,
         failureClass: 'none',
       });
@@ -5647,7 +6257,7 @@ export class WorkbenchService {
         stats: batch.stats,
         health,
         latest_outcome: latestOutcome,
-        quality_assessment: qualityAssessment,
+        quality_assessment: effectiveQualityAssessment,
         artifacts: {
           ...artifacts,
           documents_path: documentsPath,
@@ -5665,7 +6275,7 @@ export class WorkbenchService {
         summary: imported.summary,
         health,
         latest_outcome: latestOutcome,
-        quality_assessment: qualityAssessment,
+        quality_assessment: effectiveQualityAssessment,
       });
       this.appendPersonaRunLog(slug, `source ${describeSourceLabel(source)} imported accepted=${acceptedDocs.length} raw=${docs.length}`, imported.summary);
       this.clearSyncOperation(slug);
@@ -5833,6 +6443,14 @@ export class WorkbenchService {
     collectionCycle: number;
     historyExhausted: boolean;
     providerExhausted: boolean;
+    sourceHealthSummary: {
+      enabledRemoteSources: number;
+      healthySources: number;
+      degradedSources: number;
+      cooldownSources: number;
+      blockedSources: number;
+    };
+    nextAction: 'retry_same_source' | 'switch_source' | 'wait_for_cooldown' | 'pause_until_updates' | 'ready_for_retrain' | 'soft_close_candidate';
     stopReason?: string;
   } {
     const config = this.getPersonaConfig(slug);
@@ -5852,10 +6470,37 @@ export class WorkbenchService {
       || config.update_policy.history_exhausted === true;
     const providerExhausted = progressStates.some((item) => item.provider_exhausted === true)
       || config.update_policy.provider_exhausted === true;
+    const sourceHealthSummary = config.sources.reduce((acc, source) => {
+      if (!source.enabled || !this.isRemoteSource(source)) return acc;
+      acc.enabledRemoteSources += 1;
+      const status = source.health?.status ?? 'healthy';
+      if (status === 'healthy') acc.healthySources += 1;
+      else if (status === 'degraded') acc.degradedSources += 1;
+      else if (status === 'cooldown') acc.cooldownSources += 1;
+      else if (status === 'blocked') acc.blockedSources += 1;
+      return acc;
+    }, {
+      enabledRemoteSources: 0,
+      healthySources: 0,
+      degradedSources: 0,
+      cooldownSources: 0,
+      blockedSources: 0,
+    });
     const stopReason = progressStates
       .map((item) => item.collection_stop_reason)
       .find((item): item is string => Boolean(item))
       ?? config.update_policy.collection_stop_reason;
+    const continuationDecision = buildCollectionContinuationDecision({
+      cleanDocumentCount,
+      trainingThreshold: threshold.training_threshold,
+      evaluationPassed,
+      retrainReady: retrain.retrainReady,
+      historyExhausted,
+      providerExhausted,
+      collectionCycle: Math.max(0, config.update_policy.collection_cycle ?? 0),
+      hasActiveRun: false,
+      sourceHealthSummary,
+    });
     return {
       cleanDocumentCount,
       threshold,
@@ -5867,6 +6512,8 @@ export class WorkbenchService {
       collectionCycle: Math.max(0, config.update_policy.collection_cycle ?? 0),
       historyExhausted,
       providerExhausted,
+      sourceHealthSummary,
+      nextAction: continuationDecision.nextAction,
       stopReason,
     };
   }
@@ -6033,6 +6680,7 @@ export class WorkbenchService {
           ...config.update_policy,
           current_operation: 'idle',
           current_source_label: undefined,
+          next_action: 'pause_until_updates',
           evaluation_passed: false,
           collection_stop_reason: 'soft_closed_material_exhausted',
           soft_closed_at: nextUpdatedAt,
@@ -6071,6 +6719,7 @@ export class WorkbenchService {
       update_policy: this.clearSoftCloseUpdatePolicy(config.update_policy, {
         current_operation: 'idle',
         current_source_label: undefined,
+        next_action: 'retry_same_source',
         collection_stop_reason: undefined,
         history_exhausted: false,
         provider_exhausted: false,
@@ -6213,6 +6862,7 @@ export class WorkbenchService {
           ...sourceSyncPatch,
           current_operation: 'idle',
           current_source_label: undefined,
+          next_action: 'pause_until_updates',
           evaluation_passed: false,
           collection_stop_reason: 'soft_closed_material_exhausted',
           history_exhausted: state.historyExhausted,
@@ -6234,6 +6884,7 @@ export class WorkbenchService {
           ...sourceSyncPatch,
           current_operation: 'idle',
           current_source_label: undefined,
+          next_action: state.nextAction,
           collection_stop_reason: state.providerExhausted
             ? 'provider_retry_pending'
             : state.historyExhausted
@@ -6263,6 +6914,7 @@ export class WorkbenchService {
             ...sourceSyncPatch,
             current_operation: 'idle',
             current_source_label: undefined,
+            next_action: 'soft_close_candidate',
             evaluation_passed: false,
             collection_stop_reason: 'soft_closed_material_exhausted',
             history_exhausted: state.historyExhausted,
@@ -6283,6 +6935,7 @@ export class WorkbenchService {
           ...sourceSyncPatch,
           current_operation: 'idle',
           current_source_label: undefined,
+          next_action: state.retrain.retrainReady ? 'ready_for_retrain' : state.nextAction,
           evaluation_passed: false,
           collection_stop_reason: state.retrain.retrainReady ? 'retrain_ready' : 'waiting_retrain_delta',
           history_exhausted: state.historyExhausted,
@@ -6305,6 +6958,7 @@ export class WorkbenchService {
       this.persistCollectionState(slug, {
         current_operation: 'idle',
         current_source_label: undefined,
+        next_action: 'pause_until_updates',
         evaluation_passed: true,
         collection_stop_reason: 'evaluation_passed',
         history_exhausted: state.historyExhausted,
@@ -6321,6 +6975,7 @@ export class WorkbenchService {
     this.persistCollectionState(slug, {
       current_operation: 'idle',
       current_source_label: undefined,
+      next_action: state.retrain.retrainReady ? 'ready_for_retrain' : state.nextAction,
       evaluation_passed: false,
       collection_stop_reason: state.retrain.retrainReady ? 'retrain_ready' : 'waiting_retrain_delta',
       history_exhausted: state.historyExhausted,
@@ -6349,8 +7004,14 @@ export class WorkbenchService {
       providerExhausted: state.providerExhausted,
       collectionCycle: state.collectionCycle,
       hasActiveRun: Boolean(this.getActivePersonaRun(slug)),
+      sourceHealthSummary: state.sourceHealthSummary,
     });
     if (!decision.shouldContinue && decision.blockedReason !== 'exhausted_retry_limit') {
+      this.persistCollectionState(slug, {
+        current_operation: 'idle',
+        current_source_label: undefined,
+        next_action: decision.nextAction,
+      }, summary);
       return;
     }
     if (decision.blockedReason === 'exhausted_retry_limit') {
@@ -6358,6 +7019,7 @@ export class WorkbenchService {
       this.persistCollectionState(slug, {
         current_operation: 'idle',
         current_source_label: undefined,
+        next_action: decision.nextAction,
         collection_stop_reason: 'unable_to_progress',
         history_exhausted: state.historyExhausted,
         provider_exhausted: state.providerExhausted,
@@ -6370,6 +7032,7 @@ export class WorkbenchService {
     const nextCycle = Math.max(1, state.collectionCycle + 1);
     this.persistCollectionState(slug, {
       collection_cycle: nextCycle,
+      next_action: decision.nextAction,
       collection_stop_reason: exhaustionRetry
         ? 'retrying_after_exhaustion'
         : state.evaluationPassed === false
@@ -7082,6 +7745,7 @@ export class WorkbenchService {
     const threshold = buildTrainingThresholdSummary(effectiveCounts.cleanDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const retrain = this.computeRetrainState(slug, config, effectiveCounts.cleanDocumentCount, evaluationPassed);
+    const collectionState = this.summarizeCollectionState(slug, { preferCachedDocumentCount: true });
     const progressStates = config.sources
       .filter((item) => item.enabled && item.type === 'social')
       .map((item) => this.readSourceSyncProgress(item))
@@ -7135,6 +7799,7 @@ export class WorkbenchService {
         retrain_progress_ratio: retrain.retrainProgressRatio,
         retrain_ready: retrain.retrainReady,
         collection_cycle: config.update_policy.collection_cycle,
+        next_action: collectionState.nextAction,
         collection_stop_reason: config.update_policy.collection_stop_reason,
         history_exhausted: historyExhausted,
         provider_exhausted: providerExhausted,
@@ -7202,6 +7867,9 @@ export class WorkbenchService {
         ?? sourceProgress?.latest_outcome;
       const qualityAssessment = latestImport?.quality_assessment
         ?? source.quality_assessment;
+      const effectiveQualityAssessment = qualityAssessment && latestOutcome?.relevance_bucket
+        ? { ...qualityAssessment, relevance_bucket: latestOutcome.relevance_bucket }
+        : qualityAssessment;
       const syncedAt = sourceProgress?.updated_at ?? source.last_synced_at ?? matchingImports.map((item) => item.updated_at).sort().at(-1);
       const coveragePoints = options?.preferCachedCounts
         ? []
@@ -7244,10 +7912,10 @@ export class WorkbenchService {
         cache_summary: cacheReuse?.summary,
         health,
         latest_outcome: latestOutcome,
-        quality_assessment: qualityAssessment,
+        quality_assessment: effectiveQualityAssessment,
         validation_summary: validationSummary,
         active_window: sourceProgress?.current_window,
-        checkpoint: sourceProgress ?? undefined,
+        checkpoint: sourceProgress ? { ...sourceProgress, next_action: config.update_policy.next_action } : undefined,
       };
     });
   }
@@ -7696,6 +8364,46 @@ export class WorkbenchService {
     return { persona, soul };
   }
 
+  private buildGroundingFallbackPack(
+    slug: string,
+    userMessage: string,
+    attachments: AttachmentRef[] = [],
+  ): NetworkAnswerPack | undefined {
+    this.ensurePersonaWebArtifactsAvailable(slug);
+    const pendingCandidateCount = this.store.listDiscoveredSources(slug).filter((item) => item.status === 'pending').length;
+    const networkSummary = readPersonaNetworkSummary(slug, pendingCandidateCount);
+    const retrievalPlan = buildChatRetrievalPlan(userMessage, attachments, networkSummary);
+    const projectEvidenceHits = buildProjectEvidenceHits(
+      userMessage,
+      loadPersonaRawDocsForChat(slug),
+    );
+    const networkPromptContext = readPersonaNetworkPromptContext(slug);
+    const communitySummary = readPersonaCommunitySummary(slug);
+    const relationFallbacks = buildRelationFallbacks(
+      userMessage,
+      networkPromptContext,
+      communitySummary,
+    );
+    const evidenceMapHits = buildEvidenceMapHits(userMessage, readPersonaEvidenceMap(slug));
+    const recentProjectRankingHint = '';
+    const claimCandidates = dedupeClaimCandidates([
+      ...buildGraphClaimCandidates(slug, userMessage, retrievalPlan),
+      ...buildProjectHitClaimCandidates(projectEvidenceHits),
+      ...buildCommunityClaimCandidates(communitySummary.summary),
+    ]);
+    const answerPlan = compileAnswerPlan(claimCandidates, communitySummary.summary, [userMessage, recentProjectRankingHint].filter(Boolean).join('\n'));
+    return buildNetworkAnswerPack({
+      retrievalPlan,
+      networkSummary,
+      projectEvidenceHits,
+      relationFallbacks,
+      evidenceMapHits,
+      communitySummary: communitySummary.summary,
+      claimCandidates,
+      answerPlan,
+    });
+  }
+
   private async generateReply(
     persona: Persona,
     soul: Soul,
@@ -7771,6 +8479,7 @@ export class WorkbenchService {
     );
     const networkPromptContext = readPersonaNetworkPromptContext(persona.slug);
     const knowledgeLayer = detectChatKnowledgeLayer(lastMessage?.content ?? '');
+    const recentProjectRankingHint = buildRecentProjectRankingHint(messages.slice(0, -1), lastMessage?.content ?? '');
     const retrievalPlan = buildChatRetrievalPlan(
       lastMessage?.content ?? '',
       lastMessage?.attachments ?? [],
@@ -7787,6 +8496,7 @@ export class WorkbenchService {
     const projectEvidenceHits = buildProjectEvidenceHits(
       lastMessage?.content ?? '',
       loadPersonaRawDocsForChat(persona.slug),
+      recentProjectRankingHint,
     );
     const relationFallbacks = buildRelationFallbacks(
       lastMessage?.content ?? '',
@@ -7799,7 +8509,11 @@ export class WorkbenchService {
       ...buildProjectHitClaimCandidates(projectEvidenceHits),
       ...buildCommunityClaimCandidates(communitySummary.summary),
     ]);
-    const answerPlan = compileAnswerPlan(claimCandidates, communitySummary.summary);
+    const answerPlan = compileAnswerPlan(
+      claimCandidates,
+      communitySummary.summary,
+      [lastMessage?.content ?? '', recentProjectRankingHint].filter(Boolean).join('\n'),
+    );
     const networkAnswerPack = buildNetworkAnswerPack({
       retrievalPlan,
       networkSummary,
@@ -7846,13 +8560,23 @@ export class WorkbenchService {
       lastMessage?.content ?? '',
       sanitizedText,
     );
-    const finalText = shouldUseProjectFactFallback(
-      lastMessage?.content ?? '',
-      sanitizedText,
-      projectEvidenceHits,
-    )
-      ? buildProjectFactFallbackReply(projectEvidenceHits)
-      : isPersonaMetaDeflection(sanitizedText) && answerPlan.primary_claims.length > 0
+    const finalText = isStrictOwnershipSplitQuery(lastMessage?.content ?? '')
+      && isSelfProjectQuery(lastMessage?.content ?? '')
+      && projectEvidenceHits.length > 0
+      ? buildProjectFactFallbackReply(projectEvidenceHits, answerPlan, lastMessage?.content ?? '')
+      : shouldUseClaimPlanFallback(
+        lastMessage?.content ?? '',
+        sanitizedText,
+        answerPlan,
+      )
+        ? (buildClaimFallbackReply(answerPlan) ?? sanitizedText)
+      : shouldUseProjectFactFallback(
+        lastMessage?.content ?? '',
+        sanitizedText,
+        projectEvidenceHits,
+      )
+        ? buildProjectFactFallbackReply(projectEvidenceHits, answerPlan, lastMessage?.content ?? '')
+      : isPersonaMetaDeflection(sanitizedText) && (answerPlan.confirmed_self_claims.length > 0 || answerPlan.related_context_claims.length > 0)
         ? (buildClaimFallbackReply(answerPlan) ?? sanitizedText)
       : shouldUseRelationFallback(
         lastMessage?.content ?? '',
@@ -8579,6 +9303,7 @@ export class WorkbenchService {
     const threshold = buildTrainingThresholdSummary(cleanDocumentCount, resolveTrainingThreshold(config));
     const evaluationPassed = deriveEvaluationPassed(this.readTrainingContext(slug));
     const retrain = this.computeRetrainState(slug, config, cleanDocumentCount, evaluationPassed);
+    const state = this.summarizeCollectionState(slug, { preferCachedDocumentCount: true });
     const collectionCycle = Math.max(0, config.update_policy.collection_cycle ?? 0);
     const showThresholdBlock = cleanDocumentCount > 0 && !threshold.training_threshold_met;
     const lastSuccessAt = [
@@ -8653,6 +9378,7 @@ export class WorkbenchService {
       retrain_progress_ratio: retrain.retrainProgressRatio,
       retrain_ready: retrain.retrainReady,
       collection_cycle: collectionCycle,
+      next_action: state.nextAction,
       collection_stop_reason: config.update_policy.collection_stop_reason,
       history_exhausted: config.update_policy.history_exhausted,
       provider_exhausted: config.update_policy.provider_exhausted,
@@ -8729,6 +9455,7 @@ export class WorkbenchService {
         retrain_progress_ratio: retrain.retrainProgressRatio,
         retrain_ready: retrain.retrainReady,
         collection_cycle: collectionCycle,
+        next_action: state.nextAction,
         collection_stop_reason: config.update_policy.collection_stop_reason,
         history_exhausted: config.update_policy.history_exhausted,
         provider_exhausted: config.update_policy.provider_exhausted,
@@ -8786,10 +9513,13 @@ export const __workbenchTestables = {
   isProjectFactQuery,
   detectChatKnowledgeLayer,
   buildProjectEvidenceHits,
+  buildProjectHitClaimCandidates,
   buildGraphClaimCandidates,
+  dedupeClaimCandidates,
   compileAnswerPlan,
   buildProjectFactFallbackReply,
   shouldUseProjectFactFallback,
+  shouldUseClaimPlanFallback,
   buildNetworkPriorityContext,
   isPersonaMetaDeflection,
 };

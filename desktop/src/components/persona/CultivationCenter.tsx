@@ -19,7 +19,7 @@ function formatPhaseLabel(phase?: string) {
   if (phase === 'deep_fetching') return '深抓取中';
   if (phase === 'incremental_syncing') return '增量拉取中';
   if (phase === 'normalizing') return '整理素材中';
-  if (phase === 'building_evidence') return '构建训练上下文中';
+  if (phase === 'building_evidence') return '整理素材上下文中';
   if (phase === 'building_network') return '构建人物关系与背景中';
   if (phase === 'training') return '人格收敛中';
   if (phase === 'continuing_collection') return '继续培养中';
@@ -107,11 +107,29 @@ function formatCollectionStopReasonLabel(reason?: string) {
   if (!reason) return null;
   if (reason === 'soft_closed_material_exhausted') return '公开素材已触边，连续 2 轮未获得新增素材';
   if (reason === 'search_horizon_reached') return '公开素材已触边，当前暂无更多可补素材';
-  if (reason === 'waiting_retrain_delta') return '测评未通过，正在等待累计到下一轮训练阈值';
-  if (reason === 'retrain_ready') return '已达到下一轮训练条件';
+  if (reason === 'waiting_retrain_delta') return '测评未通过，正在等待累计到下一轮更新阈值';
+  if (reason === 'retrain_ready') return '已达到下一轮更新条件';
   if (reason === 'evaluation_passed') return '测评已通过';
   if (reason === 'unable_to_progress') return '多轮重试后仍无法取得新增素材';
   return reason;
+}
+
+function formatNextActionLabel(action?: CultivationDetail['next_action']) {
+  if (action === 'retry_same_source') return '继续重试当前来源';
+  if (action === 'switch_source') return '切换到其他健康来源';
+  if (action === 'wait_for_cooldown') return '等待来源冷却后再试';
+  if (action === 'pause_until_updates') return '暂停自动推进，等待更新';
+  if (action === 'ready_for_retrain') return '已满足下一轮更新条件';
+  if (action === 'soft_close_candidate') return '符合按当前素材收口条件';
+  return '等待系统判断';
+}
+
+function formatRelevanceBucketLabel(bucket?: 'direct_owner' | 'strong_related' | 'weak_related' | 'mismatch') {
+  if (bucket === 'direct_owner') return '直接归属';
+  if (bucket === 'strong_related') return '强相关';
+  if (bucket === 'weak_related') return '弱相关';
+  if (bucket === 'mismatch') return '不匹配';
+  return '未记录';
 }
 
 function formatWindowSentence(detail?: CultivationDetail) {
@@ -318,7 +336,7 @@ function SourceBreakdown({ detail }: { detail: CultivationDetail }) {
           <div style={{ fontSize: 13, fontWeight: 600 }}>{key}</div>
           <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>{item.count} 个来源</div>
           <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>原始素材 {item.raw} 条</div>
-          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>纳入训练 {item.clean} 条</div>
+          <div style={{ fontSize: 12, color: 'rgb(var(--text-secondary))' }}>可用素材 {item.clean} 条</div>
           <div style={{ fontSize: 12, color: 'rgb(var(--text-tertiary))' }}>最近同步 {formatDate(item.lastSyncedAt)}</div>
         </div>
       ))}
@@ -412,7 +430,7 @@ function SourceItems({ detail }: { detail: CultivationDetail }) {
             {expanded ? (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgb(var(--border-light))', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
                 <div>抓取规模: <b>{item.raw_count}</b></div>
-                <div>纳入训练: <b>{item.clean_count}</b></div>
+	                <div>可用素材: <b>{item.clean_count}</b></div>
                 <div>校验通过: <b>{item.validation_summary?.accepted_count ?? item.clean_count}</b></div>
                 <div>校验拒绝: <b>{item.validation_summary?.rejected_count ?? 0}</b></div>
                 <div>校验隔离: <b>{item.validation_summary?.quarantined_count ?? 0}</b></div>
@@ -426,6 +444,7 @@ function SourceItems({ detail }: { detail: CultivationDetail }) {
                 <div>当前窗口: <b>{item.active_window?.window_start && item.active_window?.window_end ? `${item.active_window.window_start.slice(0, 10)} ~ ${item.active_window.window_end.slice(0, 10)}` : '未记录'}</b></div>
                 <div>窗口状态: <b>{formatWindowStatus(item.active_window?.status)}</b></div>
                 <div>提取质量: <b>{item.quality_assessment ? `${Math.round(item.quality_assessment.score * 100)}% · ${formatQualityStatusLabel(item.quality_assessment.status)}` : '未记录'}</b></div>
+                <div>关联强度: <b>{formatRelevanceBucketLabel(item.latest_outcome?.relevance_bucket ?? item.quality_assessment?.relevance_bucket)}</b></div>
                 <div>最近结算: <b>{item.checkpoint?.settle_summary || item.latest_outcome?.summary || '未记录'}</b></div>
                 <div style={{ gridColumn: '1 / -1' }}>校验摘要: <b>{item.validation_summary?.latest_summary ?? '当前来源暂无额外校验提示。'}</b></div>
                 {item.cache_reused ? <div style={{ gridColumn: '1 / -1' }}>缓存说明: <b>{item.cache_summary ?? '当前来源已复用历史素材缓存作为起始语料。'}</b></div> : null}
@@ -464,7 +483,7 @@ function RoundSummary({ detail }: { detail: CultivationDetail }) {
   );
 }
 
-function TrainingCard({
+function CultivationProgressCard({
   persona,
   detail,
   expanded,
@@ -497,7 +516,7 @@ function TrainingCard({
   const threshold = detail?.training_threshold ?? detail?.source_summary?.training_threshold;
   const thresholdMet = detail?.training_threshold_met ?? detail?.source_summary?.training_threshold_met;
   const evaluationPassed = detail?.evaluation_passed ?? detail?.source_summary?.evaluation_passed;
-  const lastTrainingPrepCount = detail?.last_training_prep_count ?? detail?.source_summary?.last_training_prep_count;
+  const lastPreparedMaterialCount = detail?.last_training_prep_count ?? detail?.source_summary?.last_training_prep_count;
   const retrainDeltaCount = detail?.retrain_delta_count ?? detail?.source_summary?.retrain_delta_count ?? 0;
   const retrainRequiredDelta = detail?.retrain_required_delta ?? detail?.source_summary?.retrain_required_delta;
   const retrainReady = detail?.retrain_ready ?? detail?.source_summary?.retrain_ready;
@@ -507,7 +526,7 @@ function TrainingCard({
   const displayPhaseLabel = softClosed
     ? '已按当前素材收口'
     : evaluationPassed === false && thresholdMet
-    ? (retrainReady ? '准备进入下一轮训练' : '继续培养中')
+    ? (retrainReady ? '准备进入下一轮更新' : '继续培养中')
     : formatPhaseLabel(detail?.phase);
   const meta = statusMeta(phase);
   const operationLabel = pendingOperation === 'deep_fetch'
@@ -543,9 +562,9 @@ function TrainingCard({
   const providerExhausted = detail?.provider_exhausted ?? detail?.source_summary?.provider_exhausted;
   const thresholdLabel = threshold ? `${cleanDocumentCount} / ${threshold}` : null;
   const thresholdHint = threshold && thresholdMet === false
-    ? `未达到自动训练门槛，继续深抓中`
+    ? `未达到自动更新门槛，继续补充素材`
     : threshold && thresholdMet
-      ? `已达到自动训练门槛`
+      ? `已达到自动更新门槛`
       : null;
   const retrainProgressLabel = evaluationPassed === false && retrainRequiredDelta
     ? `新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}`
@@ -556,7 +575,7 @@ function TrainingCard({
       ? '当前版本未完全通过测评'
       : evaluationPassed === false
       ? retrainReady
-        ? '测评未通过，已达到下一轮训练条件'
+        ? '测评未通过，已达到下一轮更新条件'
         : '测评未通过，系统会继续补充素材'
       : null;
 
@@ -606,7 +625,7 @@ function TrainingCard({
             {networkSummary ? <span>实体 {networkSummary.entity_count}</span> : null}
             {networkSummary ? <span>关系 {networkSummary.relation_count}</span> : null}
             {thresholdLabel ? <span>门槛 {thresholdLabel}</span> : null}
-            {retrainProgressLabel ? <span>重训进度 {retrainProgressLabel}</span> : null}
+            {retrainProgressLabel ? <span>更新进度 {retrainProgressLabel}</span> : null}
             {typeof collectionCycle === 'number' && collectionCycle > 0 ? <span>循环 {collectionCycle}</span> : null}
             {evaluationHint ? <span>{evaluationHint}</span> : null}
             {latestWindowHint ? <span>{latestWindowHint}</span> : null}
@@ -626,8 +645,8 @@ function TrainingCard({
           {retrainProgressLabel ? (
             <div style={{ marginTop: 8, fontSize: 11, color: retrainReady ? '#16a34a' : 'rgb(var(--text-secondary))' }}>
               {retrainReady
-                ? `${retrainProgressLabel}，已达到下一轮训练条件`
-                : `${retrainProgressLabel}，达到后自动进入下一轮训练`}
+                ? `${retrainProgressLabel}，已达到下一轮更新条件`
+                : `${retrainProgressLabel}，达到后自动进入下一轮更新`}
             </div>
           ) : null}
           {evaluationPassed === false && latestWindowHint ? (
@@ -674,13 +693,14 @@ function TrainingCard({
               <InfoStat label="当前阶段" value={displayPhaseLabel} />
               <InfoStat label="当前轮次" value={`${detail.progress.current_round} / ${detail.progress.total_rounds}`} />
               <InfoStat label="原始素材总量" value={rawDocumentCount} />
-              <InfoStat label="纳入训练量" value={cleanDocumentCount} />
-              <InfoStat label="自动训练门槛" value={detail.training_threshold ?? '未配置'} />
-              <InfoStat label="达训条件" value={detail.training_threshold_met ? '已达到' : '未达到'} />
+              <InfoStat label="可用素材量" value={cleanDocumentCount} />
+              <InfoStat label="自动更新门槛" value={detail.training_threshold ?? '未配置'} />
+              <InfoStat label="更新条件" value={detail.training_threshold_met ? '已达到' : '未达到'} />
               <InfoStat label="测评结果" value={evaluationPassed === true ? '已通过' : evaluationPassed === false ? '未通过' : '待测评'} />
-              <InfoStat label="上一轮训练素材" value={lastTrainingPrepCount ?? '未记录'} />
-              <InfoStat label="重训新增进度" value={retrainRequiredDelta ? `${retrainDeltaCount} / ${retrainRequiredDelta}` : '未启用'} />
+              <InfoStat label="上一轮素材量" value={lastPreparedMaterialCount ?? '未记录'} />
+              <InfoStat label="新增素材进度" value={retrainRequiredDelta ? `${retrainDeltaCount} / ${retrainRequiredDelta}` : '未启用'} />
               <InfoStat label="抓取循环轮次" value={collectionCycle ?? 0} />
+              <InfoStat label="下一步动作" value={formatNextActionLabel(detail.next_action ?? detail.source_summary?.next_action)} />
               <InfoStat label="最近成功推进" value={formatDate(detail.last_success_at)} />
               <InfoStat label="最近活动心跳" value={formatRelativeTime(detail.last_heartbeat_at)} />
               <InfoStat label="最近检查更新" value={formatDate(detail.source_summary?.last_update_check_at)} />
@@ -691,7 +711,7 @@ function TrainingCard({
               <InfoStat label="身份轨迹" value={networkSummary?.arc_count ?? 0} />
               <InfoStat label="高置信事实" value={networkSummary?.high_confidence_claim_count ?? 0} />
               <InfoStat label="历史缓存复用" value={detail.cache_reuse?.active ? `${detail.cache_reuse.reused_document_count} 条` : '无'} />
-              <InfoStat label="历史窗口状态" value={historyExhausted ? '已耗尽' : '未耗尽'} />
+              <InfoStat label="历史窗口状态" value={historyExhausted ? '已触边' : '未触边'} />
               <InfoStat label="Provider 状态" value={providerExhausted ? '待恢复' : '正常'} />
             </div>
             {detail.training_block_reason ? (
@@ -712,8 +732,8 @@ function TrainingCard({
             {evaluationPassed === false && retrainRequiredDelta ? (
               <div style={{ marginTop: 10, fontSize: 12, color: 'rgb(var(--text-secondary))' }}>
                 {retrainReady
-                  ? `上一轮训练素材 ${lastTrainingPrepCount ?? 0} 条，新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}，已达到下一轮训练条件。`
-                  : `上一轮训练素材 ${lastTrainingPrepCount ?? 0} 条，新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}，达到后自动进入下一轮训练。`}
+                  ? `上一轮素材 ${lastPreparedMaterialCount ?? 0} 条，新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}，已达到下一轮更新条件。`
+                  : `上一轮素材 ${lastPreparedMaterialCount ?? 0} 条，新增素材 ${retrainDeltaCount} / ${retrainRequiredDelta}，达到后自动进入下一轮更新。`}
               </div>
             ) : null}
           </div>
@@ -957,7 +977,7 @@ export function CultivationCenter({
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {cultivating.map((persona) => (
-          <TrainingCard
+          <CultivationProgressCard
             key={persona.slug}
             persona={persona}
             detail={details[persona.slug]}

@@ -2,6 +2,7 @@ export interface WorkbenchHealthStatus {
   ok?: boolean;
   build_id?: string;
   server_version?: string;
+  port?: number;
 }
 
 export interface ProbeFetchInit {
@@ -44,6 +45,24 @@ export interface RecoverLocalWorkbenchOptions {
   sleep(ms: number): Promise<void>;
   forceBootstrap?: boolean;
   localPortCandidates?: number[];
+}
+
+export interface InspectLocalWorkbenchDiagnosticsOptions {
+  currentBaseUrl: string;
+  fetchJsonFromBase<T>(baseUrl: string, path: string, init?: ProbeFetchInit): Promise<T>;
+  probeTimeoutMs?: number;
+  localPortCandidates?: number[];
+  createAbortController?: () => AbortControllerLike;
+  setTimeoutFn?: (handler: () => void, timeoutMs: number) => unknown;
+  clearTimeoutFn?: (handle: unknown) => void;
+}
+
+export interface LocalWorkbenchDiagnostics {
+  current_port?: number;
+  healthy_port?: number;
+  fallback_active: boolean;
+  stale_debug_port_4310: boolean;
+  stale_debug_summary?: string;
 }
 
 export const DEFAULT_LOCAL_PORT_CANDIDATES = [4310, 4311, 4312, 4313];
@@ -150,4 +169,40 @@ export async function recoverLocalWorkbenchBaseUrl(options: RecoverLocalWorkbenc
   }
 
   return false;
+}
+
+export async function inspectLocalWorkbenchDiagnostics(
+  options: InspectLocalWorkbenchDiagnosticsOptions,
+): Promise<LocalWorkbenchDiagnostics> {
+  const currentBaseUrl = normalizeLocalBaseUrl(options.currentBaseUrl);
+  const currentPort = getCurrentLocalPort(currentBaseUrl);
+  const candidatePorts = [
+    ...(currentPort ? [currentPort] : []),
+    ...(options.localPortCandidates ?? DEFAULT_LOCAL_PORT_CANDIDATES),
+  ].filter((port, index, list) => list.indexOf(port) === index);
+
+  const healthyPorts: number[] = [];
+  for (const port of candidatePorts) {
+    const healthy = await probeWorkbenchBaseUrl(buildLocalBaseUrl(port), {
+      timeoutMs: options.probeTimeoutMs ?? 1200,
+      fetchJsonFromBase: options.fetchJsonFromBase,
+      createAbortController: options.createAbortController,
+      setTimeoutFn: options.setTimeoutFn,
+      clearTimeoutFn: options.clearTimeoutFn,
+    });
+    if (healthy) healthyPorts.push(port);
+  }
+
+  const healthyPort = healthyPorts[0];
+  const fallbackActive = Boolean(currentPort && healthyPort && currentPort !== 4310 && healthyPort === currentPort);
+  const staleDebugPort4310 = Boolean(currentPort && currentPort !== 4310 && !healthyPorts.includes(4310) && healthyPorts.length > 0);
+  return {
+    current_port: currentPort,
+    healthy_port: healthyPort,
+    fallback_active: fallbackActive,
+    stale_debug_port_4310: staleDebugPort4310,
+    stale_debug_summary: staleDebugPort4310
+      ? '4310 当前没有健康响应，客户端已切换到其他本地端口继续连接。'
+      : undefined,
+  };
 }

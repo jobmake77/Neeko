@@ -244,7 +244,9 @@ program
   .command('skills-refresh <slug>')
   .description('Rebuild persona skill library from latest signals')
   .option('--mode <mode>', 'Refresh mode: quick | full', 'quick')
-  .action(async (slug: string, options: { mode?: string }) => {
+  .option('--from-memory', 'Use legacy memory-signal-only refresh path')
+  .option('--prep-documents-path <path>', 'Optional training prep documents path for evidence-first refresh')
+  .action(async (slug: string, options: { mode?: string; fromMemory?: boolean; prepDocumentsPath?: string }) => {
     await cmdSkillsRefresh(slug, options);
   });
 

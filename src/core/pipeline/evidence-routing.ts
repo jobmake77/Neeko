@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { RawDocument, SemanticChunk } from '../models/memory.js';
 import { EvidenceItem, EvidenceRoutingMetadata, EvidenceScene, EvidenceSpeakerRole } from '../models/evidence.js';
@@ -184,7 +184,28 @@ export function writeRawDocsCache(personaDir: string, docs: RawDocument[]): void
 }
 
 export function loadRawDocsCache(personaDir: string): RawDocument[] {
-  const path = join(personaDir, 'raw-docs.json');
+  const docs = readRawDocsFile(join(personaDir, 'raw-docs.json'));
+  const shardDir = join(personaDir, 'shards');
+  if (existsSync(shardDir)) {
+    try {
+      for (const entry of readdirSync(shardDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        docs.push(...readRawDocsFile(join(shardDir, entry.name, 'raw-docs.json')));
+      }
+    } catch {
+      // Keep cache loading best-effort.
+    }
+  }
+  const seen = new Set<string>();
+  return docs.filter((doc) => {
+    const key = JSON.stringify([doc.source_url ?? '', doc.published_at ?? '', doc.content.slice(0, 240)]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function readRawDocsFile(path: string): RawDocument[] {
   if (!existsSync(path)) return [];
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as RawDocument[];

@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   __evidenceRoutingTestables,
+  loadRawDocsCache,
   normalizeInputRoutingStrategy,
   routeEvidenceDocuments,
   routeEvidenceItems,
@@ -34,6 +38,35 @@ test('normalizeInputRoutingStrategy defaults to legacy', () => {
   assert.equal(normalizeInputRoutingStrategy(undefined), 'legacy');
   assert.equal(normalizeInputRoutingStrategy('v2'), 'v2');
   assert.equal(normalizeInputRoutingStrategy('unknown'), 'legacy');
+});
+
+test('loadRawDocsCache merges shard raw docs and dedupes repeated documents', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'neeko-evidence-routing-'));
+  const shardDir = join(dir, 'shards', 'shard-001');
+  mkdirSync(shardDir, { recursive: true });
+  const shared = doc({
+    id: 'shared-doc',
+    source_url: 'https://x.com/target/status/shared',
+    content: '/hunt keeps root-cause debugging evidence available from shards.',
+  });
+  writeFileSync(join(dir, 'raw-docs.json'), JSON.stringify([shared]), 'utf-8');
+  writeFileSync(
+    join(shardDir, 'raw-docs.json'),
+    JSON.stringify([
+      { ...shared, id: 'shared-doc-copy' },
+      doc({
+        id: 'shard-only-doc',
+        source_url: 'https://x.com/target/status/shard-only',
+        content: '/check keeps review skill evidence available from shards.',
+      }),
+    ]),
+    'utf-8'
+  );
+
+  const docs = loadRawDocsCache(dir);
+
+  assert.equal(docs.length, 2);
+  assert.equal(docs.some((item) => item.id === 'shard-only-doc'), true);
 });
 
 test('legacy routing keeps cleaned docs for soul extraction', () => {

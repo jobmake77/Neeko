@@ -1238,6 +1238,104 @@ test('interrupted trained persona with exhausted source recovers to soft-closed 
   });
 });
 
+test('stale source sync run does not block exhausted trained persona soft-close recovery', serial, async () => {
+  await withTempDataDir('neeko-workbench-p1-', async (dataDir) => {
+    const slug = 'stale-run-exhausted-trained-persona';
+    const now = '2026-05-05T14:06:54.039Z';
+    const personaDir = join(dataDir, 'personas', slug);
+    mkdirSync(personaDir, { recursive: true });
+    saveJson(join(personaDir, 'persona.json'), {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      name: 'Stale Run Exhausted Persona',
+      slug,
+      handle: '@onevcat',
+      mode: 'single',
+      source_targets: ['@onevcat'],
+      soul_path: 'soul.yaml',
+      memory_collection: `nico_${slug}`,
+      status: 'training',
+      training_rounds: 1,
+      last_trained_at: '2026-04-23T06:09:36.954Z',
+      memory_node_count: 26,
+      doc_count: 5517,
+      created_at: '2026-04-20T00:00:00.000Z',
+      updated_at: now,
+    });
+    saveJson(join(personaDir, 'training-context.json'), {
+      slug,
+      state: 'interrupted',
+      requested_rounds: 1,
+      completed_rounds: 1,
+      acceptance: { pass: false },
+    });
+    saveJson(join(personaDir, 'training-report.json'), {
+      total_rounds: 1,
+      generated_at: '2026-04-23T06:09:36.954Z',
+    });
+
+    const source = makeSocialSource('stale-exhausted-source');
+    const store = new WorkbenchStore(join(dataDir, 'workbench'));
+    store.savePersonaConfig({
+      persona_slug: slug,
+      name: 'Stale Run Exhausted Persona',
+      sources: [source],
+      update_policy: {
+        auto_check_remote: true,
+        check_interval_minutes: 60,
+        training_threshold: 500,
+        strategy: 'incremental',
+        current_operation: 'incremental_sync',
+        current_source_label: '@onevcat',
+        evaluation_passed: false,
+        collection_cycle: 50,
+        collection_stop_reason: 'evaluation_retry_pending',
+        history_exhausted: false,
+        provider_exhausted: false,
+        last_training_prep_count: 5517,
+        last_training_baseline_clean_count: 5517,
+        latest_result: '正在增量拉取来源…',
+      },
+      updated_at: now,
+    });
+    saveJson(join(dataDir, 'source-sync', 'onevcat', 'onevcat-stale-exhausted-source.json.state.json'), {
+      schema_version: 1,
+      handle: 'onevcat',
+      phase: 'history_exhausted',
+      count: 5517,
+      updated_at: '2026-04-24T14:57:53.299Z',
+      last_heartbeat_at: '2026-04-24T14:57:53.299Z',
+      history_exhausted: true,
+      provider_exhausted: false,
+      collection_stop_reason: 'search_horizon_reached',
+    });
+    store.saveRun({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      type: 'source_sync',
+      persona_slug: slug,
+      status: 'running',
+      recovery_state: 'idle',
+      attempt_count: 1,
+      started_at: '2026-04-24T14:35:12.698Z',
+      summary: 'incremental source sync started',
+      pid: 999999,
+      command: ['node', 'dist/cli/index.js', 'workbench-source-sync', slug],
+    });
+
+    const service = new WorkbenchService(store, process.execPath, '/Users/a77/Desktop/Neeko');
+    const run = service.getRunStatus('cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+    assert.equal(run?.status, 'failed');
+
+    const summary = service.buildPersonaSummary(slug);
+    const config = store.getPersonaConfig(slug);
+
+    assert.equal(summary?.status, 'available');
+    assert.equal(config?.update_policy.current_operation, 'idle');
+    assert.equal(config?.update_policy.collection_stop_reason, 'soft_closed_material_exhausted');
+    assert.equal(config?.update_policy.next_action, 'pause_until_updates');
+    assert.equal(service.listCultivatingPersonas().some((item) => item.slug === slug), false);
+  });
+});
+
 test('collection continuation and checkpoint recovery stay conservative around cooldown-like retry states', serial, async () => {
   const decision = buildCollectionContinuationDecision({
     cleanDocumentCount: 620,

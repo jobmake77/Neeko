@@ -16,8 +16,9 @@ import {
 } from '../../core/training/report.js';
 import { TrainingProfile } from '../../core/training/types.js';
 import {
+  buildSkillLibraryFromEvidence,
   loadSkillLibrary,
-  refreshSkillLibraryFromSignals,
+  SkillBuildReport,
   saveSkillLibrary,
 } from '../../core/skills/library.js';
 import {
@@ -108,6 +109,7 @@ interface TrainRuntimeContext {
     pendingOrigins: number;
     skillCoverageScore: number;
   };
+  skillBuildReport?: SkillBuildReport;
   errorLedger: ErrorLedgerEntry[];
   strategyDecision: TrainingStrategyDecision;
   executionSettings: TrainingExecutionSettings;
@@ -120,6 +122,7 @@ interface TrainRuntimeContext {
   };
   mode: TrainMode;
   corpusDocCount: number;
+  rawDocs: RawDocument[];
 }
 
 const TRACK_STAGE_TIMEOUT_MS = Number(process.env.NEEKO_TRAIN_STAGE_TIMEOUT_MS ?? 180_000);
@@ -406,6 +409,7 @@ export async function cmdTrain(
     prepContext,
     mode,
     corpusDocCount: rawDocs.length,
+    rawDocs,
   };
 
   try {
@@ -440,6 +444,7 @@ export async function cmdTrain(
         track,
         mode,
         prep_context: runtime.prepContext,
+        skill_build_report: runtime.skillBuildReport,
       });
       writeJsonFile(assetPaths.errorLedgerPath, runtime.errorLedger);
       throw new Error('训练未通过验收门槛，已保留断点，可继续恢复。');
@@ -580,7 +585,18 @@ async function refreshSkills(runtime: TrainRuntimeContext): Promise<void> {
   const memorySignals = await buildMemorySignals(runtime.store, runtime.persona.memory_collection, runtime.soul);
   let skillLibrary;
   try {
-    skillLibrary = await refreshSkillLibraryFromSignals(runtime.persona, runtime.soul, memorySignals, previousSkills);
+    const result = await buildSkillLibraryFromEvidence(runtime.persona, runtime.soul, {
+      docs: runtime.rawDocs,
+      memorySignals,
+      sourceBreakdown: runtime.rawDocs.reduce<Record<string, number>>((acc, doc) => {
+        const key = doc.source_platform ?? doc.source_type ?? 'unknown';
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {}),
+      generatedAt: new Date().toISOString(),
+    }, previousSkills);
+    skillLibrary = result.library;
+    runtime.skillBuildReport = result.report;
   } finally {
     restoreEnv('NEEKO_SKILL_ORIGIN_TIMEOUT_MS', previousEnv.origin);
     restoreEnv('NEEKO_SKILL_DISTILL_TIMEOUT_MS', previousEnv.distill);
@@ -713,6 +729,7 @@ async function runTrackLoop(
     track,
     acceptance,
     prep_context: runtime.prepContext,
+    skill_build_report: runtime.skillBuildReport,
   });
 
   return {
@@ -798,6 +815,7 @@ function finalizeRun(runtime: TrainRuntimeContext, manifest: RunManifest): void 
     track: manifest.orchestration.track,
     mode: manifest.orchestration.mode,
     prep_context: runtime.prepContext,
+    skill_build_report: runtime.skillBuildReport,
   });
 
   writeJsonFile(runtime.assetPaths.errorLedgerPath, runtime.errorLedger);
@@ -888,6 +906,7 @@ function persistPartialReport(
     report_path: runtime.reportPath,
     track,
     prep_context: runtime.prepContext,
+    skill_build_report: runtime.skillBuildReport,
   });
 }
 
@@ -1168,6 +1187,7 @@ async function runWithTrackHeartbeat<T>(
       report_path: runtime.reportPath,
       track,
       prep_context: runtime.prepContext,
+      skill_build_report: runtime.skillBuildReport,
     });
   }, TRACK_HEARTBEAT_MS);
 

@@ -2,11 +2,11 @@ import { generateText, generateObject } from 'ai';
 import { z } from 'zod';
 import { Soul } from '../models/soul.js';
 import {
-  getDefaultModelForProvider,
-  listAvailableProviders,
+  buildProviderAttemptChain as buildModelProviderAttemptChain,
   resolveModel,
   resolveModelForOverride,
   resolvePreferredModelOverride,
+  shouldFailoverProviderError,
   type ModelRuntimeOverride,
   type ModelRuntimeRole,
   type ProviderName,
@@ -60,37 +60,7 @@ async function withRetry<T>(
 }
 
 function shouldRetryProviderError(error: unknown): boolean {
-  const message = String(error ?? '').toLowerCase();
-  return (
-    message.includes('quota exceeded') ||
-    message.includes('quota') ||
-    message.includes('usage limit') ||
-    message.includes('limit for this period') ||
-    message.includes('resource exhausted') ||
-    message.includes('high demand') ||
-    message.includes('timeout') ||
-    message.includes('timed out') ||
-    message.includes('connection error') ||
-    message.includes('connection aborted') ||
-    message.includes('connection reset') ||
-    message.includes('429') ||
-    message.includes('rate limit') ||
-    message.includes('overloaded') ||
-    message.includes('temporar') ||
-    message.includes('network') ||
-    message.includes('socket') ||
-    message.includes('econnreset') ||
-    message.includes('econnrefused') ||
-    message.includes('etimedout') ||
-    message.includes('enotfound') ||
-    message.includes('503') ||
-    message.includes('502') ||
-    message.includes('504') ||
-    message.includes('500') ||
-    message.includes('fetch failed') ||
-    message.includes('bad gateway') ||
-    message.includes('service unavailable')
-  );
+  return shouldFailoverProviderError(error);
 }
 
 function computeRetryBackoffMs(attempt: number): number {
@@ -283,26 +253,7 @@ export function buildProviderAttemptChain(
   primary?: ModelRuntimeOverride,
   role: ModelRuntimeRole = 'chat'
 ): ModelRuntimeOverride[] {
-  const primaryProvider = primary?.provider;
-  const primaryModel = primary?.model;
-  const seen = new Set<string>();
-  const attempts: ModelRuntimeOverride[] = [];
-
-  const push = (provider?: ProviderName, model?: string) => {
-    if (!provider) return;
-    const resolvedModel = String(model || '').trim() || getDefaultModelForProvider(provider);
-    const key = `${provider}:${resolvedModel}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    attempts.push({ provider, model: resolvedModel });
-  };
-
-  push(primaryProvider, primaryModel);
-  for (const provider of listAvailableProviders(role)) {
-    if (provider === primaryProvider) continue;
-    push(provider, undefined);
-  }
-  return attempts;
+  return buildModelProviderAttemptChain(primary, role);
 }
 
 export async function generateObjectWithProviderFailover<T>({

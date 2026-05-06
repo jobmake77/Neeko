@@ -1,8 +1,13 @@
-import { generateObject } from 'ai';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { z } from 'zod';
-import { resolveModel } from '../../config/model.js';
+import {
+  buildProviderAttemptChain,
+  resolveModelForOverride,
+  shouldFailoverProviderError,
+  type ModelRuntimeOverride,
+} from '../../config/model.js';
+import { settings } from '../../config/settings.js';
 import { SemanticChunk, RawDocument } from '../models/memory.js';
 import { Persona } from '../models/persona.js';
 import { Soul } from '../models/soul.js';
@@ -32,6 +37,33 @@ export interface TriggeredSkillMatch {
   name: string;
   reason: 'manual' | 'automatic';
   trigger_score: number;
+}
+
+export type SkillBuildStatus = 'not_started' | 'running' | 'ready' | 'pending' | 'failed';
+
+export interface SkillBuildEvidence {
+  docs: RawDocument[];
+  evidenceRefs?: SkillEvidenceRef[];
+  memorySignals?: string[];
+  sourceBreakdown?: Record<string, number>;
+  generatedAt?: string;
+}
+
+export interface SkillBuildReport {
+  status: SkillBuildStatus;
+  originCount: number;
+  distilledCount: number;
+  candidateCount: number;
+  pendingCount: number;
+  qualityScore: number;
+  failureReason?: string;
+  evidenceSourceCount: number;
+  sourceDiversity: number;
+}
+
+export interface SkillBuildResult {
+  library: PersonaSkillLibrary;
+  report: SkillBuildReport;
 }
 
 const OriginExtractionSchema = z.object({
@@ -132,6 +164,7 @@ type OriginCandidateDraft = {
   how: string;
   confidence: number;
   evidence_quotes: string[];
+  evidence_sources?: string[];
   evidence_strength?: number;
   method_specificity?: number;
   transferable?: boolean;
@@ -149,6 +182,316 @@ async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function generateSkillObject<T>({
+  schema,
+  prompt,
+  timeoutMs,
+  label,
+  attempts = resolveSkillProviderAttempts(),
+}: {
+  schema: z.ZodSchema<T>;
+  prompt: string;
+  timeoutMs: number;
+  label: string;
+  attempts?: ModelRuntimeOverride[];
+}): Promise<T> {
+  const { generateObject } = await import('ai');
+  let lastError: unknown;
+  const primaryProvider = attempts[0]?.provider;
+  for (const attempt of attempts) {
+    try {
+      if (attempt.provider && primaryProvider && attempt.provider !== primaryProvider) {
+        console.warn(`[SkillLibrary] provider failover ${primaryProvider} -> ${attempt.provider}`);
+      }
+      if (attempt.provider === 'gemini') {
+        const text = await generateGeminiJsonText({
+          prompt,
+          model: attempt.model,
+          timeoutMs,
+          label,
+        });
+        const jsonCandidate = extractFirstJsonValue(text);
+        if (!jsonCandidate) {
+          throw new Error(`Gemini direct JSON parse failed: ${text.slice(0, 240)}`);
+        }
+        const parsed = JSON.parse(jsonCandidate);
+        return schema.parse(normalizeGeminiSkillPayload(label, parsed));
+      }
+      const { object } = await withTimeout(
+        generateObject({
+          model: resolveModelForOverride(attempt, 'training'),
+          schema,
+          prompt,
+        }),
+        timeoutMs,
+        `${label} ${attempt.provider ?? 'default'}`
+      );
+      return object;
+    } catch (error) {
+      lastError = error;
+      if (!shouldFailoverProviderError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function resolveSkillProviderAttempts(): ModelRuntimeOverride[] {
+  if (process.env.NODE_ENV === 'test' && process.env.NEEKO_TEST_REAL_PROVIDER_FAILOVER !== '1') {
+    const primary = buildProviderAttemptChain(undefined, 'training')[0];
+    return primary ? [primary] : [];
+  }
+  return buildProviderAttemptChain(undefined, 'training');
+}
+
+function getGeminiApiKey(): string {
+  const configured = String(settings.get('geminiApiKey') ?? '').trim();
+  if (configured) return configured;
+  return String(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? '').trim();
+}
+
+function extractGeminiText(payload: any): string {
+  return (payload?.candidates ?? [])
+    .flatMap((candidate: any) => candidate?.content?.parts ?? [])
+    .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function extractFirstJsonValue(text: string): string | null {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? text).trim();
+  const objectStart = candidate.indexOf('{');
+  const arrayStart = candidate.indexOf('[');
+  const starts = [objectStart, arrayStart].filter((item) => item >= 0);
+  const start = starts.length > 0 ? Math.min(...starts) : -1;
+  if (start === -1) return null;
+  const open = candidate[start];
+  const close = open === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < candidate.length; index += 1) {
+    const char = candidate[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === open) depth += 1;
+    if (char === close) {
+      depth -= 1;
+      if (depth === 0) {
+        return candidate.slice(start, index + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeGeminiSkillPayload(label: string, parsed: unknown): unknown {
+  const normalizedLabel = label.toLowerCase();
+  const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+  if (normalizedLabel.includes('origin extraction')) {
+    if (Array.isArray(parsed)) return { origins: parsed };
+    if (record?.origins) return parsed;
+    if (record?.core_idea_origin_skills) return { origins: normalizeOriginLikeList(record.core_idea_origin_skills) };
+    if (record?.candidates) return { origins: record.candidates };
+  }
+  if (normalizedLabel.includes('candidate extraction')) {
+    if (Array.isArray(parsed)) return { candidates: parsed };
+    if (record?.candidates) return { candidates: normalizeOriginLikeList(record.candidates) };
+    if (record?.origins) return { candidates: normalizeOriginLikeList(record.origins) };
+    if (record?.core_idea_origin_skills) return { candidates: normalizeOriginLikeList(record.core_idea_origin_skills) };
+  }
+  if (normalizedLabel.includes('candidate verification')) {
+    if (Array.isArray(parsed)) return { verified: normalizeOriginLikeList(parsed, true) };
+    if (record?.verified) return { verified: normalizeOriginLikeList(record.verified, true) };
+    if (record?.candidates) return { verified: normalizeOriginLikeList(record.candidates, true) };
+    if (record?.origins) return { verified: normalizeOriginLikeList(record.origins, true) };
+    if (record?.core_idea_origin_skills) return { verified: normalizeOriginLikeList(record.core_idea_origin_skills, true) };
+  }
+  if (normalizedLabel.includes('distill')) {
+    if (record?.skill) return { skill: normalizeDistilledSkillLike(record.skill) };
+    if (record) return { skill: normalizeDistilledSkillLike(record) };
+  }
+  if (normalizedLabel.includes('evidence expansion')) {
+    if (Array.isArray(parsed)) return { expanded: parsed };
+    if (record?.expanded) return parsed;
+    if (record?.candidates) return { expanded: record.candidates };
+  }
+  return parsed;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item === 'object') {
+        const record = item as Record<string, unknown>;
+        return String(record.description ?? record.text ?? record.quote ?? record.name ?? JSON.stringify(item));
+      }
+      return String(item ?? '');
+    }).map((item) => item.trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') return [value].filter(Boolean);
+  return [];
+}
+
+function clampScore(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(1, numeric > 1 ? numeric / 10 : numeric));
+}
+
+function normalizeOriginLikeList(value: unknown, verified = false): unknown[] {
+  const items = Array.isArray(value) ? value : [];
+  return items
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Record<string, unknown>;
+      const name = String(record.name ?? record.skill ?? record.skill_name ?? record.title ?? '').trim();
+      const why = String(record.why ?? record.reason ?? record.rationale ?? record.description ?? record.central_thesis ?? '').trim();
+      const how = asStringArray(record.how ?? record.method ?? record.steps ?? record.how_steps ?? record.process).join('\n')
+        || String(record.how ?? record.method ?? record.process ?? '').trim();
+      const evidenceQuotes = asStringArray(record.evidence_quotes ?? record.evidence ?? record.quotes ?? record.examples);
+      if (!name || !why || !how || evidenceQuotes.length === 0) return null;
+      return {
+        name,
+        why,
+        how,
+        confidence: clampScore(record.confidence, 0.72),
+        evidence_quotes: evidenceQuotes,
+        ...(verified
+          ? {
+              evidence_strength: clampScore(record.evidence_strength, 0.75),
+              method_specificity: clampScore(record.method_specificity, 0.75),
+              transferable: record.transferable === undefined ? true : Boolean(record.transferable),
+            }
+          : {}),
+      };
+    })
+    .filter(Boolean) as unknown[];
+}
+
+function normalizeDistilledSkillLike(value: unknown): unknown {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const name = String(record.name ?? record.skill_name ?? record.skill ?? record.title ?? 'Distilled Skill').trim();
+  const howSteps = asStringArray(record.how_steps ?? record.method ?? record.steps ?? record.process);
+  return {
+    name,
+    central_thesis: String(record.central_thesis ?? record.thesis ?? record.description ?? record.why ?? name).trim(),
+    why: String(record.why ?? record.rationale ?? record.description ?? record.central_thesis ?? name).trim(),
+    how_steps: howSteps.length > 0 ? howSteps : [String(record.how ?? record.method ?? name)],
+    boundaries: asStringArray(record.boundaries ?? record.boundary ?? record.limits).length > 0
+      ? asStringArray(record.boundaries ?? record.boundary ?? record.limits)
+      : ['Use only when the user intent matches the trigger signals.'],
+    trigger_signals: asStringArray(record.trigger_signals ?? record.triggers ?? record.trigger).length > 0
+      ? asStringArray(record.trigger_signals ?? record.triggers ?? record.trigger)
+      : [name],
+    anti_patterns: asStringArray(record.anti_patterns ?? record.antiPatterns ?? record.misuse),
+    contradiction_risk: clampScore(record.contradiction_risk ?? record.risk, 0.08),
+    confidence: clampScore(record.confidence, 0.72),
+    coverage_tags: asStringArray(record.coverage_tags ?? record.tags),
+  };
+}
+
+async function generateGeminiJsonText(options: {
+  prompt: string;
+  model?: string;
+  timeoutMs: number;
+  label: string;
+}): Promise<string> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API key is missing.');
+  }
+  const requestedModel = String(options.model || '').trim();
+  const models = requestedModel
+    ? [requestedModel, ...(requestedModel === 'gemini-2.5-flash' ? ['gemini-2.5-flash-lite'] : [])]
+    : ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  const prompt = `${options.prompt}
+
+JSON contract:
+${buildGeminiJsonContract(options.label)}
+
+Return only valid compact JSON. Do not include markdown fences or explanatory text. Keep evidence quotes short.`;
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      const response = await withTimeout(
+        fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: prompt }],
+              },
+            ],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 8192,
+              responseMimeType: 'application/json',
+            },
+          }),
+        }),
+        options.timeoutMs,
+        `${options.label} gemini-direct`
+      );
+      const payload: any = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = payload?.error?.message || `Gemini generateContent ${response.status}`;
+        throw new Error(message);
+      }
+      const text = extractGeminiText(payload);
+      if (!text) throw new Error('Gemini returned empty text.');
+      return text;
+    } catch (error) {
+      lastError = error;
+      if (!shouldFailoverProviderError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Gemini prompt generation failed.');
+}
+
+function buildGeminiJsonContract(label: string): string {
+  const normalizedLabel = label.toLowerCase();
+  if (normalizedLabel.includes('origin extraction')) {
+    return '{"origins":[{"name":"string","why":"string","how":"string","confidence":0.7,"evidence_quotes":["short quote"]}]}';
+  }
+  if (normalizedLabel.includes('candidate extraction')) {
+    return '{"candidates":[{"name":"string","why":"string","how":"string","confidence":0.7,"evidence_quotes":["short quote"]}]}';
+  }
+  if (normalizedLabel.includes('candidate verification')) {
+    return '{"verified":[{"name":"string","why":"string","how":"string","confidence":0.7,"evidence_quotes":["short quote"],"evidence_strength":0.7,"method_specificity":0.7,"transferable":true}]}';
+  }
+  if (normalizedLabel.includes('distill')) {
+    return '{"skill":{"name":"string","central_thesis":"string","why":"string","how_steps":["step"],"boundaries":["boundary"],"trigger_signals":["trigger"],"anti_patterns":["anti-pattern"],"contradiction_risk":0.1,"confidence":0.7,"coverage_tags":["tag"]}}';
+  }
+  if (normalizedLabel.includes('evidence expansion')) {
+    return '{"expanded":[{"name":"string","similarity":0.7,"source_platform":"unknown","source_ref":"string","confidence":0.7}]}';
+  }
+  return '{"result":{}}';
 }
 
 function normalizeName(v: string): string {
@@ -170,6 +513,165 @@ function mergeUniqueEvidence(existing: SkillEvidenceRef[], incoming: SkillEviden
       [...existing, ...incoming].map((item) => [`${item.source_platform}:${item.source}:${item.snippet}`, item])
     ).values()
   ).slice(0, 20);
+}
+
+function sourceKeyFromDoc(doc: RawDocument): string {
+  return doc.source_url ?? doc.author_handle ?? doc.author ?? doc.source_platform ?? doc.source_type;
+}
+
+function dedupeRawDocumentsForSkill(docs: RawDocument[]): RawDocument[] {
+  const seen = new Set<string>();
+  const out: RawDocument[] = [];
+  for (const doc of docs) {
+    const content = doc.content.trim();
+    if (!content) continue;
+    const key = JSON.stringify([doc.source_url ?? '', doc.published_at ?? '', content.slice(0, 240)]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...doc, content });
+  }
+  return out;
+}
+
+function inferSourceBreakdown(docs: RawDocument[]): Record<string, number> {
+  return docs.reduce<Record<string, number>>((acc, doc) => {
+    const key = doc.source_platform ?? doc.source_type ?? 'unknown';
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+function buildSemanticChunksFromDocs(docs: RawDocument[]): SemanticChunk[] {
+  return docs.map((doc, i) => ({
+    id: crypto.randomUUID(),
+    document_id: doc.id,
+    content: doc.content,
+    source_type: doc.source_type,
+    author: doc.author,
+    published_at: doc.published_at,
+    chunk_index: i,
+    total_chunks: docs.length,
+    token_count: Math.ceil(doc.content.length / 4),
+  }));
+}
+
+function docsToLocalEvidenceRefs(docs: RawDocument[], similarity = 0.85): SkillEvidenceRef[] {
+  return docs.slice(0, 20).map((doc) => ({
+    source: sourceKeyFromDoc(doc),
+    source_platform: doc.source_platform ?? doc.source_type,
+    snippet: doc.content.slice(0, 260),
+    similarity,
+  }));
+}
+
+function classifySkillEvidenceDimension(text: string): 'writings' | 'conversations' | 'expression' | 'external_views' | 'decisions' | 'timeline' {
+  const lower = text.toLowerCase();
+  if (/(podcast|interview|ama|访谈|播客|对话|问答|追问)/i.test(text)) return 'conversations';
+  if (/(twitter|tweet|x\.com|微博|即刻|thread|表达|语气|写法|风格|句式)/i.test(text)) return 'expression';
+  if (/(critique|review|biography|评价|批评|他人|外部|同行|争议)/i.test(text)) return 'external_views';
+  if (/(decision|decide|choice|tradeoff|转折|决策|选择|取舍|行动|案例|case)/i.test(text)) return 'decisions';
+  if (/(timeline|latest|recent|202[0-9]|时间线|最新|近期|里程碑)/i.test(text)) return 'timeline';
+  if (/(essay|book|newsletter|blog|paper|文章|长文|著作|书|论文|博客)/i.test(text)) return 'writings';
+  return lower.length > 600 ? 'writings' : 'expression';
+}
+
+const SKILL_METHOD_PATTERNS: Array<{
+  id: string;
+  name: string;
+  aliases: string[];
+  why: string;
+  how: string;
+  triggers: string[];
+}> = [
+  {
+    id: 'think',
+    name: 'Structured Solution Thinking',
+    aliases: ['/think', 'think skill', '思考', '方案设计', 'solution design', 'planning'],
+    why: 'Turns ambiguous problems into pressure-tested plans before execution.',
+    how: 'Question the problem, list constraints, compare options, stress-test the architecture, then hand execution a concrete plan.',
+    triggers: ['plan', 'architecture', 'solution design', 'think through', '方案', '规划'],
+  },
+  {
+    id: 'design',
+    name: 'Taste-Driven Product Design',
+    aliases: ['/design', 'design skill', '设计', '审美', 'taste', 'product design'],
+    why: 'Keeps product output from becoming generic by forcing a clear design direction and audience fit.',
+    how: 'Define the user and domain, choose the design direction, make concrete interface decisions, then verify the result against taste and usability.',
+    triggers: ['design', 'ui', 'ux', 'taste', 'product', '界面', '设计'],
+  },
+  {
+    id: 'hunt',
+    name: 'Root-Cause Debugging',
+    aliases: ['/hunt', 'hunt skill', 'debug', 'debugging', '排查', '定位', '根因'],
+    why: 'Prevents patch-churn by requiring a precise root cause before editing code.',
+    how: 'Reproduce the failure, add observation, test hypotheses, state the root cause in one sentence, then make the smallest fix and verify it.',
+    triggers: ['bug', 'debug', 'root cause', '排查', '定位原因', '修复'],
+  },
+  {
+    id: 'check',
+    name: 'Evidence-Based Review',
+    aliases: ['/check', 'check skill', 'review', 'code review', '检查', '审查'],
+    why: 'Treats AI output as untrusted until the diff and evidence show it is actually correct.',
+    how: 'Review the diff, separate automatic fixes from judgment calls, validate with tests or evidence, and report residual risk.',
+    triggers: ['review', 'check', 'diff', 'quality', '检查', '评审'],
+  },
+  {
+    id: 'read',
+    name: 'Primary-Source Reading',
+    aliases: ['/read', 'read skill', '阅读', '一手资料', 'primary source', 'url', 'pdf'],
+    why: 'Avoids secondhand summaries by converting source material into clean working context.',
+    how: 'Read the original source, extract the claims and structure, keep citations, and distinguish facts from interpretation.',
+    triggers: ['read', 'url', 'pdf', 'source', 'article', '阅读', '资料'],
+  },
+  {
+    id: 'write',
+    name: 'Audience-Shaped Technical Writing',
+    aliases: ['/write', 'write skill', '写作', '表达', 'communication'],
+    why: 'Makes technical understanding transmissible to the intended audience.',
+    how: 'Clarify audience and outcome, outline the argument, draft in the right voice, remove ambiguity, and polish for readability.',
+    triggers: ['write', 'draft', 'explain', '文章', '写作', '表达'],
+  },
+  {
+    id: 'learn',
+    name: 'Output-Driven Learning',
+    aliases: ['/learn', 'learn skill', '学习', '输出驱动', '陌生领域'],
+    why: 'Uses public or concrete output to force real understanding of a new field.',
+    how: 'Collect sources, digest them into structure, draft an output, test gaps, revise, then publish or archive the learning artifact.',
+    triggers: ['learn', 'research', 'study', '学习', '调研', '新领域'],
+  },
+  {
+    id: 'health',
+    name: 'Toolchain Health Check',
+    aliases: ['/health', 'health skill', '维护', '体检', 'toolchain', 'mcp', 'hooks', 'rules'],
+    why: 'Keeps the agent/tooling environment reliable instead of only fixing business code.',
+    how: 'Inspect rules, hooks, MCP, runtime configuration, stale state, and failure logs; then summarize concrete fixes and risks.',
+    triggers: ['health', 'toolchain', 'mcp', 'rules', 'hooks', '体检', '维护'],
+  },
+];
+
+function findMethodPatternDrafts(docs: RawDocument[]): OriginCandidateDraft[] {
+  const drafts: OriginCandidateDraft[] = [];
+  for (const pattern of SKILL_METHOD_PATTERNS) {
+    const matches = docs.filter((doc) => {
+      const text = doc.content.toLowerCase();
+      return pattern.aliases.some((alias) => text.includes(alias.toLowerCase()));
+    });
+    if (matches.length === 0) continue;
+    const sourceKeys = Array.from(new Set(matches.map(sourceKeyFromDoc))).slice(0, 8);
+    const dimensions = new Set(matches.map((doc) => classifySkillEvidenceDimension(doc.content)));
+    drafts.push({
+      name: pattern.name,
+      why: pattern.why,
+      how: pattern.how,
+      confidence: Math.min(0.92, 0.62 + matches.length * 0.035 + dimensions.size * 0.04),
+      evidence_quotes: matches.slice(0, 6).map((doc) => doc.content.slice(0, 420)),
+      evidence_sources: sourceKeys,
+      transferable: true,
+      evidence_strength: Math.min(1, Math.max(matches.length / 4, dimensions.size / 3)),
+      method_specificity: 0.88,
+    });
+  }
+  return drafts;
 }
 
 function dedupeOrigins(origins: OriginSkill[]): OriginSkill[] {
@@ -201,7 +703,10 @@ function selectAcceptedOriginCandidates(
       why: item.why.trim(),
       how: item.how.trim(),
       confidence: item.confidence,
-      evidence: evidenceQuotes.map((quote) => ({ quote, source: 'persona_corpus' })),
+      evidence: evidenceQuotes.map((quote, idx) => ({
+        quote,
+        source: item.evidence_sources?.[idx] ?? item.evidence_sources?.[0] ?? 'persona_corpus',
+      })),
     };
     const evidenceStrength = item.evidence_strength ?? Math.min(1, evidenceQuotes.length / 4);
     const methodSpecificity = item.method_specificity ?? (
@@ -355,24 +860,9 @@ function selectFinalDistilledSkills(
   candidates: CandidateSkill[]
 ): { distilled: DistilledSkill[]; candidatePool: CandidateSkill[] } {
   const sortedAccepted = [...accepted].sort((a, b) => b.quality_score - a.quality_score);
-  const distilled = sortedAccepted.slice(0, 6);
-
-  if (distilled.length >= 3) {
-    return { distilled, candidatePool: candidates };
-  }
-
-  const promoted = [...candidates]
-    .sort((a, b) => b.quality_score - a.quality_score)
-    .slice(0, Math.max(0, 3 - distilled.length))
-    .map((item) => ({
-      ...item,
-      reject_reasons: [...item.reject_reasons, 'promoted_for_minimum_skill_set'],
-    }));
-
-  const promotedIds = new Set(promoted.map((item) => item.id));
   return {
-    distilled: [...distilled, ...promoted],
-    candidatePool: candidates.filter((item) => !promotedIds.has(item.id)),
+    distilled: sortedAccepted.slice(0, 6),
+    candidatePool: candidates,
   };
 }
 
@@ -450,19 +940,16 @@ async function collectEvidenceForOrigin(origin: OriginSkill): Promise<SkillEvide
     return refs;
   }
 
-  const { object } = await withTimeout(
-    generateObject({
-      model: resolveModel(),
-      schema: SkillExpandSchema,
-      prompt: `Find related evidence sources for this skill origin.
+  const object = await generateSkillObject({
+    schema: SkillExpandSchema,
+    timeoutMs: getSkillExpandTimeoutMs(),
+    label: 'skill evidence expansion',
+    prompt: `Find related evidence sources for this skill origin.
 Origin: ${origin.name}
 WHY: ${origin.why}
 HOW: ${origin.how}
 Return 3 candidate sources.`,
-    }),
-    getSkillExpandTimeoutMs(),
-    'skill evidence expansion'
-  );
+  });
 
   const candidates = object.expanded
     .filter((item) => item.similarity >= 0.35 && item.confidence >= 0.4)
@@ -498,6 +985,42 @@ Return 3 candidate sources.`,
   return mergeUniqueEvidence([], refs);
 }
 
+function collectLocalEvidenceForOrigin(origin: OriginSkill, docs: RawDocument[]): SkillEvidenceRef[] {
+  const originText = normalizeName(`${origin.name} ${origin.why} ${origin.how}`);
+  const originTokens = originText.split(/\s+/).filter((token) => token.length >= 2);
+  const scored = docs
+    .map((doc) => {
+      const normalized = normalizeName(doc.content);
+      const hits = originTokens.filter((token) => normalized.includes(token)).length;
+      const aliasBoost = SKILL_METHOD_PATTERNS.some((pattern) =>
+        similarityByTokenOverlap(origin.name, pattern.name) >= 0.45 &&
+        pattern.aliases.some((alias) => doc.content.toLowerCase().includes(alias.toLowerCase()))
+      ) ? 0.35 : 0;
+      return {
+        doc,
+        score: originTokens.length > 0 ? hits / originTokens.length + aliasBoost : aliasBoost,
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+  const refs = scored.map((item) => ({
+    source: sourceKeyFromDoc(item.doc),
+    source_platform: item.doc.source_platform ?? item.doc.source_type,
+    snippet: item.doc.content.slice(0, 260),
+    similarity: Math.max(0.45, Math.min(1, item.score)),
+  }));
+  return mergeUniqueEvidence(docsToLocalEvidenceRefs([], 0.85), [
+    ...refs,
+    ...origin.evidence.map((item) => ({
+      source: item.source,
+      source_platform: item.source,
+      snippet: item.quote,
+      similarity: 1,
+    })),
+  ]);
+}
+
 async function distillSkillFromCluster(
   cluster: { id: string; thesis: string; origins: OriginSkill[] },
   evidenceRefs: SkillEvidenceRef[]
@@ -507,11 +1030,11 @@ async function distillSkillFromCluster(
     .join('\n\n');
   const evidenceText = evidenceRefs.slice(0, 12).map((item, idx) => `[${idx + 1}] ${item.snippet}`).join('\n');
 
-  const { object } = await withTimeout(
-    generateObject({
-      model: resolveModel(),
-      schema: DistillSkillSchema,
-      prompt: `Distill one high-value transferable skill from clustered persona origins.
+  const object = await generateSkillObject({
+    schema: DistillSkillSchema,
+    timeoutMs: getSkillDistillTimeoutMs(),
+    label: 'skill distill',
+    prompt: `Distill one high-value transferable skill from clustered persona origins.
 Output should be method-oriented and compact.
 
 Cluster thesis: ${cluster.thesis}
@@ -527,10 +1050,7 @@ Rules:
 - include clear boundaries and anti-patterns
 - trigger_signals should be short cues from user intent
 - avoid generic skill names`,
-    }),
-    getSkillDistillTimeoutMs(),
-    'skill distill'
-  );
+  });
 
   const methodCompleteness = methodCompletenessScore(object.skill);
 
@@ -819,33 +1339,76 @@ export function computeCoverageByOrigin(
     .sort((a, b) => a.coverage_score - b.coverage_score);
 }
 
-export async function buildSkillLibraryFromSources(
+function buildSkillBuildReport(input: {
+  library: PersonaSkillLibrary;
+  evidenceDocs: RawDocument[];
+  failureReason?: string;
+}): SkillBuildReport {
+  const { library, evidenceDocs, failureReason } = input;
+  const evidenceSourceCount = new Set(evidenceDocs.map(sourceKeyFromDoc)).size;
+  const sourceDiversity = Object.keys(inferSourceBreakdown(evidenceDocs)).length;
+  const qualityScore = Math.max(
+    0,
+    Math.min(
+      1,
+      library.distilled_skills.length >= 3
+        ? library.distilled_skills.reduce((sum, item) => sum + item.quality_score, 0) / library.distilled_skills.length
+        : library.candidate_skill_pool.length > 0 || library.origin_skills.length > 0
+          ? 0.45
+          : 0
+    )
+  );
+  const status: SkillBuildStatus = failureReason
+    ? 'failed'
+    : library.distilled_skills.length >= 3
+      ? 'ready'
+      : library.origin_skills.length > 0 || library.candidate_skill_pool.length > 0 || library.pending_candidates.length > 0
+        ? 'pending'
+        : 'pending';
+  return {
+    status,
+    originCount: library.origin_skills.length,
+    distilledCount: library.distilled_skills.length,
+    candidateCount: library.candidate_skill_pool.length,
+    pendingCount: library.pending_candidates.length,
+    qualityScore,
+    failureReason,
+    evidenceSourceCount,
+    sourceDiversity,
+  };
+}
+
+export async function buildSkillLibraryFromSourcesWithReport(
   persona: Persona,
   _soul: Soul,
   chunks: SemanticChunk[],
   docs: RawDocument[],
   previous?: PersonaSkillLibrary
-): Promise<PersonaSkillLibrary> {
-  const seedText = chunks.slice(0, 70).map((c, i) => `[${i + 1}] ${c.content.slice(0, 280)}`).join('\n');
+): Promise<SkillBuildResult> {
+  const evidenceDocs = dedupeRawDocumentsForSkill(docs);
+  const effectiveChunks = chunks.length > 0 ? chunks : buildSemanticChunksFromDocs(evidenceDocs);
+  const seedText = effectiveChunks.slice(0, 90).map((c, i) => {
+    const dimension = classifySkillEvidenceDimension(c.content);
+    return `[${i + 1}][${dimension}] ${c.content.slice(0, 360)}`;
+  }).join('\n');
   let extractedOrigins: z.infer<typeof OriginExtractionSchema>['origins'] = [];
-  let candidateOrigins: OriginCandidateDraft[] = [];
+  let candidateOrigins: OriginCandidateDraft[] = findMethodPatternDrafts(evidenceDocs);
   try {
-    const { object } = await withTimeout(
-      generateObject({
-        model: resolveModel(),
-        schema: OriginExtractionSchema,
-        prompt: `Extract core idea-origin skills from this persona content.
+    const object = await generateSkillObject({
+      schema: OriginExtractionSchema,
+      timeoutMs: getSkillOriginTimeoutMs(),
+      label: 'skill origin extraction',
+      prompt: `Extract core idea-origin skills from this persona content.
 Persona: ${persona.name}
 Rules:
 - focus on center ideas and reusable methods
+- use the corpus evidence directly; prefer repeated methods, decision procedures, and judgment patterns
+- a real skill should pass at least two of: cross-domain recurrence, generative power, distinctiveness
 - avoid generic topics
 - max 12 origins
 
 Content:\n${seedText || 'No content'}`,
-      }),
-      getSkillOriginTimeoutMs(),
-      'skill origin extraction'
-    );
+    });
     extractedOrigins = object.origins;
   } catch (error) {
     console.warn(`[SkillLibrary] origin extraction failed, fallback to previous skills: ${String(error)}`);
@@ -853,29 +1416,27 @@ Content:\n${seedText || 'No content'}`,
 
   if (extractedOrigins.length === 0) {
     try {
-      const { object } = await withTimeout(
-        generateObject({
-          model: resolveModel(),
-          schema: OriginCandidateExtractionSchema,
-          prompt: `Extract candidate transferable skills from this persona content.
+      const object = await generateSkillObject({
+        schema: OriginCandidateExtractionSchema,
+        timeoutMs: getSkillOriginTimeoutMs(),
+        label: 'skill candidate extraction',
+        prompt: `Extract candidate transferable skills from this persona content.
 Persona: ${persona.name}
 Rules:
 - return method-like candidates, not generic topics
 - candidates may be noisy; prioritize recall
 - max 16 candidates
 - each candidate must include direct evidence quotes
+- prefer skills with concrete trigger situations and repeatable steps
 
 Content:\n${seedText || 'No content'}`,
-        }),
-        getSkillOriginTimeoutMs(),
-        'skill candidate extraction'
-      );
-      candidateOrigins = object.candidates;
+      });
+      candidateOrigins = [...candidateOrigins, ...object.candidates];
     } catch (error) {
       console.warn(`[SkillLibrary] candidate extraction failed: ${String(error)}`);
     }
   } else {
-    candidateOrigins = extractedOrigins.map((item) => ({
+    candidateOrigins = [...candidateOrigins, ...extractedOrigins.map((item) => ({
       name: item.name,
       why: item.why,
       how: item.how,
@@ -884,7 +1445,7 @@ Content:\n${seedText || 'No content'}`,
       transferable: true,
       evidence_strength: Math.min(1, item.evidence_quotes.length / 4),
       method_specificity: item.how.trim().length >= 24 ? 0.8 : 0.55,
-    }));
+    }))];
   }
 
   let verifiedOrigins: OriginCandidateDraft[] = [];
@@ -901,24 +1462,22 @@ evidence:
       .join('\n\n');
 
     try {
-      const { object } = await withTimeout(
-        generateObject({
-          model: resolveModel(),
-          schema: OriginVerificationSchema,
-          prompt: `Verify which candidate skills are truly transferable for this persona.
+      const object = await generateSkillObject({
+        schema: OriginVerificationSchema,
+        timeoutMs: getSkillOriginTimeoutMs(),
+        label: 'skill candidate verification',
+        prompt: `Verify which candidate skills are truly transferable for this persona.
 Persona: ${persona.name}
 Rules:
 - keep only skills that reflect reusable methods or judgment patterns
 - reject pure topics, biography facts, and vague traits
 - require evidence-grounded why/how
 - score evidence_strength and method_specificity strictly
+- reward cross-domain recurrence, generative power, and distinctive viewpoint
 
 Candidates:
 ${candidateText}`,
-        }),
-        getSkillOriginTimeoutMs(),
-        'skill candidate verification'
-      );
+      });
       verifiedOrigins = object.verified.filter((item) => item.transferable);
     } catch (error) {
       console.warn(`[SkillLibrary] origin verification failed, fallback to raw candidates: ${String(error)}`);
@@ -943,7 +1502,10 @@ ${candidateText}`,
     for (const origin of cluster.origins) {
       if (Date.now() - stageStart > getSkillStageBudgetMs()) break;
       try {
-        const refs = await collectEvidenceForOrigin(origin);
+        const refs = mergeUniqueEvidence(
+          collectLocalEvidenceForOrigin(origin, evidenceDocs),
+          await collectEvidenceForOrigin(origin)
+        );
         clusterEvidence.push(...refs);
       } catch (error) {
         console.warn(`[SkillLibrary] collect evidence failed for ${origin.name}: ${String(error)}`);
@@ -986,13 +1548,13 @@ ${candidateText}`,
     };
   });
 
-  return {
+  const library: PersonaSkillLibrary = {
     ...base,
     schema_version: 2,
     persona_slug: persona.slug,
     version: base.version + 1,
     updated_at: new Date().toISOString(),
-    source_trace: Array.from(new Set([...base.source_trace, ...docs.slice(0, 30).map((d) => d.source_url ?? d.author)])),
+    source_trace: Array.from(new Set([...base.source_trace, ...evidenceDocs.slice(0, 50).map(sourceKeyFromDoc)])),
     origin_skills: mergedOrigins,
     distilled_skills: selected.distilled,
     candidate_skill_pool: selected.candidatePool.slice(0, 20),
@@ -1000,14 +1562,65 @@ ${candidateText}`,
     pending_candidates: mergeOrigins(base.pending_candidates, pendingOrigins),
     expanded_skills: [],
   };
+  return {
+    library,
+    report: buildSkillBuildReport({ library, evidenceDocs }),
+  };
 }
 
-export async function refreshSkillLibraryFromSignals(
+export async function buildSkillLibraryFromSources(
+  persona: Persona,
+  soul: Soul,
+  chunks: SemanticChunk[],
+  docs: RawDocument[],
+  previous?: PersonaSkillLibrary
+): Promise<PersonaSkillLibrary> {
+  return (await buildSkillLibraryFromSourcesWithReport(persona, soul, chunks, docs, previous)).library;
+}
+
+export async function buildSkillLibraryFromEvidence(
+  persona: Persona,
+  soul: Soul,
+  evidence: SkillBuildEvidence,
+  previous?: PersonaSkillLibrary
+): Promise<SkillBuildResult> {
+  const primaryDocs = dedupeRawDocumentsForSkill(evidence.docs);
+  if (primaryDocs.length === 0) {
+    const base = previous ?? createEmptySkillLibrary(persona.slug);
+    const library = {
+      ...base,
+      version: base.version + 1,
+      updated_at: new Date().toISOString(),
+    };
+    return {
+      library,
+      report: buildSkillBuildReport({
+        library,
+        evidenceDocs: primaryDocs,
+        failureReason: 'no_skill_evidence_docs',
+      }),
+    };
+  }
+  const supplementalDocs = dedupeRawDocumentsForSkill(
+    (evidence.memorySignals ?? []).map((content) => ({
+      id: crypto.randomUUID(),
+      source_type: 'custom' as const,
+      content,
+      author: persona.name,
+      fetched_at: evidence.generatedAt ?? new Date().toISOString(),
+      metadata: { skill_signal_source: 'memory' },
+    }))
+  );
+  const docs = dedupeRawDocumentsForSkill([...primaryDocs, ...supplementalDocs]);
+  return buildSkillLibraryFromSourcesWithReport(persona, soul, buildSemanticChunksFromDocs(docs), docs, previous);
+}
+
+export async function refreshSkillLibraryFromSignalsWithReport(
   persona: Persona,
   soul: Soul,
   signals: string[],
   previous?: PersonaSkillLibrary
-): Promise<PersonaSkillLibrary> {
+): Promise<SkillBuildResult> {
   const fakeDocs: RawDocument[] = signals.slice(0, 70).map((content) => ({
     id: crypto.randomUUID(),
     source_type: 'custom',
@@ -1026,5 +1639,14 @@ export async function refreshSkillLibraryFromSignals(
     token_count: Math.ceil(d.content.length / 4),
   }));
 
-  return buildSkillLibraryFromSources(persona, soul, fakeChunks, fakeDocs, previous);
+  return buildSkillLibraryFromSourcesWithReport(persona, soul, fakeChunks, fakeDocs, previous);
+}
+
+export async function refreshSkillLibraryFromSignals(
+  persona: Persona,
+  soul: Soul,
+  signals: string[],
+  previous?: PersonaSkillLibrary
+): Promise<PersonaSkillLibrary> {
+  return (await refreshSkillLibraryFromSignalsWithReport(persona, soul, signals, previous)).library;
 }

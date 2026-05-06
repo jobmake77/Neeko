@@ -264,6 +264,7 @@ interface DocumentValidationOutcome {
 const AUTO_TRAINING_THRESHOLD = 500;
 const COLLECTION_CONTINUE_DELAY_MS = 2_500;
 const SOURCE_SYNC_HEARTBEAT_STALE_MS = 90_000;
+const SOURCE_SYNC_RUN_STALE_MS = 30 * 60 * 1000;
 const COLLECTION_EXHAUSTED_RETRY_LIMIT = 3;
 const SOFT_CLOSE_NO_PROGRESS_LIMIT = 2;
 
@@ -6685,6 +6686,7 @@ export class WorkbenchService {
           collection_stop_reason: 'soft_closed_material_exhausted',
           soft_closed_at: nextUpdatedAt,
           soft_close_reason: 'material_exhausted',
+          skill_build_status: config.update_policy.skill_build_status ?? 'pending',
           latest_result: this.buildSoftCloseSummary(),
         },
         updated_at: nextUpdatedAt,
@@ -6746,6 +6748,21 @@ export class WorkbenchService {
     };
     this.store.savePersonaConfig(nextConfig);
     return nextConfig;
+  }
+
+  private buildSkillBuildPolicyPatch(slug: string): Partial<PersonaConfig['update_policy']> {
+    const context = this.readTrainingContext(slug) as { skill_build_report?: PersonaConfig['update_policy']['last_skill_build_report'] } | null;
+    const report = context?.skill_build_report;
+    if (!report) {
+      return {
+        skill_build_status: 'pending',
+      };
+    }
+    return {
+      skill_build_status: report.status,
+      last_skill_build_at: new Date().toISOString(),
+      last_skill_build_report: report,
+    };
   }
 
   private clearCollectionReview(slug: string): void {
@@ -6832,6 +6849,7 @@ export class WorkbenchService {
     const sourceSyncMode = config.update_policy.current_operation === 'incremental_sync' ? 'incremental_sync' : 'deep_fetch';
     const wasSoftClosed = this.isSoftClosedConfig(config);
     const state = this.summarizeCollectionState(slug);
+    const skillBuildPatch = runType === 'train' ? this.buildSkillBuildPolicyPatch(slug) : {};
     const hasSettledCleanBaseline = Number.isFinite(config.update_policy.last_deep_fetch_settled_clean_count);
     const previousSettledCleanCount = hasSettledCleanBaseline
       ? Math.max(0, config.update_policy.last_deep_fetch_settled_clean_count ?? 0)
@@ -6917,6 +6935,7 @@ export class WorkbenchService {
             next_action: 'soft_close_candidate',
             evaluation_passed: false,
             collection_stop_reason: 'soft_closed_material_exhausted',
+            material_settled_at: softClosedAt,
             history_exhausted: state.historyExhausted,
             provider_exhausted: state.providerExhausted,
             soft_closed_at: softClosedAt,
@@ -6961,6 +6980,7 @@ export class WorkbenchService {
         next_action: 'pause_until_updates',
         evaluation_passed: true,
         collection_stop_reason: 'evaluation_passed',
+        ...skillBuildPatch,
         history_exhausted: state.historyExhausted,
         provider_exhausted: state.providerExhausted,
         soft_closed_at: undefined,
@@ -6978,6 +6998,7 @@ export class WorkbenchService {
       next_action: state.retrain.retrainReady ? 'ready_for_retrain' : state.nextAction,
       evaluation_passed: false,
       collection_stop_reason: state.retrain.retrainReady ? 'retrain_ready' : 'waiting_retrain_delta',
+      ...skillBuildPatch,
       history_exhausted: state.historyExhausted,
       provider_exhausted: state.providerExhausted,
       soft_closed_at: undefined,
@@ -7500,6 +7521,8 @@ export class WorkbenchService {
               last_training_prep_count: prepDocumentCount,
               last_training_baseline_clean_count: cleanDocumentCount,
               last_training_prep_id: inferredPrep.prepArtifactId,
+              material_settled_at: config.update_policy.material_settled_at ?? new Date().toISOString(),
+              skill_build_status: 'running',
             },
             updated_at: new Date().toISOString(),
           });
@@ -7613,7 +7636,7 @@ export class WorkbenchService {
   getRunStatus(runId: string): WorkbenchRun | null {
     const run = this.store.getRun(runId);
     if (!run) return null;
-    if (run.status === 'running' && run.pid && !this.isPidAlive(run.pid)) {
+    if (run.status === 'running' && run.pid && this.shouldMarkRunningRunStale(run)) {
       let inferredStatus: 'completed' | 'failed' = 'failed';
       let resolvedReportPath = run.report_path;
       if (run.type === 'train' && run.persona_slug) {
@@ -7801,6 +7824,8 @@ export class WorkbenchService {
       skill_summary: {
         origin_count: skills.origin_skills.length,
         distilled_count: skills.distilled_skills.length,
+        build_status: config.update_policy.skill_build_status,
+        quality_score: config.update_policy.last_skill_build_report?.qualityScore,
       },
       source_summary: {
         total_sources: config.sources.length,
@@ -8853,6 +8878,45 @@ export class WorkbenchService {
     } catch {
       return false;
     }
+  }
+
+  private getPidStat(pid: number): string | null {
+    try {
+      return execFileSync('ps', ['-p', String(pid), '-o', 'stat='], {
+        timeout: 1000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString().trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private isPidUnusable(pid: number): boolean {
+    const stat = this.getPidStat(pid);
+    if (!stat) return true;
+    return stat.includes('Z') || stat.includes('E') || stat.includes('X');
+  }
+
+  private shouldMarkRunningRunStale(run: WorkbenchRun): boolean {
+    if (!run.pid || !this.isPidAlive(run.pid)) return true;
+    if (this.isPidUnusable(run.pid)) return true;
+    if (run.type !== 'source_sync' || !run.persona_slug) return false;
+
+    const startedAt = new Date(run.started_at).getTime();
+    if (!Number.isFinite(startedAt) || Date.now() - startedAt < SOURCE_SYNC_RUN_STALE_MS) return false;
+
+    const config = this.store.getPersonaConfig(run.persona_slug);
+    const heartbeatTimes = config?.sources
+      .filter((source) => source.enabled && source.type === 'social')
+      .map((source) => {
+        const progress = this.readSourceSyncProgress(source);
+        const heartbeatAt = progress?.last_heartbeat_at ?? progress?.updated_at;
+        return heartbeatAt ? new Date(heartbeatAt).getTime() : NaN;
+      })
+      .filter(Number.isFinite) ?? [];
+    const latestHeartbeat = heartbeatTimes.length > 0 ? Math.max(...heartbeatTimes) : undefined;
+    if (latestHeartbeat === undefined) return true;
+    return Date.now() - latestHeartbeat > SOURCE_SYNC_HEARTBEAT_STALE_MS;
   }
 
   private planAutomaticRecovery(input: {

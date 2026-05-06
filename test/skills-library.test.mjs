@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { __skillLibraryTestables } from '../dist/testing/skills-test-entry.js';
+import {
+  __skillLibraryTestables,
+  buildSkillLibraryFromEvidence,
+} from '../dist/testing/skills-test-entry.js';
 
 const {
   similarityByTokenOverlap,
@@ -12,6 +15,79 @@ const {
   selectFinalDistilledSkills,
   clusterOrigins,
 } = __skillLibraryTestables;
+
+function persona() {
+  return {
+    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    name: 'HiTw93',
+    slug: 'hitw93',
+    handle: '@HiTw93',
+    mode: 'single',
+    source_targets: ['@HiTw93'],
+    soul_path: 'soul.yaml',
+    memory_collection: 'nico_hitw93',
+    status: 'training',
+    training_rounds: 0,
+    memory_node_count: 0,
+    doc_count: 0,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+function soul() {
+  return {
+    version: 1,
+    target_name: 'HiTw93',
+    target_handle: '@HiTw93',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    data_sources: [],
+    total_chunks_processed: 0,
+    language_style: {
+      vocabulary_preferences: [],
+      sentence_patterns: [],
+      formality_level: 0.5,
+      avg_sentence_length: 'medium',
+      punctuation_quirks: [],
+      frequent_phrases: [],
+      languages_used: [],
+    },
+    values: { core_beliefs: [], priorities: [], known_stances: {} },
+    thinking_patterns: {
+      reasoning_style: [],
+      decision_frameworks: [],
+      cognitive_biases: [],
+      problem_solving_approach: '',
+      first_principles_tendency: 0.5,
+      analogy_usage: 'occasional',
+    },
+    behavioral_traits: {
+      social_patterns: [],
+      stress_responses: [],
+      signature_behaviors: [],
+      humor_style: 'none',
+      controversy_handling: 'engages-carefully',
+    },
+    knowledge_domains: { expert: [], familiar: [], blind_spots: [] },
+    overall_confidence: 0,
+    coverage_score: 0,
+    training_rounds_completed: 0,
+  };
+}
+
+function rawDoc(content, i, source = 'twitter') {
+  return {
+    id: `10000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    source_type: 'twitter',
+    source_platform: source,
+    source_url: `https://x.com/HiTw93/status/${i}`,
+    content,
+    author: 'HiTw93',
+    author_handle: '@HiTw93',
+    fetched_at: '2026-01-01T00:00:00.000Z',
+  };
+}
 
 function origin(id, name, confidence = 0.7, evidenceCount = 2) {
   return {
@@ -156,4 +232,49 @@ test('computeCoverageByOrigin ranks lower coverage first', () => {
   assert.equal(result[0].missing_slots, 1);
   assert.equal(result[1].origin_id, 'o2');
   assert.equal(result[1].missing_slots, 0);
+});
+
+test('evidence-first skill build extracts Waza-style methods without memory signals', async () => {
+  const docs = [
+    rawDoc('/think 是我用来做方案设计的 skill。动手前先质疑问题本身，压测方案，再让 AI 执行。', 1, 'twitter'),
+    rawDoc('A good engineer should think before coding: question the problem, stress-test the plan, and make architecture clear.', 2, 'blog'),
+    rawDoc('/hunt 的核心规则是没有一句话说清根因之前不许碰代码。先复现、加观测、验证假设，再修。', 3, 'twitter'),
+    rawDoc('Debugging should avoid patch churn. Find root cause first, then make the smallest fix and verify it.', 4, 'blog'),
+    rawDoc('/check 是 code review skill。先审 diff，把能自动修的修掉，需要判断的归拢，用证据验证。', 5, 'twitter'),
+    rawDoc('/read 是读一手资料，把 URL 或 PDF 转成干净 Markdown，保留来源，不依赖二手总结。', 6, 'blog'),
+    rawDoc('/write 帮技术写作。先明确受众和目的，再组织论证，最后打磨表达。', 7, 'twitter'),
+    rawDoc('/learn 用输出驱动学习。收集、消化、提纲、初稿、打磨、发布。', 8, 'blog'),
+    rawDoc('/health 用来检查 CLAUDE.md、rules、hooks、MCP 这些工具链配置。', 9, 'twitter'),
+  ];
+  const result = await buildSkillLibraryFromEvidence(persona(), soul(), { docs }, undefined);
+  assert.equal(result.library.origin_skills.length > 0, true);
+  assert.equal(result.report.status === 'ready' || result.report.status === 'pending', true);
+  assert.equal(result.library.distilled_skills.length + result.library.candidate_skill_pool.length > 0, true);
+  assert.ok(
+    result.library.origin_skills.some((item) => /debug|root|hunt|排查|根因/i.test(`${item.name} ${item.why} ${item.how}`))
+  );
+});
+
+test('evidence-first skill build keeps weak generic corpus pending instead of fabricating distilled skills', async () => {
+  const docs = [
+    rawDoc('今天喝了咖啡，天气不错。', 21),
+    rawDoc('这个项目挺有意思，之后再看看。', 22),
+  ];
+  const result = await buildSkillLibraryFromEvidence(persona(), soul(), { docs }, undefined);
+  assert.equal(result.report.status, 'pending');
+  assert.equal(result.library.distilled_skills.length, 0);
+});
+
+test('evidence-first skill build does not use memory signals as the only source', async () => {
+  const result = await buildSkillLibraryFromEvidence(persona(), soul(), {
+    docs: [],
+    memorySignals: [
+      '/hunt 的核心规则是没有一句话说清根因之前不许碰代码。先复现、加观测、验证假设，再修。',
+      '/check 是 code review skill。先审 diff，把能自动修的修掉，需要判断的归拢，用证据验证。',
+    ],
+  }, undefined);
+  assert.equal(result.report.status, 'failed');
+  assert.equal(result.report.failureReason, 'no_skill_evidence_docs');
+  assert.equal(result.library.origin_skills.length, 0);
+  assert.equal(result.library.distilled_skills.length, 0);
 });

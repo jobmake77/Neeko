@@ -40,6 +40,7 @@ test('shouldRetryProviderError identifies transient provider failures', () => {
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error('rate limit exceeded')), true);
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error('Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests')), true);
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error("You've reached your usage limit for this period.")), true);
+  assert.equal(__agentsTestables.shouldRetryProviderError(new Error("We're unable to verify your membership benefits at this time.")), true);
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error('resource exhausted while generating transcript')), true);
   assert.equal(__agentsTestables.shouldRetryProviderError(new Error('schema mismatch')), false);
 });

@@ -42,6 +42,8 @@ export interface PersonaSkillSummary {
   distilled_skills: Array<{ id: string; name: string; quality_score: number }>;
 }
 
+export type SkillBuildStatus = 'not_started' | 'running' | 'ready' | 'pending' | 'failed';
+
 export interface PersonaNetworkSummary {
   entity_count: number;
   relation_count: number;
@@ -583,6 +585,8 @@ export interface CultivationSummary {
   skill_summary: {
     origin_count: number;
     distilled_count: number;
+    build_status?: SkillBuildStatus;
+    quality_score?: number;
   };
   source_summary: {
     total_sources: number;

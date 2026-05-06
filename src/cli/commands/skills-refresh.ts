@@ -6,14 +6,17 @@ import { Persona, PersonaSchema } from '../../core/models/persona.js';
 import { Soul, SoulSchema } from '../../core/models/soul.js';
 import { MemoryStore } from '../../core/memory/store.js';
 import {
+  buildSkillLibraryFromEvidence,
   loadSkillLibrary,
-  refreshSkillLibraryFromSignals,
+  refreshSkillLibraryFromSignalsWithReport,
   saveSkillLibrary,
 } from '../../core/skills/library.js';
+import { RawDocument } from '../../core/models/memory.js';
+import { loadRawDocsCache } from '../../core/pipeline/evidence-routing.js';
 
 export async function cmdSkillsRefresh(
   slug: string,
-  options: { mode?: string } = {}
+  options: { mode?: string; fromMemory?: boolean; prepDocumentsPath?: string } = {}
 ): Promise<void> {
   const dir = settings.getPersonaDir(slug);
   const personaPath = join(dir, 'persona.json');
@@ -35,11 +38,46 @@ export async function cmdSkillsRefresh(
   const mode: 'quick' | 'full' = String(options.mode ?? 'quick').toLowerCase() === 'full' ? 'full' : 'quick';
   const signals = await buildMemorySignals(store, persona.memory_collection, soul, mode);
   const prev = loadSkillLibrary(dir, slug);
-  const library = await refreshSkillLibraryFromSignals(persona, soul, signals, prev);
+  let result;
+  if (options.fromMemory) {
+    result = await refreshSkillLibraryFromSignalsWithReport(persona, soul, signals, prev);
+  } else {
+    const docs = loadSkillRefreshDocs(dir, options.prepDocumentsPath);
+    result = await buildSkillLibraryFromEvidence(persona, soul, {
+      docs,
+      memorySignals: signals,
+      sourceBreakdown: docs.reduce<Record<string, number>>((acc, doc) => {
+        const key = doc.source_platform ?? doc.source_type ?? 'unknown';
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {}),
+      generatedAt: new Date().toISOString(),
+    }, prev);
+  }
+  const library = result.library;
   console.log('[SKILL_STAGE] skill_expand');
   saveSkillLibrary(dir, library);
   console.log('[SKILL_STAGE] skill_merge');
-  console.log(`skills refreshed: origins=${library.origin_skills.length}, distilled=${library.distilled_skills.length}`);
+  console.log(
+    `skills refreshed: status=${result.report.status} origins=${library.origin_skills.length} distilled=${library.distilled_skills.length} candidates=${library.candidate_skill_pool.length}`
+  );
+}
+
+function readJsonFile<T>(path: string, fallback: T): T {
+  if (!existsSync(path)) return fallback;
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadSkillRefreshDocs(dir: string, prepDocumentsPath?: string): RawDocument[] {
+  if (prepDocumentsPath && existsSync(prepDocumentsPath)) {
+    const docs = readJsonFile<RawDocument[]>(prepDocumentsPath, []);
+    if (Array.isArray(docs) && docs.length > 0) return docs;
+  }
+  return loadRawDocsCache(dir);
 }
 
 async function buildMemorySignals(

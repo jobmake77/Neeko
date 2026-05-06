@@ -659,6 +659,19 @@ export const SourceSyncCheckpointSchema = z.object({
 });
 export type SourceSyncCheckpoint = z.infer<typeof SourceSyncCheckpointSchema>;
 
+export const SkillBuildStatusSchema = z.enum(['not_started', 'running', 'ready', 'pending', 'failed']);
+export const SkillBuildReportSchema = z.object({
+  status: SkillBuildStatusSchema,
+  originCount: z.number().int().min(0),
+  distilledCount: z.number().int().min(0),
+  candidateCount: z.number().int().min(0),
+  pendingCount: z.number().int().min(0),
+  qualityScore: z.number().min(0).max(1),
+  failureReason: z.string().optional(),
+  evidenceSourceCount: z.number().int().min(0),
+  sourceDiversity: z.number().int().min(0),
+});
+
 export const CultivationSummarySchema = z.object({
   status: z.string(),
   progress_percent: z.number().int().min(0).max(100).default(0),
@@ -667,6 +680,8 @@ export const CultivationSummarySchema = z.object({
   skill_summary: z.object({
     origin_count: z.number().int().min(0).default(0),
     distilled_count: z.number().int().min(0).default(0),
+    build_status: SkillBuildStatusSchema.optional(),
+    quality_score: z.number().min(0).max(1).optional(),
   }).default({ origin_count: 0, distilled_count: 0 }),
   source_summary: z.object({
     total_sources: z.number().int().min(0).default(0),
@@ -785,6 +800,10 @@ export const PersonaConfigSchema = z.object({
     last_training_prep_id: z.string().optional(),
     last_deep_fetch_settled_clean_count: z.number().int().min(0).optional(),
     no_progress_deep_fetch_streak: z.number().int().min(0).optional(),
+    material_settled_at: z.string().datetime().optional(),
+    skill_build_status: SkillBuildStatusSchema.optional(),
+    last_skill_build_at: z.string().datetime().optional(),
+    last_skill_build_report: SkillBuildReportSchema.optional(),
     soft_closed_at: z.string().datetime().optional(),
     soft_close_reason: z.enum(['material_exhausted']).optional(),
   }).default({

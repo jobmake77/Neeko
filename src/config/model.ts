@@ -194,6 +194,70 @@ export function listAvailableProviders(role: ModelRuntimeRole = 'general'): Prov
   }).map((provider) => sanitizeProviderName(provider) as ProviderName);
 }
 
+export function buildProviderAttemptChain(
+  primary?: ModelRuntimeOverride,
+  role: ModelRuntimeRole = 'general'
+): ModelRuntimeOverride[] {
+  const fallbackPrimary = primary ?? resolvePreferredModelOverride(role);
+  const primaryProvider = fallbackPrimary?.provider;
+  const primaryModel = fallbackPrimary?.model;
+  const seen = new Set<string>();
+  const attempts: ModelRuntimeOverride[] = [];
+
+  const push = (provider?: ProviderName, model?: string) => {
+    if (!provider) return;
+    const resolvedModel = String(model || '').trim() || getDefaultModelForProvider(provider);
+    const key = `${provider}:${resolvedModel}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    attempts.push({ provider, model: resolvedModel });
+  };
+
+  push(primaryProvider, primaryModel);
+  for (const provider of listAvailableProviders(role)) {
+    if (provider === primaryProvider) continue;
+    push(provider, undefined);
+  }
+  return attempts;
+}
+
+export function shouldFailoverProviderError(error: unknown): boolean {
+  const message = String(error ?? '').toLowerCase();
+  return (
+    message.includes('quota exceeded') ||
+    message.includes('quota') ||
+    message.includes('usage limit') ||
+    message.includes('limit for this period') ||
+    message.includes('membership') ||
+    message.includes('membership benefits') ||
+    message.includes('unable to verify') ||
+    message.includes('resource exhausted') ||
+    message.includes('high demand') ||
+    message.includes('timeout') ||
+    message.includes('timed out') ||
+    message.includes('connection error') ||
+    message.includes('connection aborted') ||
+    message.includes('connection reset') ||
+    message.includes('429') ||
+    message.includes('rate limit') ||
+    message.includes('overloaded') ||
+    message.includes('temporar') ||
+    message.includes('network') ||
+    message.includes('socket') ||
+    message.includes('econnreset') ||
+    message.includes('econnrefused') ||
+    message.includes('etimedout') ||
+    message.includes('enotfound') ||
+    message.includes('503') ||
+    message.includes('502') ||
+    message.includes('504') ||
+    message.includes('500') ||
+    message.includes('fetch failed') ||
+    message.includes('bad gateway') ||
+    message.includes('service unavailable')
+  );
+}
+
 /**
  * 返回当前可用的 LLM 模型实例。
  * 优先使用 activeProvider 对应的 key；若该 key 为空则按顺序 fallback 到第一个有值的 provider。

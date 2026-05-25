@@ -739,6 +739,113 @@ test('read-only agent tool registry exposes safe tools and excludes disabled net
   );
 });
 
+test('read-only tool outputs are synthesized into bounded working context without raw paths', serial, async () => {
+  const ReadOnlyToolExecutor = requireRuntimeTestable('ReadOnlyToolExecutor');
+  const EvidenceSynthesizer = requireRuntimeTestable('EvidenceSynthesizer');
+  const now = '2026-05-05T07:30:00.000Z';
+  const conversationId = '15151515-1515-4515-8515-151515151515';
+  const context = {
+    conversation: makeConversation(conversationId, 'runtime-persona', now),
+    persona: {
+      slug: 'runtime-persona',
+      name: 'Runtime Persona',
+      status: 'available',
+      doc_count: 4,
+      memory_node_count: 3,
+      training_rounds: 1,
+      updated_at: now,
+    },
+    soul: {
+      language_style: { frequent_phrases: [] },
+      values: { core_beliefs: [] },
+      knowledge_domains: { expert: [] },
+      coverage_score: 0.66,
+    },
+    assetRelease: {
+      personaSlug: 'runtime-persona',
+      releaseId: '16161616-1616-4616-8616-161616161616',
+      generatedAt: now,
+      status: 'active',
+      sourceSnapshot: {
+        evidenceImportIds: [],
+        trainingPrepIds: [],
+        sourceSyncStateIds: [],
+      },
+      assets: {
+        memoryCollection: 'nico_runtime_persona',
+        relationGraphPath: '/private/raw/persona-web-relations.json',
+        provenanceReportPath: '/private/raw/provenance.json',
+      },
+      quality: {
+        evidenceCount: 8,
+        memoryNodeCount: 3,
+        skillCount: 1,
+        relationCount: 2,
+        confidence: 0.66,
+        knownGaps: ['missing_recent_work'],
+      },
+    },
+    personaSlug: 'runtime-persona',
+    personaName: 'Runtime Persona',
+    history: [
+      makeMessage('17171717-1717-4717-8717-171717171717', conversationId, 'assistant', 'Earlier runtime discussion.', now),
+    ],
+    sessionSummary: {
+      conversation_id: conversationId,
+      summary: 'The conversation is about bounded runtime design.',
+      updated_at: now,
+      message_count: 3,
+      candidate_count: 0,
+    },
+    processedAttachments: [],
+    systemInstructions: '',
+    personaContext: 'Runtime Persona',
+    historyContext: [],
+    retrievedMaterials: [],
+    availableSkills: [
+      {
+        skill: {
+          id: 'slow-fast-runtime',
+          displayName: 'Slow Fast Runtime Design',
+          description: 'Keep runtime stages explicit and bounded.',
+          permission: 'read',
+          enabled: true,
+        },
+        confidence: 0.91,
+        reason: 'The query asks about runtime architecture.',
+      },
+    ],
+    safetyPolicy: {
+      writeTargets: ['conversation_log', 'session_summary', 'memory_candidates', 'trace'],
+      forbiddenTargets: ['formal_persona', 'formal_soul', 'formal_memory', 'training_asset'],
+      maxToolSteps: 2,
+    },
+  };
+
+  const toolCalls = await new ReadOnlyToolExecutor().execute({
+    conversationId,
+    tools: [
+      { id: 'persona.skill.search', title: 'Persona skill search', description: 'Safe skill search.', permission: 'read', enabled: true },
+      { id: 'conversation.history.search', title: 'Conversation history search', description: 'Safe history search.', permission: 'read', enabled: true },
+      { id: 'persona.relation.search', title: 'Persona relation search', description: 'Safe relation search.', permission: 'read', enabled: true },
+    ],
+    context,
+    now,
+  });
+  const synthesized = new EvidenceSynthesizer().synthesize({
+    context,
+    intent: 'fact_lookup',
+    toolCalls,
+  });
+  const serialized = JSON.stringify(synthesized.workingContext);
+
+  assert.equal(serialized.includes('Slow Fast Runtime Design'), true);
+  assert.equal(serialized.includes('bounded runtime design'), true);
+  assert.equal(serialized.includes('relation context available'), true);
+  assert.equal(serialized.includes('/private/raw'), false);
+  assert.equal(serialized.length < 2200, true);
+});
+
 test('sendMessage runtime trace records the explicit single-entry multi-module stage sequence', serial, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'neeko-runtime-stage-sequence-'));
   const store = new WorkbenchStore(join(dataDir, 'workbench'));

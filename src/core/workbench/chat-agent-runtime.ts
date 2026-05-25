@@ -416,6 +416,11 @@ export class EvidenceSynthesizer {
     intent: AgentIntent;
     toolCalls: AgentToolCallTrace[];
   }): { evidenceBundle: AgentEvidenceBundle; workingContext: AgentWorkingContext } {
+    const toolFacts = input.toolCalls
+      .filter((toolCall) => toolCall.status === 'completed')
+      .map((toolCall) => compactAgentToolEvidence(toolCall.output_summary ?? toolCall.summary))
+      .filter(Boolean)
+      .slice(0, 4);
     const facts = [
       input.context.assetRelease
         ? `Active persona release ${input.context.assetRelease.releaseId} is ${input.context.assetRelease.status}.`
@@ -429,6 +434,7 @@ export class EvidenceSynthesizer {
       input.toolCalls.length > 0
         ? `${input.toolCalls.length} read-only tool contexts were prepared.`
         : undefined,
+      ...toolFacts,
     ].filter((item): item is string => Boolean(item));
     const uncertainties = input.context.assetRelease
       ? input.context.assetRelease.quality.knownGaps.slice(0, 4)
@@ -750,25 +756,47 @@ function sanitizeTraceError(error: unknown): string {
 
 function summarizeReadOnlyTool(tool: AgentToolDefinition, context: ChatAgentContext): string {
   if (tool.id === 'persona.memory.search') {
-    return `Prepared persona memory context for ${context.personaSlug}.`;
+    return `Persona memory context available: memory_nodes=${context.assetRelease?.quality.memoryNodeCount ?? context.persona.memory_node_count ?? 0}.`;
   }
   if (tool.id === 'persona.skill.search') {
-    return `Prepared ${context.availableSkills.length} persona skill context item(s).`;
+    if (context.availableSkills.length === 0) return 'Persona skill context available: no matching skills.';
+    const skills = context.availableSkills
+      .slice(0, 3)
+      .map((item) => {
+        const confidence = typeof item.confidence === 'number' ? ` confidence=${item.confidence.toFixed(2)}` : '';
+        const reason = item.reason ? ` reason=${compactAgentToolEvidence(item.reason, 120)}` : '';
+        return `${compactAgentToolEvidence(item.skill.displayName, 80)}${confidence}${reason}`;
+      })
+      .join(' | ');
+    return `Persona skill context available: ${skills}.`;
   }
   if (tool.id === 'persona.relation.search') {
     return context.assetRelease?.assets.relationGraphPath
-      ? 'Prepared persona relation graph context.'
+      ? `Persona relation context available: relations=${context.assetRelease.quality.relationCount}, evidence=${context.assetRelease.quality.evidenceCount}.`
       : 'Persona relation graph context is not available.';
   }
   if (tool.id === 'conversation.history.search') {
-    return `Prepared ${context.history.length} history message(s) and ${context.sessionSummary ? 'a session summary' : 'no session summary'}.`;
+    const summary = context.sessionSummary?.summary
+      ? ` summary=${compactAgentToolEvidence(context.sessionSummary.summary, 180)}`
+      : ' summary=none';
+    return `Conversation continuity context available: history_messages=${context.history.length}, summary_messages=${context.sessionSummary?.message_count ?? 0}.${summary}`;
   }
   if (tool.id === 'source.provenance.read') {
     return context.assetRelease?.assets.provenanceReportPath
-      ? 'Prepared source provenance summary context.'
+      ? `Source provenance context available: evidence=${context.assetRelease.quality.evidenceCount}, confidence=${context.assetRelease.quality.confidence.toFixed(2)}.`
       : 'Source provenance summary is not available.';
   }
   return `${tool.title} is reserved for the read-only tool layer.`;
+}
+
+function compactAgentToolEvidence(value: string, maxLength = 240): string {
+  const compacted = value
+    .replace(/(?:\/[A-Za-z0-9._ -]+)+/g, '[path]')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, '[id]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!compacted) return '';
+  return compacted.length <= maxLength ? compacted : `${compacted.slice(0, maxLength).trimEnd()}...`;
 }
 
 function summarizeToolInput(tool: AgentToolDefinition, context: ChatAgentContext): string {

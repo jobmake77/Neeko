@@ -745,6 +745,7 @@ test('sendMessage runtime trace records the explicit single-entry multi-module s
   const service = new WorkbenchService(store);
   const now = '2026-05-05T08:00:00.000Z';
   const conversationId = '17171717-1717-4717-8717-171717171717';
+  let receivedWorkingContext;
 
   try {
     store.saveConversation(makeConversation(conversationId, 'runtime-persona', now));
@@ -787,20 +788,23 @@ test('sendMessage runtime trace records the explicit single-entry multi-module s
         coverage_score: 0,
       },
     });
-    service.generateReply = async () => ({
-      text: 'A small runtime plus read-only tools keeps the agent bounded.',
-      triggeredSkills: [],
-      normalizedQuery: 'What projects did I build?',
-      retrievedMemories: [],
-      personaDimensions: ['knowledge_domains'],
-      orchestration: {
-        mode: 'answer',
-        intent: 'factual',
-        persona_stability: 'balanced',
-        answer_style: 'normal',
-        disclosure_protected: false,
-      },
-    });
+    service.generateReply = async (_persona, _soul, _messages, _modelOverride, workingContext) => {
+      receivedWorkingContext = workingContext;
+      return {
+        text: 'A small runtime plus read-only tools keeps the agent bounded.',
+        triggeredSkills: [],
+        normalizedQuery: 'What projects did I build?',
+        retrievedMemories: [],
+        personaDimensions: ['knowledge_domains'],
+        orchestration: {
+          mode: 'answer',
+          intent: 'factual',
+          persona_stability: 'balanced',
+          answer_style: 'normal',
+          disclosure_protected: false,
+        },
+      };
+    };
 
     const bundle = await service.sendMessage(
       conversationId,
@@ -828,8 +832,103 @@ test('sendMessage runtime trace records the explicit single-entry multi-module s
     ]);
     assert.equal(trace.stages.find((stage) => stage.type === 'intent_routed').metadata.intent, 'fact_lookup');
     assert.equal(store.listAgentToolCallTraces(conversationId).length > 0, true);
+    assert.ok(receivedWorkingContext);
+    assert.equal(receivedWorkingContext.summary.includes('intent=fact_lookup'), true);
     assert.equal('trace' in bundle, false);
     assert.equal('agent_trace' in bundle, false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('runtime passes synthesized working context into reply generation', serial, async () => {
+  const PersonaChatAgentRuntime = requireRuntimeTestable('PersonaChatAgentRuntime');
+  const dataDir = mkdtempSync(join(tmpdir(), 'neeko-runtime-working-context-'));
+  const store = new WorkbenchStore(join(dataDir, 'workbench'));
+  const now = '2026-05-05T09:00:00.000Z';
+  const conversationId = '19191919-1919-4919-8919-191919191919';
+  const userMessage = makeMessage(
+    '20202020-2020-4020-8020-202020202020',
+    conversationId,
+    'user',
+    'What projects did I build?',
+    now,
+  );
+  let receivedWorkingContext;
+
+  try {
+    store.saveConversation(makeConversation(conversationId, 'runtime-persona', now));
+    store.savePersonaAssetRelease({
+      personaSlug: 'runtime-persona',
+      releaseId: '21212121-2121-4121-8121-212121212121',
+      generatedAt: now,
+      status: 'active',
+      sourceSnapshot: {
+        evidenceImportIds: [],
+        trainingPrepIds: [],
+        sourceSyncStateIds: [],
+      },
+      assets: {
+        memoryCollection: 'nico_runtime_persona',
+        relationGraphPath: '/tmp/relation-graph.json',
+      },
+      quality: {
+        evidenceCount: 3,
+        memoryNodeCount: 2,
+        skillCount: 1,
+        relationCount: 1,
+        confidence: 0.7,
+        knownGaps: ['missing_recent_work'],
+      },
+    });
+
+    const runtime = new PersonaChatAgentRuntime({
+      store,
+      loadPersonaAssets: () => ({
+        persona: {
+          slug: 'runtime-persona',
+          name: 'Runtime Persona',
+          status: 'available',
+          doc_count: 0,
+          memory_node_count: 2,
+          training_rounds: 1,
+          updated_at: now,
+        },
+        soul: {
+          language_style: { frequent_phrases: [] },
+          values: { core_beliefs: [] },
+          knowledge_domains: { expert: [] },
+          coverage_score: 0.7,
+        },
+      }),
+      replyGenerator: async ({ workingContext }) => {
+        receivedWorkingContext = workingContext;
+        return {
+          text: 'Reply generated with bounded working context.',
+          triggeredSkills: [],
+          normalizedQuery: userMessage.content,
+          retrievedMemories: [],
+          personaDimensions: [],
+        };
+      },
+    });
+
+    await runtime.run({
+      conversationId,
+      userMessage,
+      history: [],
+      attachments: [],
+      modelOverride: { provider: 'openai', model: 'mock-chat' },
+      now,
+    });
+
+    assert.ok(receivedWorkingContext);
+    assert.equal(receivedWorkingContext.summary.includes('intent=fact_lookup'), true);
+    assert.equal(receivedWorkingContext.uncertainties.includes('missing_recent_work'), true);
+    assert.equal(
+      receivedWorkingContext.do_not_claim.includes('Do not expose internal release, memory, skill, trace, or tool wiring to the user.'),
+      true,
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

@@ -148,6 +148,7 @@ interface BoundedAgentLoopOptions {
     soul: Soul;
     messages: ConversationMessage[];
     modelOverride?: ChatModelOverride;
+    workingContext?: AgentWorkingContext;
   }) => Promise<ChatAgentRuntimeResponse>;
 }
 
@@ -525,12 +526,14 @@ export class BoundedAgentLoop {
     context: ChatAgentContext;
     userMessage: ConversationMessage;
     modelOverride?: ChatModelOverride;
+    workingContext?: AgentWorkingContext;
   }): Promise<ChatAgentRuntimeResponse> {
     return this.replyGenerator({
       persona: input.context.persona,
       soul: input.context.soul,
       messages: [...input.context.history, input.userMessage],
       modelOverride: input.modelOverride,
+      workingContext: input.workingContext,
     });
   }
 }
@@ -695,6 +698,7 @@ export class PersonaChatAgentRuntime {
         context,
         userMessage: input.userMessage,
         modelOverride: input.modelOverride,
+        workingContext: synthesized.workingContext,
       });
       trace = {
         ...trace,

@@ -14,7 +14,7 @@ import { Soul, SoulSchema } from '../models/soul.js';
 import { createPersona as createPersonaAsset } from '../models/persona.js';
 import { createEmptySoul } from '../models/soul.js';
 import { EvidenceItem } from '../models/evidence.js';
-import { loadSkillLibrary } from '../skills/library.js';
+import { getSkillLibraryPath, loadSkillLibrary } from '../skills/library.js';
 import { RawDocument } from '../models/memory.js';
 import { SoulRenderer } from '../soul/renderer.js';
 import {
@@ -48,6 +48,7 @@ import {
   ExtractionQualityAssessment,
   MemoryCandidate,
   NetworkAnswerPack,
+  PersonaAssetRelease,
   PersonaConfig,
   PersonaDetail,
   PersonaMutationResult,
@@ -78,6 +79,8 @@ import {
   PersonaChatAgentRuntime,
   createChatAgentTraceEvent,
   failChatAgentTrace,
+  replayChatAgentTrace,
+  toChatAgentTraceDiagnostic,
 } from './chat-agent-runtime.js';
 import { WorkbenchStore } from './store.js';
 import { getDefaultModelForProvider, resolveModelForOverride, type ProviderName } from '../../config/model.js';
@@ -824,6 +827,13 @@ function summarizeSources(sources: PersonaSource[]): { total_sources: number; en
 
 function normalizeHandle(value: string): string {
   return value.trim().replace(/^@/, '');
+}
+
+function currentPersonaReleaseId(slug: string, status: string, updatedAt?: string): string {
+  const hex = createHash('sha256')
+    .update([slug, status, updatedAt ?? 'legacy'].join(':'))
+    .digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 function inferHorizonYears(source: PersonaSource): number {
@@ -3593,6 +3603,7 @@ export class WorkbenchService {
     };
     this.validatePersonaConfig(config);
     this.store.savePersonaConfig(config);
+    this.ensurePersonaAssetRelease(slug, 'draft');
 
     const run = this.startCreateRunFromConfig(config);
     return {
@@ -4445,6 +4456,24 @@ export class WorkbenchService {
     return this.store.listMemoryCandidates(conversationId);
   }
 
+  getChatAgentTraceDiagnostic(conversationId: string, traceId: string) {
+    const trace = this.store.getChatAgentTrace(conversationId, traceId);
+    if (!trace) return null;
+    const messages = this.store.listMessages(conversationId);
+    return toChatAgentTraceDiagnostic(trace, {
+      userMessage: messages.find((item) => item.id === trace.user_message_id),
+      assistantMessage: trace.assistant_message_id
+        ? messages.find((item) => item.id === trace.assistant_message_id)
+        : undefined,
+    });
+  }
+
+  getChatAgentTraceReplay(conversationId: string, traceId: string) {
+    const trace = this.store.getChatAgentTrace(conversationId, traceId);
+    if (!trace) return null;
+    return replayChatAgentTrace(trace, { messages: this.store.listMessages(conversationId) });
+  }
+
   listPromotionHandoffs(personaSlug: string, conversationId?: string): PromotionHandoff[] {
     return this.store.listPromotionHandoffs(personaSlug, conversationId);
   }
@@ -5031,6 +5060,111 @@ export class WorkbenchService {
     mirrorPersonaWebArtifactsToPersonaDir(slug, personaArtifacts);
   }
 
+  getPersonaAssetRelease(slug: string): PersonaAssetRelease {
+    return this.ensurePersonaAssetRelease(slug);
+  }
+
+  private ensurePersonaAssetRelease(
+    slug: string,
+    status?: PersonaAssetRelease['status'],
+  ): PersonaAssetRelease {
+    const current = this.store.getPersonaAssetRelease(slug);
+    const next = this.buildPersonaAssetRelease(slug, status ?? current?.status);
+    if (
+      current
+      && current.status === next.status
+      && JSON.stringify(current.assets) === JSON.stringify(next.assets)
+      && JSON.stringify(current.sourceSnapshot) === JSON.stringify(next.sourceSnapshot)
+      && JSON.stringify(current.quality) === JSON.stringify(next.quality)
+    ) {
+      return current;
+    }
+    return this.store.savePersonaAssetRelease(next);
+  }
+
+  private buildPersonaAssetRelease(
+    slug: string,
+    status?: PersonaAssetRelease['status'],
+  ): PersonaAssetRelease {
+    const personaDir = settings.getPersonaDir(slug);
+    const config = this.store.getPersonaConfig(slug);
+    const summary = this.readPersonaSummary(slug) ?? this.readPersonaConfigSummary(slug);
+    const evidenceImports = this.store.listEvidenceImports(slug);
+    const trainingPreps = this.store.listTrainingPrepArtifacts(slug);
+    const skills = loadSkillLibrary(personaDir, slug);
+    const networkSummary = readPersonaNetworkSummary(slug, this.store.listDiscoveredSources(slug).filter((item) => item.status === 'pending').length);
+    const soulPath = join(personaDir, 'soul.yaml');
+    const skillLibraryPath = getSkillLibraryPath(personaDir);
+    const relationGraphPath = join(personaDir, 'persona-web-relations.json');
+    const contextPacksPath = join(personaDir, 'persona-web-contexts.json');
+    const provenanceReportPath = join(personaDir, 'persona-web-provenance-report.json');
+    const sourceSyncStateIds = (config?.sources ?? [])
+      .map((source) => this.getSourceSyncStatePath(source))
+      .filter((item): item is string => Boolean(item));
+    const inferredStatus: PersonaAssetRelease['status'] = status
+      ?? (config && this.isSoftClosedConfig(config)
+        ? 'soft_closed'
+        : summary && this.isPersonaReady(summary)
+          ? 'active'
+          : 'draft');
+    const evidenceCount = evidenceImports.reduce((sum, item) => sum + Math.max(0, item.item_count), 0);
+    const memoryNodeCount = Math.max(0, summary?.memory_node_count ?? 0);
+    const skillCount = skills.distilled_skills.length;
+    const relationCount = networkSummary.relation_count;
+    const signalCount = [
+      evidenceCount > 0,
+      memoryNodeCount > 0,
+      skillCount > 0,
+      relationCount > 0,
+    ].filter(Boolean).length;
+    const knownGaps = [
+      evidenceCount === 0 ? 'no_evidence_imports' : undefined,
+      memoryNodeCount === 0 ? 'no_memory_nodes' : undefined,
+      skillCount === 0 ? 'no_distilled_skills' : undefined,
+      relationCount === 0 ? 'no_relation_graph' : undefined,
+    ].filter((item): item is string => Boolean(item));
+    return {
+      personaSlug: slug,
+      releaseId: currentPersonaReleaseId(slug, inferredStatus, config?.updated_at ?? summary?.updated_at),
+      generatedAt: new Date().toISOString(),
+      status: inferredStatus,
+      sourceSnapshot: {
+        evidenceImportIds: evidenceImports.map((item) => item.id),
+        trainingPrepIds: trainingPreps.map((item) => item.id),
+        sourceSyncStateIds,
+      },
+      assets: {
+        soulPath: existsSync(soulPath) ? soulPath : undefined,
+        memoryCollection: this.readPersonaAssetMemoryCollection(slug),
+        skillLibraryPath: existsSync(skillLibraryPath) ? skillLibraryPath : undefined,
+        relationGraphPath: existsSync(relationGraphPath) ? relationGraphPath : undefined,
+        contextPacksPath: existsSync(contextPacksPath) ? contextPacksPath : undefined,
+        provenanceReportPath: existsSync(provenanceReportPath) ? provenanceReportPath : undefined,
+      },
+      quality: {
+        evidenceCount,
+        memoryNodeCount,
+        skillCount,
+        relationCount,
+        confidence: Math.min(1, signalCount / 4),
+        knownGaps,
+      },
+    };
+  }
+
+  private readPersonaAssetMemoryCollection(slug: string): string {
+    try {
+      const personaPath = join(settings.getPersonaDir(slug), 'persona.json');
+      if (existsSync(personaPath)) {
+        const persona = PersonaSchema.parse(JSON.parse(readFileSync(personaPath, 'utf-8')));
+        return persona.memory_collection;
+      }
+    } catch {
+      // Fall through to the legacy deterministic collection name.
+    }
+    return `nico_${slug}`;
+  }
+
   private ensurePersonaWebArtifactsFromTrainingPrep(
     prep: TrainingPrepArtifact,
     targetName: string,
@@ -5269,7 +5403,7 @@ export class WorkbenchService {
     });
     mirrorPersonaWebArtifactsToPersonaDir(handoff.persona_slug, personaWeb?.artifacts);
 
-    return this.store.saveTrainingPrepArtifact({
+    const saved = this.store.saveTrainingPrepArtifact({
       id: prepId,
       persona_slug: handoff.persona_slug,
       conversation_id: handoff.conversation_id,
@@ -5283,6 +5417,8 @@ export class WorkbenchService {
       created_at: now,
       updated_at: now,
     });
+    this.ensurePersonaAssetRelease(handoff.persona_slug, 'draft');
+    return saved;
   }
 
   private buildDiscoveryQueries(config: PersonaConfig): string[] {
@@ -6692,6 +6828,7 @@ export class WorkbenchService {
         updated_at: nextUpdatedAt,
       });
     }
+    this.ensurePersonaAssetRelease(slug, 'soft_closed');
     return {
       ...base,
       status: 'available',
@@ -7448,7 +7585,7 @@ export class WorkbenchService {
       prepArtifactId: prepId,
     });
     mirrorPersonaWebArtifactsToPersonaDir(personaSlug, personaWeb?.artifacts);
-    return this.store.saveTrainingPrepArtifact({
+    const saved = this.store.saveTrainingPrepArtifact({
       id: prepId,
       persona_slug: personaSlug,
       status: 'drafted',
@@ -7460,6 +7597,8 @@ export class WorkbenchService {
       created_at: now,
       updated_at: now,
     });
+    this.ensurePersonaAssetRelease(personaSlug, 'draft');
+    return saved;
   }
 
   exportTrainingPrep(prepId: string, format: 'markdown' | 'json' = 'markdown'): TrainingPrepExport {
@@ -9091,6 +9230,9 @@ export class WorkbenchService {
       base = this.promotePersonaToReady(slug, base, trainingReport);
     }
     config = this.store.getPersonaConfig(slug);
+    if (config || existsSync(settings.getPersonaDir(slug))) {
+      this.ensurePersonaAssetRelease(slug);
+    }
     const stage = this.resolveStage(base.status, trainingContext, trainingReport);
     const cleanDocumentCount = Math.max(0, Math.round(base.doc_count ?? 0));
     const realtimeDocumentCount = config
@@ -9291,6 +9433,7 @@ export class WorkbenchService {
         updated_at: nextUpdatedAt,
       });
     }
+    this.ensurePersonaAssetRelease(slug, 'active');
 
     return {
       ...summary,

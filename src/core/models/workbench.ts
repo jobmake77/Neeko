@@ -411,6 +411,49 @@ export const TrainingPrepArtifactSchema = z.object({
 });
 export type TrainingPrepArtifact = z.infer<typeof TrainingPrepArtifactSchema>;
 
+export const PersonaAssetReleaseStatusSchema = z.enum(['draft', 'active', 'soft_closed', 'superseded']);
+export type PersonaAssetReleaseStatus = z.infer<typeof PersonaAssetReleaseStatusSchema>;
+
+export const PersonaAssetReleaseSchema = z.object({
+  personaSlug: z.string(),
+  releaseId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  status: PersonaAssetReleaseStatusSchema,
+  sourceSnapshot: z.object({
+    evidenceImportIds: z.array(z.string().uuid()).default([]),
+    trainingPrepIds: z.array(z.string().uuid()).default([]),
+    sourceSyncStateIds: z.array(z.string()).default([]),
+  }).default({
+    evidenceImportIds: [],
+    trainingPrepIds: [],
+    sourceSyncStateIds: [],
+  }),
+  assets: z.object({
+    soulPath: z.string().optional(),
+    memoryCollection: z.string(),
+    skillLibraryPath: z.string().optional(),
+    relationGraphPath: z.string().optional(),
+    contextPacksPath: z.string().optional(),
+    provenanceReportPath: z.string().optional(),
+  }),
+  quality: z.object({
+    evidenceCount: z.number().int().min(0).default(0),
+    memoryNodeCount: z.number().int().min(0).default(0),
+    skillCount: z.number().int().min(0).default(0),
+    relationCount: z.number().int().min(0).default(0),
+    confidence: z.number().min(0).max(1).default(0),
+    knownGaps: z.array(z.string()).default([]),
+  }).default({
+    evidenceCount: 0,
+    memoryNodeCount: 0,
+    skillCount: 0,
+    relationCount: 0,
+    confidence: 0,
+    knownGaps: [],
+  }),
+});
+export type PersonaAssetRelease = z.infer<typeof PersonaAssetReleaseSchema>;
+
 export const SessionSummarySchema = z.object({
   conversation_id: z.string().uuid(),
   summary: z.string(),
@@ -422,6 +465,67 @@ export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
 export const SkillPermissionSchema = z.enum(['read', 'write', 'network', 'filesystem', 'dangerous']);
 export type SkillPermission = z.infer<typeof SkillPermissionSchema>;
+
+export const AgentToolPermissionSchema = z.enum(['read', 'network_read', 'write', 'filesystem', 'dangerous']);
+export type AgentToolPermission = z.infer<typeof AgentToolPermissionSchema>;
+
+export const AgentToolDefinitionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string(),
+  permission: AgentToolPermissionSchema,
+  inputSchema: z.unknown().optional(),
+  outputSchema: z.unknown().optional(),
+  enabled: z.boolean().default(true),
+});
+export type AgentToolDefinition = z.infer<typeof AgentToolDefinitionSchema>;
+
+export const AgentToolCallTraceSchema = z.object({
+  id: z.string().uuid(),
+  tool_id: z.string(),
+  permission: AgentToolPermissionSchema,
+  status: z.enum(['planned', 'completed', 'failed', 'skipped']),
+  started_at: z.string().datetime(),
+  finished_at: z.string().datetime().optional(),
+  summary: z.string(),
+  input_summary: z.string().optional(),
+  output_summary: z.string().optional(),
+  error: z.string().optional(),
+});
+export type AgentToolCallTrace = z.infer<typeof AgentToolCallTraceSchema>;
+
+export const AgentEvidenceBundleSchema = z.object({
+  facts: z.array(z.string()).default([]),
+  uncertainties: z.array(z.string()).default([]),
+  persona_voice_hints: z.array(z.string()).default([]),
+  do_not_claim: z.array(z.string()).default([]),
+  tool_call_ids: z.array(z.string().uuid()).default([]),
+});
+export type AgentEvidenceBundle = z.infer<typeof AgentEvidenceBundleSchema>;
+
+export const AgentWorkingContextSchema = z.object({
+  facts: z.array(z.string()).default([]),
+  uncertainties: z.array(z.string()).default([]),
+  persona_voice_hints: z.array(z.string()).default([]),
+  do_not_claim: z.array(z.string()).default([]),
+  summary: z.string(),
+});
+export type AgentWorkingContext = z.infer<typeof AgentWorkingContextSchema>;
+
+export const AgentTurnStateSchema = z.object({
+  id: z.string().uuid(),
+  conversation_id: z.string().uuid(),
+  persona_slug: z.string(),
+  release_id: z.string().uuid().optional(),
+  status: z.enum(['running', 'completed', 'failed']),
+  intent: z.enum(['chat', 'fact_lookup', 'persona_voice', 'tool_read', 'clarify', 'cannot_answer']).default('chat'),
+  tool_calls: z.array(AgentToolCallTraceSchema).default([]),
+  evidence_bundle: AgentEvidenceBundleSchema.optional(),
+  working_context: AgentWorkingContextSchema.optional(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+export type AgentTurnState = z.infer<typeof AgentTurnStateSchema>;
 
 export const SkillDefinitionSchema = z.object({
   id: z.string(),
@@ -451,7 +555,12 @@ export const ChatAgentTraceStatusSchema = z.enum(['running', 'completed', 'faile
 export type ChatAgentTraceStatus = z.infer<typeof ChatAgentTraceStatusSchema>;
 
 export const ChatAgentTraceEventTypeSchema = z.enum([
+  'input_received',
   'context_assembled',
+  'intent_routed',
+  'tool_planned',
+  'tool_executed',
+  'evidence_synthesized',
   'memory_retrieved',
   'skill_selected',
   'llm_called',

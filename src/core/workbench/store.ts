@@ -10,10 +10,14 @@ import {
   ConversationSchema,
   ChatAgentTrace,
   ChatAgentTraceSchema,
+  AgentToolCallTrace,
+  AgentToolCallTraceSchema,
   DiscoveredSourceCandidate,
   DiscoveredSourceCandidateSchema,
   MemoryCandidate,
   MemoryCandidateSchema,
+  PersonaAssetRelease,
+  PersonaAssetReleaseSchema,
   PromotionHandoff,
   PromotionHandoffSchema,
   PersonaConfig,
@@ -115,6 +119,18 @@ export class WorkbenchStore {
 
   getPersonaConfigPath(slug: string): string {
     return join(this.getPersonaDir(slug), 'persona-config.json');
+  }
+
+  getPersonaAssetReleasePath(slug: string): string {
+    return join(this.getPersonaDir(slug), 'persona-asset-release.json');
+  }
+
+  private getAgentToolTraceDir(conversationId: string): string {
+    return join(this.getConversationDir(conversationId), 'agent-tool-traces');
+  }
+
+  private getAgentToolTracePath(conversationId: string, traceId: string): string {
+    return join(this.getAgentToolTraceDir(conversationId), `${traceId}.json`);
   }
 
   getDiscoveredSourcesPath(slug: string): string {
@@ -318,6 +334,35 @@ export class WorkbenchStore {
 
   getLatestChatAgentTrace(conversationId: string): ChatAgentTrace | null {
     return this.listChatAgentTraces(conversationId)[0] ?? null;
+  }
+
+  savePersonaAssetRelease(release: PersonaAssetRelease): PersonaAssetRelease {
+    const parsed = PersonaAssetReleaseSchema.parse(release);
+    writeJsonFile(this.getPersonaAssetReleasePath(parsed.personaSlug), parsed);
+    return parsed;
+  }
+
+  getPersonaAssetRelease(slug: string): PersonaAssetRelease | null {
+    const raw = readJsonFile<PersonaAssetRelease | null>(this.getPersonaAssetReleasePath(slug), null);
+    if (!raw) return null;
+    return PersonaAssetReleaseSchema.parse(raw);
+  }
+
+  saveAgentToolCallTrace(conversationId: string, trace: AgentToolCallTrace): AgentToolCallTrace {
+    const parsed = AgentToolCallTraceSchema.parse(trace);
+    writeJsonFile(this.getAgentToolTracePath(conversationId, parsed.id), parsed);
+    return parsed;
+  }
+
+  listAgentToolCallTraces(conversationId: string): AgentToolCallTrace[] {
+    const dir = this.getAgentToolTraceDir(conversationId);
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => readJsonFile<AgentToolCallTrace | null>(join(dir, entry.name), null))
+      .filter((item): item is AgentToolCallTrace => Boolean(item))
+      .map((item) => AgentToolCallTraceSchema.parse(item))
+      .sort((a, b) => b.started_at.localeCompare(a.started_at));
   }
 
   saveRun(run: WorkbenchRun): WorkbenchRun {

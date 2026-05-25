@@ -645,3 +645,192 @@ test('SkillRegistry excludes disabled and high-permission skills from automatic 
     ['read-context'],
   );
 });
+
+test('persona asset release can be inferred for legacy trained personas and persisted by the store', serial, () => {
+  const PersonaAssetReleaseSchema = requireRuntimeTestable('PersonaAssetReleaseSchema');
+  const originalDataDir = settings.get('neekoDataDir');
+  const dataDir = mkdtempSync(join(tmpdir(), 'neeko-asset-release-'));
+  const slug = 'legacy-release-persona';
+  const now = '2026-05-05T07:00:00.000Z';
+  const personaDir = join(dataDir, 'personas', slug);
+  const store = new WorkbenchStore(join(dataDir, 'workbench'));
+  const service = new WorkbenchService(store);
+
+  try {
+    settings.set('neekoDataDir', dataDir);
+    mkdirSync(personaDir, { recursive: true });
+    writeFileSync(join(personaDir, 'soul.yaml'), 'target_name: Legacy Release Persona\n', 'utf-8');
+    writeFileSync(join(personaDir, 'persona-web-relations.json'), '[]', 'utf-8');
+    writeFileSync(join(personaDir, 'persona-web-contexts.json'), '[]', 'utf-8');
+    writeFileSync(join(personaDir, 'persona-web-provenance-report.json'), '{}', 'utf-8');
+    writeFileSync(join(personaDir, 'skills.json'), JSON.stringify({
+      schema_version: 2,
+      persona_slug: slug,
+      version: 1,
+      updated_at: now,
+      source_trace: [],
+      origin_skills: [],
+      distilled_skills: [],
+      candidate_skill_pool: [],
+      clusters: [],
+      expanded_skills: [],
+      pending_candidates: [],
+    }), 'utf-8');
+    writeFileSync(join(personaDir, 'persona.json'), JSON.stringify({
+      id: 'abababab-abab-4bab-8bab-abababababab',
+      name: 'Legacy Release Persona',
+      slug,
+      mode: 'single',
+      source_targets: ['legacy'],
+      soul_path: 'soul.yaml',
+      memory_collection: `nico_${slug}`,
+      status: 'available',
+      training_rounds: 1,
+      memory_node_count: 3,
+      doc_count: 12,
+      created_at: now,
+      updated_at: now,
+    }, null, 2), 'utf-8');
+    store.savePersonaConfig({
+      persona_slug: slug,
+      name: 'Legacy Release Persona',
+      sources: [],
+      update_policy: {
+        auto_check_remote: true,
+        check_interval_minutes: 60,
+        strategy: 'incremental',
+      },
+      updated_at: now,
+    });
+
+    const release = service.getPersonaAssetRelease(slug);
+    const parsed = PersonaAssetReleaseSchema.parse(release);
+
+    assert.equal(parsed.personaSlug, slug);
+    assert.equal(parsed.status, 'active');
+    assert.equal(parsed.assets.memoryCollection, `nico_${slug}`);
+    assert.equal(parsed.assets.soulPath.endsWith('soul.yaml'), true);
+    assert.equal(parsed.quality.memoryNodeCount, 3);
+    assert.deepEqual(store.getPersonaAssetRelease(slug), parsed);
+  } finally {
+    settings.set('neekoDataDir', originalDataDir);
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('read-only agent tool registry exposes safe tools and excludes disabled network adapters', serial, () => {
+  const ReadOnlyToolRegistry = requireRuntimeTestable('ReadOnlyToolRegistry');
+  const selectExecutableAgentTools = requireRuntimeTestable('selectExecutableAgentTools');
+  const tools = new ReadOnlyToolRegistry().listTools();
+
+  assert.equal(tools.some((tool) => tool.id === 'persona.memory.search'), true);
+  assert.equal(tools.some((tool) => tool.id === 'persona.skill.search'), true);
+  assert.equal(tools.some((tool) => tool.id === 'persona.relation.search'), true);
+  assert.equal(tools.some((tool) => tool.id === 'web.page.read'), false);
+  assert.equal(tools.every((tool) => tool.permission === 'read' || tool.permission === 'network_read'), true);
+  assert.deepEqual(
+    selectExecutableAgentTools([
+      { id: 'safe', title: 'Safe', description: 'Safe read.', permission: 'read', enabled: true },
+      { id: 'off', title: 'Off', description: 'Disabled read.', permission: 'read', enabled: false },
+      { id: 'write', title: 'Write', description: 'Unsafe write.', permission: 'write', enabled: true },
+      { id: 'danger', title: 'Danger', description: 'Dangerous.', permission: 'dangerous', enabled: true },
+    ]).map((tool) => tool.id),
+    ['safe'],
+  );
+});
+
+test('sendMessage runtime trace records the explicit single-entry multi-module stage sequence', serial, async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'neeko-runtime-stage-sequence-'));
+  const store = new WorkbenchStore(join(dataDir, 'workbench'));
+  const service = new WorkbenchService(store);
+  const now = '2026-05-05T08:00:00.000Z';
+  const conversationId = '17171717-1717-4717-8717-171717171717';
+
+  try {
+    store.saveConversation(makeConversation(conversationId, 'runtime-persona', now));
+    store.savePersonaAssetRelease({
+      personaSlug: 'runtime-persona',
+      releaseId: '18181818-1818-4818-8818-181818181818',
+      generatedAt: now,
+      status: 'active',
+      sourceSnapshot: {
+        evidenceImportIds: [],
+        trainingPrepIds: [],
+        sourceSyncStateIds: [],
+      },
+      assets: {
+        memoryCollection: 'nico_runtime_persona',
+      },
+      quality: {
+        evidenceCount: 0,
+        memoryNodeCount: 0,
+        skillCount: 0,
+        relationCount: 0,
+        confidence: 0.25,
+        knownGaps: ['no_relation_graph'],
+      },
+    });
+    service.loadPersonaAssets = () => ({
+      persona: {
+        slug: 'runtime-persona',
+        name: 'Runtime Persona',
+        status: 'available',
+        doc_count: 0,
+        memory_node_count: 0,
+        training_rounds: 0,
+        updated_at: now,
+      },
+      soul: {
+        language_style: { frequent_phrases: [] },
+        values: { core_beliefs: [] },
+        knowledge_domains: { expert: [] },
+        coverage_score: 0,
+      },
+    });
+    service.generateReply = async () => ({
+      text: 'A small runtime plus read-only tools keeps the agent bounded.',
+      triggeredSkills: [],
+      normalizedQuery: 'What projects did I build?',
+      retrievedMemories: [],
+      personaDimensions: ['knowledge_domains'],
+      orchestration: {
+        mode: 'answer',
+        intent: 'factual',
+        persona_stability: 'balanced',
+        answer_style: 'normal',
+        disclosure_protected: false,
+      },
+    });
+
+    const bundle = await service.sendMessage(
+      conversationId,
+      'What projects did I build?',
+      [],
+      { provider: 'openai', model: 'mock-chat' },
+    );
+    const trace = store.listChatAgentTraces(conversationId)[0];
+    const stageTypes = trace.stages.map((stage) => stage.type);
+
+    assert.equal(bundle.messages.length, 2);
+    assert.deepEqual(stageTypes, [
+      'input_received',
+      'context_assembled',
+      'intent_routed',
+      'skill_selected',
+      'tool_planned',
+      'tool_executed',
+      'evidence_synthesized',
+      'llm_called',
+      'memory_retrieved',
+      'reply_finalized',
+      'candidate_generated',
+      'summary_updated',
+    ]);
+    assert.equal(trace.stages.find((stage) => stage.type === 'intent_routed').metadata.intent, 'fact_lookup');
+    assert.equal(store.listAgentToolCallTraces(conversationId).length > 0, true);
+    assert.equal('trace' in bundle, false);
+    assert.equal('agent_trace' in bundle, false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

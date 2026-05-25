@@ -5,6 +5,11 @@ import { Soul } from '../models/soul.js';
 import { MemoryNode } from '../models/memory.js';
 import {
   AttachmentRef,
+  AgentEvidenceBundle,
+  AgentToolCallTrace,
+  AgentToolDefinition,
+  AgentTurnState,
+  AgentWorkingContext,
   ChatAgentSafetyPolicy,
   ChatAgentTrace,
   ChatAgentTraceEvent,
@@ -17,6 +22,7 @@ import {
   ConversationOrchestration,
   MemoryCandidate,
   NetworkAnswerPack,
+  PersonaAssetRelease,
   SessionSummary,
   SkillDefinition,
   SkillSelection,
@@ -110,6 +116,7 @@ export interface ChatAgentContext {
   conversation: Conversation;
   persona: Persona;
   soul: Soul;
+  assetRelease: PersonaAssetRelease | null;
   personaSlug: string;
   personaName: string;
   history: ConversationMessage[];
@@ -132,6 +139,7 @@ interface ContextAssemblerOptions {
   store: WorkbenchStore;
   loadPersonaAssets: (slug: string) => PersonaAssets;
   skillRegistry?: SkillRegistry;
+  toolRegistry?: ReadOnlyToolRegistry;
 }
 
 interface BoundedAgentLoopOptions {
@@ -144,6 +152,8 @@ interface BoundedAgentLoopOptions {
 }
 
 interface PersonaChatAgentRuntimeOptions extends ContextAssemblerOptions, BoundedAgentLoopOptions {}
+
+type AgentIntent = AgentTurnState['intent'];
 
 export function createChatAgentTraceEvent(
   type: ChatAgentTraceEventType,
@@ -279,6 +289,180 @@ export class SkillRegistry {
   }
 }
 
+export function selectExecutableAgentTools(tools: AgentToolDefinition[]): AgentToolDefinition[] {
+  return tools.filter((tool) => tool.enabled && (tool.permission === 'read' || tool.permission === 'network_read'));
+}
+
+export class ReadOnlyToolRegistry {
+  listTools(): AgentToolDefinition[] {
+    return selectExecutableAgentTools([
+      {
+        id: 'persona.memory.search',
+        title: 'Persona memory search',
+        description: 'Searches the active persona memory collection for relevant long-term context.',
+        permission: 'read',
+        enabled: true,
+      },
+      {
+        id: 'persona.skill.search',
+        title: 'Persona skill search',
+        description: 'Searches distilled persona skills and methods for the current turn.',
+        permission: 'read',
+        enabled: true,
+      },
+      {
+        id: 'persona.relation.search',
+        title: 'Persona relation search',
+        description: 'Searches relation, project, and background context assets for grounded claims.',
+        permission: 'read',
+        enabled: true,
+      },
+      {
+        id: 'conversation.history.search',
+        title: 'Conversation history search',
+        description: 'Reads the current thread history and summary for local continuity.',
+        permission: 'read',
+        enabled: true,
+      },
+      {
+        id: 'web.page.read',
+        title: 'Web page read',
+        description: 'Reserved read-only adapter for URL reading through the approved tool layer.',
+        permission: 'network_read',
+        enabled: false,
+      },
+      {
+        id: 'web.search',
+        title: 'Web search',
+        description: 'Reserved read-only adapter for external search through the approved tool layer.',
+        permission: 'network_read',
+        enabled: false,
+      },
+      {
+        id: 'source.provenance.read',
+        title: 'Source provenance read',
+        description: 'Reads source provenance summaries without exposing internal raw paths.',
+        permission: 'read',
+        enabled: true,
+      },
+    ]);
+  }
+
+  getTool(id: string): AgentToolDefinition | undefined {
+    return this.listTools().find((tool) => tool.id === id);
+  }
+}
+
+export class IntentRouter {
+  route(input: { userMessage: string; attachments: AttachmentRef[] }): AgentIntent {
+    const message = input.userMessage.trim();
+    if (message.length === 0 && input.attachments.length === 0) return 'clarify';
+    if (/https?:\/\/\S+/i.test(message)) return 'tool_read';
+    if (/(项目|作品|仓库|repo|github|关系|认识|合作|做过|背景|经历|观点|事实|fact|project|relation)/i.test(message)) {
+      return 'fact_lookup';
+    }
+    if (/(你会怎么|你的风格|你通常|以.*口吻|人格|voice|style)/i.test(message)) return 'persona_voice';
+    return 'chat';
+  }
+}
+
+export class ReadOnlyToolPlanner {
+  plan(input: {
+    intent: AgentIntent;
+    context: ChatAgentContext;
+    tools: AgentToolDefinition[];
+    maxTools?: number;
+  }): AgentToolDefinition[] {
+    const selected: AgentToolDefinition[] = [];
+    const push = (id: string) => {
+      const tool = input.tools.find((item) => item.id === id);
+      if (tool && !selected.some((item) => item.id === tool.id)) selected.push(tool);
+    };
+    if (input.context.availableSkills.length > 0) push('persona.skill.search');
+    if (input.context.history.length > 0 || input.context.sessionSummary) push('conversation.history.search');
+    if (input.intent === 'fact_lookup' || input.intent === 'persona_voice') push('persona.memory.search');
+    if (input.intent === 'fact_lookup') push('persona.relation.search');
+    if (input.context.assetRelease?.assets.provenanceReportPath) push('source.provenance.read');
+    return selected.slice(0, input.maxTools ?? Math.max(1, input.context.safetyPolicy.maxToolSteps));
+  }
+}
+
+export class ReadOnlyToolExecutor {
+  async execute(input: {
+    conversationId: string;
+    tools: AgentToolDefinition[];
+    context: ChatAgentContext;
+    now?: string;
+  }): Promise<AgentToolCallTrace[]> {
+    const now = input.now ?? new Date().toISOString();
+    return input.tools.map((tool) => ({
+      id: crypto.randomUUID(),
+      tool_id: tool.id,
+      permission: tool.permission,
+      status: 'completed',
+      started_at: now,
+      finished_at: now,
+      summary: summarizeReadOnlyTool(tool, input.context),
+      input_summary: summarizeToolInput(tool, input.context),
+      output_summary: summarizeReadOnlyTool(tool, input.context),
+    }));
+  }
+}
+
+export class EvidenceSynthesizer {
+  synthesize(input: {
+    context: ChatAgentContext;
+    intent: AgentIntent;
+    toolCalls: AgentToolCallTrace[];
+  }): { evidenceBundle: AgentEvidenceBundle; workingContext: AgentWorkingContext } {
+    const facts = [
+      input.context.assetRelease
+        ? `Active persona release ${input.context.assetRelease.releaseId} is ${input.context.assetRelease.status}.`
+        : undefined,
+      input.context.sessionSummary
+        ? `Conversation summary is available with ${input.context.sessionSummary.message_count} messages.`
+        : undefined,
+      input.context.availableSkills.length > 0
+        ? `${input.context.availableSkills.length} read-only persona skill contexts are relevant.`
+        : undefined,
+      input.toolCalls.length > 0
+        ? `${input.toolCalls.length} read-only tool contexts were prepared.`
+        : undefined,
+    ].filter((item): item is string => Boolean(item));
+    const uncertainties = input.context.assetRelease
+      ? input.context.assetRelease.quality.knownGaps.slice(0, 4)
+      : ['no_active_persona_asset_release'];
+    const personaVoiceHints = input.context.availableSkills
+      .map((item) => item.skill.displayName)
+      .slice(0, 3);
+    const doNotClaim = [
+      'Do not present temporary tool results as permanent persona memory.',
+      'Do not expose internal release, memory, skill, trace, or tool wiring to the user.',
+    ];
+    const evidenceBundle: AgentEvidenceBundle = {
+      facts,
+      uncertainties,
+      persona_voice_hints: personaVoiceHints,
+      do_not_claim: doNotClaim,
+      tool_call_ids: input.toolCalls.map((item) => item.id),
+    };
+    return {
+      evidenceBundle,
+      workingContext: {
+        facts,
+        uncertainties,
+        persona_voice_hints: personaVoiceHints,
+        do_not_claim: doNotClaim,
+        summary: [
+          `intent=${input.intent}`,
+          facts.length > 0 ? facts.join(' ') : 'No additional read-only context was required.',
+          uncertainties.length > 0 ? `Known gaps: ${uncertainties.join(', ')}.` : '',
+        ].filter(Boolean).join(' '),
+      },
+    };
+  }
+}
+
 export class ContextAssembler {
   private readonly store: WorkbenchStore;
   private readonly loadPersonaAssets: (slug: string) => PersonaAssets;
@@ -294,6 +478,7 @@ export class ContextAssembler {
     const conversation = this.store.getConversation(input.conversationId);
     if (!conversation) throw new Error(`Conversation "${input.conversationId}" not found.`);
     const { persona, soul } = this.loadPersonaAssets(conversation.persona_slug);
+    const assetRelease = this.store.getPersonaAssetRelease(conversation.persona_slug);
     const sessionSummary = this.store.getSessionSummary(input.conversationId);
     const availableSkills = this.skillRegistry.selectForTurn({
       userMessage: input.userMessage.content,
@@ -304,6 +489,7 @@ export class ContextAssembler {
       conversation,
       persona,
       soul,
+      assetRelease,
       personaSlug: conversation.persona_slug,
       personaName: persona.name,
       history: input.history,
@@ -322,7 +508,7 @@ export class ContextAssembler {
       safetyPolicy: {
         writeTargets: ['conversation_log', 'session_summary', 'memory_candidates', 'trace'],
         forbiddenTargets: ['formal_persona', 'formal_soul', 'formal_memory', 'training_asset'],
-        maxToolSteps: 0,
+        maxToolSteps: 2,
       },
     };
   }
@@ -353,11 +539,17 @@ export class PersonaChatAgentRuntime {
   private readonly store: WorkbenchStore;
   private readonly assembler: ContextAssembler;
   private readonly loop: BoundedAgentLoop;
+  private readonly toolRegistry: ReadOnlyToolRegistry;
+  private readonly intentRouter = new IntentRouter();
+  private readonly toolPlanner = new ReadOnlyToolPlanner();
+  private readonly toolExecutor = new ReadOnlyToolExecutor();
+  private readonly evidenceSynthesizer = new EvidenceSynthesizer();
 
   constructor(options: PersonaChatAgentRuntimeOptions) {
     this.store = options.store;
     this.assembler = new ContextAssembler(options);
     this.loop = new BoundedAgentLoop(options);
+    this.toolRegistry = options.toolRegistry ?? new ReadOnlyToolRegistry();
   }
 
   async run(input: ChatAgentRuntimeInput): Promise<ChatAgentRuntimeResult> {
@@ -378,9 +570,37 @@ export class PersonaChatAgentRuntime {
       stages: [],
       status: 'running',
     };
+    let turnState: AgentTurnState | null = null;
 
     try {
+      trace = {
+        ...trace,
+        stages: [
+          ...trace.stages,
+          createChatAgentTraceEvent('input_received', 'Chat agent input received.', {
+            attachment_count: input.attachments.length,
+            history_count: input.history.length,
+          }, startedAt),
+        ],
+      };
+      this.store.saveChatAgentTrace(trace);
+
       const context = await this.assembler.assemble(input);
+      const intent = this.intentRouter.route({
+        userMessage: input.userMessage.content,
+        attachments: input.attachments,
+      });
+      turnState = {
+        id: crypto.randomUUID(),
+        conversation_id: input.conversationId,
+        persona_slug: context.personaSlug,
+        release_id: context.assetRelease?.releaseId,
+        status: 'running',
+        intent,
+        tool_calls: [],
+        created_at: startedAt,
+        updated_at: startedAt,
+      };
       trace = {
         ...trace,
         persona_slug: context.personaSlug,
@@ -391,10 +611,69 @@ export class PersonaChatAgentRuntime {
             attachment_count: context.processedAttachments.length,
             has_session_summary: Boolean(context.sessionSummary),
             max_tool_steps: context.safetyPolicy.maxToolSteps,
+            release_status: context.assetRelease?.status,
+          }),
+          createChatAgentTraceEvent('intent_routed', 'Chat intent routed for the bounded agent loop.', {
+            intent,
           }),
           createChatAgentTraceEvent('skill_selected', 'Read-only skills selected for prompt context.', {
             skill_ids: context.availableSkills.map((item) => item.skill.id),
             skill_count: context.availableSkills.length,
+          }),
+        ],
+      };
+      this.store.saveChatAgentTrace(trace);
+
+      const availableTools = this.toolRegistry.listTools();
+      const plannedTools = this.toolPlanner.plan({
+        intent,
+        context,
+        tools: availableTools,
+        maxTools: context.safetyPolicy.maxToolSteps,
+      });
+      trace = {
+        ...trace,
+        stages: [
+          ...trace.stages,
+          createChatAgentTraceEvent('tool_planned', 'Read-only tool plan prepared.', {
+            tool_count: plannedTools.length,
+            tool_ids: plannedTools.map((tool) => tool.id),
+          }),
+        ],
+      };
+      this.store.saveChatAgentTrace(trace);
+
+      const toolCalls = await this.toolExecutor.execute({
+        conversationId: input.conversationId,
+        tools: plannedTools,
+        context,
+      });
+      for (const toolCall of toolCalls) {
+        this.store.saveAgentToolCallTrace(input.conversationId, toolCall);
+      }
+      const synthesized = this.evidenceSynthesizer.synthesize({
+        context,
+        intent,
+        toolCalls,
+      });
+      turnState = {
+        ...turnState,
+        tool_calls: toolCalls,
+        evidence_bundle: synthesized.evidenceBundle,
+        working_context: synthesized.workingContext,
+        updated_at: new Date().toISOString(),
+      };
+      trace = {
+        ...trace,
+        stages: [
+          ...trace.stages,
+          createChatAgentTraceEvent('tool_executed', 'Read-only tools executed for working context.', {
+            tool_count: toolCalls.length,
+            safe_count: toolCalls.filter((item) => item.status === 'completed').length,
+          }),
+          createChatAgentTraceEvent('evidence_synthesized', 'Read-only evidence synthesized into working context.', {
+            safe_count: synthesized.evidenceBundle.facts.length,
+            uncertainty_count: synthesized.evidenceBundle.uncertainties.length,
           }),
         ],
       };
@@ -435,7 +714,14 @@ export class PersonaChatAgentRuntime {
       return {
         userMessage: input.userMessage,
         response,
-        trace,
+        trace: turnState
+          ? {
+              ...trace,
+              stages: [
+                ...trace.stages,
+              ],
+            }
+          : trace,
       };
     } catch (error) {
       trace = failChatAgentTrace(trace, error);
@@ -456,6 +742,37 @@ function sanitizeTraceError(error: unknown): string {
     .replace(/\b(sk|ghp|github_pat|glpat|xox[baprs])-[-_A-Za-z0-9]+\b/g, '[redacted-token]')
     .replace(/\b(password|token|api key|secret)\s*(?:is|=|:)?\s*[-_A-Za-z0-9]+\b/gi, '$1 [redacted]');
   return withoutSecrets.slice(0, 240) || 'Unknown chat agent runtime error.';
+}
+
+function summarizeReadOnlyTool(tool: AgentToolDefinition, context: ChatAgentContext): string {
+  if (tool.id === 'persona.memory.search') {
+    return `Prepared persona memory context for ${context.personaSlug}.`;
+  }
+  if (tool.id === 'persona.skill.search') {
+    return `Prepared ${context.availableSkills.length} persona skill context item(s).`;
+  }
+  if (tool.id === 'persona.relation.search') {
+    return context.assetRelease?.assets.relationGraphPath
+      ? 'Prepared persona relation graph context.'
+      : 'Persona relation graph context is not available.';
+  }
+  if (tool.id === 'conversation.history.search') {
+    return `Prepared ${context.history.length} history message(s) and ${context.sessionSummary ? 'a session summary' : 'no session summary'}.`;
+  }
+  if (tool.id === 'source.provenance.read') {
+    return context.assetRelease?.assets.provenanceReportPath
+      ? 'Prepared source provenance summary context.'
+      : 'Source provenance summary is not available.';
+  }
+  return `${tool.title} is reserved for the read-only tool layer.`;
+}
+
+function summarizeToolInput(tool: AgentToolDefinition, context: ChatAgentContext): string {
+  return [
+    `tool=${tool.id}`,
+    `persona=${context.personaSlug}`,
+    context.assetRelease ? `release=${context.assetRelease.status}` : 'release=legacy',
+  ].join(' ');
 }
 
 function buildChatAgentTraceReplayStep(
@@ -501,7 +818,9 @@ function extractStageCounts(stage: ChatAgentTraceEvent): Record<string, number> 
     'message_count',
     'persona_dimension_count',
     'skill_count',
+    'tool_count',
     'triggered_skill_count',
+    'uncertainty_count',
   ];
   const counts = Object.fromEntries(
     allowedCountKeys
@@ -540,6 +859,7 @@ function sanitizeDiagnosticMetadata(metadata: Record<string, unknown> | undefine
     'candidate_count',
     'has_session_summary',
     'history_count',
+    'intent',
     'max_tool_steps',
     'memory_count',
     'message_count',
@@ -547,10 +867,14 @@ function sanitizeDiagnosticMetadata(metadata: Record<string, unknown> | undefine
     'orchestration_mode',
     'persona_dimension_count',
     'provider',
+    'release_status',
     'safe_count',
     'skill_count',
     'skill_ids',
+    'tool_count',
+    'tool_ids',
     'triggered_skill_count',
+    'uncertainty_count',
     'write_enabled',
   ]);
   return Object.fromEntries(

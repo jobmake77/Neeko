@@ -232,6 +232,12 @@ export async function cmdWorkbenchServer(
         return;
       }
 
+      const personaAssetReleaseMatch = path.match(/^\/api\/personas\/([^/]+)\/asset-release$/);
+      if (req.method === 'GET' && personaAssetReleaseMatch) {
+        writeJson(res, 200, service.getPersonaAssetRelease(decodeURIComponent(personaAssetReleaseMatch[1])));
+        return;
+      }
+
       const personaConfigMatch = path.match(/^\/api\/personas\/([^/]+)\/config$/);
       if (req.method === 'GET' && personaConfigMatch) {
         writeJson(res, 200, service.getPersonaConfig(decodeURIComponent(personaConfigMatch[1])));
@@ -476,6 +482,34 @@ export async function cmdWorkbenchServer(
           return;
         }
         writeJson(res, 200, { ok: true });
+        return;
+      }
+
+      const agentTraceReplayMatch = path.match(/^\/api\/conversations\/([^/]+)\/agent-traces\/([^/]+)\/replay$/);
+      if (req.method === 'GET' && agentTraceReplayMatch) {
+        const replay = service.getChatAgentTraceReplay(
+          decodeURIComponent(agentTraceReplayMatch[1]),
+          decodeURIComponent(agentTraceReplayMatch[2]),
+        );
+        if (!replay) {
+          writeSafeError(res, 404, 'Agent trace not found');
+          return;
+        }
+        writeJson(res, 200, replay);
+        return;
+      }
+
+      const agentTraceMatch = path.match(/^\/api\/conversations\/([^/]+)\/agent-traces\/([^/]+)$/);
+      if (req.method === 'GET' && agentTraceMatch) {
+        const trace = service.getChatAgentTraceDiagnostic(
+          decodeURIComponent(agentTraceMatch[1]),
+          decodeURIComponent(agentTraceMatch[2]),
+        );
+        if (!trace) {
+          writeSafeError(res, 404, 'Agent trace not found');
+          return;
+        }
+        writeJson(res, 200, trace);
         return;
       }
 
